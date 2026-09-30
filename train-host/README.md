@@ -96,6 +96,41 @@ Commit authored code and the release record locally; publishing is a separate
 explicit action. Copy and checksum-verify every needed GPU artifact on the NAS
 before powering the host off.
 
+## Guide omission: B7 and the relabelled rows
+
+The turn head answers the guide question again. `train.sh GPU B7 RUN` trains
+the B5 recipe with `--families tools,guides`: every tool and every guide
+option on its own row, so the head's answer for one unit never depends on the
+roster. `B7G` trains the guide rows alone, the fallback for a second engine
+slot when a joint head loses tool precision.
+
+Guide labels are relabelled before training, not re-judged. A unit's label is
+whether the turn called one of the tools it attaches to or one it declares
+`needed_with` (the host's `GuideLabels`, and `relabel_guides.py` for archived
+rows, whose call set is rebuilt from the loadable calls plus the attached
+tools of every unit labelled true). This gives `claim-evidence` and
+`survey-first-pass` labels for the first time; they were unlabelled in every
+earlier release, which is why no earlier audit could certify them.
+
+    python3 relabel_guides.py data/corpus.json dist/dataset-open1-b5-e4/train.jsonl data/judged/train.jsonl
+
+`turn_probe.py` scores every tool and guide option of a head with the
+trainer's own forward, tools and guides alike, and writes rows `guide_audit.py`
+and `turn_score.py` read, so selection needs no engine build on the host:
+
+    ./jobctl.sh start B7-release -- ./train.sh 0 B7 release
+    ./jobctl.sh start B7G-release -- ./train.sh 1 B7G release
+    python3 turn_probe.py --trainer $R/lycaon --corpus $R/data/independent-corpus.json \
+      --rows $R/data/judged/holdout.jsonl --head $R/out/B7-release/turn-load.safetensors --out $R/eval/B7-release/holdout.predictions.jsonl
+    python3 guide_audit.py $R/data/judged/train.jsonl $R/eval/B7-release/holdout.predictions.jsonl $R/eval/B7-release/guide-selection-holdout.json
+
+The audit certifies a unit at 97% omission precision and 98% needed-guide
+retention on both validation and the held-out repositories. Labels are
+observational: a unit's positives are the turns that called its tools, so a
+unit whose tool is rarely called (recall) can omit with high precision and
+still fail retention on a handful of positives. Ship decisions that go past
+the audit are recorded in `decisions.yaml` beside the numbers, never silently.
+
 ## Rebuilding the heads
 
 1. **Rows.** Session rows come from `bialy collect` and `bialy split`.

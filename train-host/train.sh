@@ -16,6 +16,15 @@ cd $L
 TURN="--holdout-pack painted-wolf/browser --families tools,guides,kind --seed 11 --batch-size 32"
 RANK="--families skills,requests --skill-scored 4 --skill-zeros 3 --seed 11 --batch-size 32"
 case $RECIPE in
+  # B7 trains the B5 recipe with the guide units beside the tools, every option on its
+  # own row; B7G trains the guide units alone, as the fallback head for a second slot.
+  B7|B7G)
+      C=$R/data/independent-corpus.json
+      FAMILIES=tools,guides; [[ $RECIPE = B7G ]] && FAMILIES=guides
+      $PY -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c["questions"]["tools"].get("independent"), "independent corpus required"' "$C"
+      exec $PY scripts/decide/train.py --corpus "$C" --train "$R/data/judged/train.jsonl" --val "$R/data/judged/val.jsonl" \
+        --families "$FAMILIES" --tool-truth consensus --tool-weight none --tool-negatives 24 --lr 5e-4 --pos-weight 6 --seed 11 \
+        --batch-size 64 --epochs 45 --patience 8 --label "open1-turn-load-$RECIPE-$RUN-independent" --out "$OUT/turn-load.safetensors" ;;
   B3|B4|B5|B6)
       C=$R/data/independent-corpus.json
       TRUTH=consensus; [[ $RECIPE = B4 ]] && TRUTH=called
