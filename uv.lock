@@ -38,6 +38,42 @@ wheels = [
 ]
 
 [[package]]
+name = "bialy"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "openai" },
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+hub = [
+    { name = "huggingface-hub" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.30" },
+    { name = "jsonschema", specifier = ">=4.23" },
+    { name = "openai", specifier = ">=1.40" },
+    { name = "pyyaml", specifier = ">=6" },
+]
+provides-extras = ["hub"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.6" },
+]
+
+[[package]]
 name = "click"
 version = "8.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -111,8 +147,8 @@ name = "httpcore2"
 version = "2.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
-    { name = "truststore", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/f3/1db7aa2bc2524062192bb0e0323969492d1883152a232fe36eea65f4e35c/httpcore2-2.13.1.tar.gz", hash = "sha256:e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103", size = 68071, upload-time = "2026-09-23T07:47:22.372Z" }
 wheels = [
@@ -356,42 +392,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
-]
-
-[[package]]
-name = "bialy"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "jsonschema" },
-    { name = "openai" },
-    { name = "pyyaml" },
-]
-
-[package.optional-dependencies]
-hub = [
-    { name = "huggingface-hub" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.30" },
-    { name = "jsonschema", specifier = ">=4.23" },
-    { name = "openai", specifier = ">=1.40" },
-    { name = "pyyaml", specifier = ">=6" },
-]
-provides-extras = ["hub"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
