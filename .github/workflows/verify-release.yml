@@ -1,0 +1,48 @@
+# Check a published release as a consumer would receive it: fetch the tagged
+# revision from the Hub and verify it is complete and matches its checksums.
+# Releases are built and published from the GPU host; this never publishes.
+name: Verify release
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: Release to verify
+        type: choice
+        options: [dataset, heads]
+      version:
+        description: Release tag on the Hub (for example v1)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-release-${{ inputs.kind }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-publication
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --locked --extra hub
+
+      - name: Fetch and verify
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BIALY_HF_DATASET_REPO: ${{ vars.HF_DATASET_REPO }}
+          BIALY_HF_MODEL_REPO: ${{ vars.HF_MODEL_REPO }}
+          KIND: ${{ inputs.kind }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          uv run bialy fetch "$KIND" --version "$VERSION" --out release
+          uv run bialy verify "$KIND" --release release

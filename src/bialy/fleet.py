@@ -1,0 +1,443 @@
+"""Runner containers on the GPU host: build, isolate, shard, run, and reap.
+
+Each shard is one container: a fresh checkout of one repository, one sidecar,
+and a handful of tasks driven one after another. Containers sit on a private
+bridge whose only routes are the factory's model servers on the bridge
+gateway and the public web on ports 80 and 443; private ranges and the cloud
+metadata service are dropped. Every container this factory starts is written
+to the run's ledger first, and cleanup touches only ledger entries.
+"""
+
+import json
+import random
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+from .tasks import provider_id
+
+RUNNER = Path(__file__).resolve().parents[2] / "runner"
+CONFIG = Path(__file__).resolve().parents[2] / "config"
+EGRESS_CHAIN = "BIALY-EGRESS"
+INPUT_CHAIN = "BIALY-INPUT"
+PRIVATE = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10")
+
+
+def sh(*args, check=True, **kw):
+    return subprocess.run(list(args), check=check, text=True, capture_output=True, **kw)
+
+
+DECISION_SECTIONS = ("turn", "request", "lookup", "tool_event")
+# The sidecar embeds its configuration; LYCAON_CONFIG_ROOT (set in the image to the
+# engine's overlay/) puts a file at this path in front of the embedded copy.
+DECISIONS = Path("overlay/config/packs/painted-wolf/platform/host/decisions.yaml")
+
+
+def raise_decision_deadlines(source, engine_dir, deadline_ms):
+    """Stage `source`, the decisions.yaml of the commit the binaries were built from,
+    with a longer deadline on every turn decision.
+
+    A runner's CPU answers a turn in seconds, and past the deadline the engine abstains.
+    The deadline decides only whether an answer arrives, never what it is, so an
+    engine-on pass raises it."""
+    path = Path(engine_dir) / DECISIONS
+    lines = Path(source).read_text(encoding="utf-8").splitlines()
+    section = None
+    for i, line in enumerate(lines):
+        if line and not line.startswith((" ", "#")) and line.endswith(":"):
+            section = line[:-1]
+        elif section in DECISION_SECTIONS and line.startswith("  deadline_ms:"):
+            lines[i] = "  deadline_ms: %d" % deadline_ms
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, decisions=None):
+    """Assemble the build context from runner/, the pinned lycaon binaries, and the
+    engine payload, then build the runner image."""
+    ctx = factory.root / "build" / "runner"
+    if ctx.exists():
+        shutil.rmtree(ctx)
+    shutil.copytree(RUNNER, ctx)
+    (ctx / "bin").mkdir()
+    for name in ("lycaon", "lycaon-debug"):
+        shutil.copy2(Path(lycaon_bin) / name, ctx / "bin" / name)
+    shutil.copytree(engine_dir, ctx / "engine", symlinks=False)
+    if deadline_ms:
+        raise_decision_deadlines(decisions, ctx / "engine", deadline_ms)
+    shutil.copy2(CONFIG / "unattended.yaml", ctx / "unattended.yaml")
+    subprocess.run(["docker", "build", "-q", "-t", tag or factory.fleet["image"], str(ctx)], check=True)
+
+
+# Every runner's sidecar watches its checkout; the kernel's default of 128 inotify
+# instances per user runs out long before a full fleet has started.
+HOST_SYSCTL = {"fs.inotify.max_user_instances": 8192, "fs.inotify.max_user_watches": 4194304,
+               "fs.inotify.max_queued_events": 65536}
+
+
+def ensure_network(factory):
+    """The private bridge, its egress rules, and the host limits a full fleet needs; safe
+    to run again."""
+    for key, value in HOST_SYSCTL.items():
+        sh("sysctl", "-w", "%s=%d" % (key, value))
+    net = factory.network
+    inspect = sh("docker", "network", "inspect", "-f", "{{json .Options}}\t{{json .Containers}}\t{{json .IPAM.Config}}",
+                 net["name"], check=False)
+    exists = inspect.returncode == 0
+    if exists:
+        options, containers, ipam = (json.loads(part) or {} for part in inspect.stdout.strip().split("\t"))
+        subnets = [c.get("Subnet") for c in ipam] if isinstance(ipam, list) else []
+        isolated = options.get("com.docker.network.bridge.enable_icc") == "false"
+        if not isolated and containers:
+            raise RuntimeError("network %s allows inter-container traffic and has containers attached; "
+                               "reap the run, then set up the network again" % net["name"])
+        if subnets != [net["subnet"]] and containers:
+            print("network %s is %s, not %s; it is recreated once no runner is attached" % (net["name"], subnets, net["subnet"]))
+        elif not isolated or subnets != [net["subnet"]]:
+            sh("docker", "network", "rm", net["name"])
+            exists = False
+    if not exists:
+        # No inter-container traffic: a runner reaches the model servers on the
+        # gateway and the public web, never another runner.
+        sh("docker", "network", "create", "--subnet", net["subnet"], "--gateway", net["gateway"],
+           "--opt", "com.docker.network.bridge.enable_icc=false",
+           "--opt", "com.docker.network.bridge.name=br-" + net["name"], net["name"])
+    bridge = "br-" + net["name"]
+    ports = ",".join(str(p) for m in factory.models for p in m.ports())
+    for chain, parent in ((EGRESS_CHAIN, "DOCKER-USER"), (INPUT_CHAIN, "INPUT")):
+        sh("iptables", "-N", chain, check=False)
+        sh("iptables", "-F", chain)
+        if sh("iptables", "-C", parent, "-i", bridge, "-j", chain, check=False).returncode != 0:
+            sh("iptables", "-I", parent, "1", "-i", bridge, "-j", chain)
+    rules = [["-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "RETURN"]]
+    rules += [["-d", cidr, "-j", "DROP"] for cidr in PRIVATE]
+    rules += [["-p", proto, "--dport", "53", "-j", "RETURN"] for proto in ("udp", "tcp")]
+    rules += [["-p", "tcp", "-m", "multiport", "--dports", "80,443", "-j", "RETURN"], ["-j", "DROP"]]
+    for rule in rules:
+        sh("iptables", "-A", EGRESS_CHAIN, *rule)
+    # The host itself answers only the model servers on the bridge.
+    for rule in (["-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+                 ["-p", "tcp", "-m", "multiport", "--dports", ports, "-j", "ACCEPT"],
+                 ["-p", "udp", "--dport", "53", "-j", "ACCEPT"], ["-j", "DROP"]):
+        sh("iptables", "-A", INPUT_CHAIN, *rule)
+
+
+def endpoint_provider(model_id, port, primary_port):
+    """The provider instance id a shard's sidecar uses for one server of a model."""
+    base = provider_id(model_id)
+    return base if port == primary_port else "%s-%d" % (base, port)
+
+
+def sidecar_files(factory, decide_env, lane):
+    """providers.local.yaml, model-policy.yaml, and sidecar.env for a shard. `lane` picks
+    which server of each model the shard's sessions use, so shards spread over replicas."""
+    providers = ["providers:"]
+    chosen = {}
+    for m in factory.generators():
+        ports = m.ports()
+        port = ports[lane % len(ports)]
+        chosen[m.id] = endpoint_provider(m.id, port, m.port)
+        providers += ["  - id: %s" % chosen[m.id], "    kind: openai-compatible",
+                      "    base_url: %s" % factory.base_url(m, port), "    reasoning_wire: reasoning_content",
+                      "    models: [{id: %s}]" % m.id]
+    gens = factory.generators()
+    first = gens[0]
+    policy = ["coordinator: {provider_id: %s, model: %s}" % (chosen[first.id], first.id),
+              "lite: {provider_id: %s, model: %s}" % (chosen[first.id], first.id),
+              "agent_pool:", "  selection: random", "  models:"]
+    policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], m.id) for m in gens]
+    env = "\n".join("%s=%s" % kv for kv in sorted(decide_env.items()))
+    return "\n".join(providers) + "\n", "\n".join(policy) + "\n", env + "\n", chosen
+
+
+def plan_shards(factory, tasks_dir, run_dir, decide_env, repos=None, skip=()):
+    """Split every repository's tasks into shards under run_dir/shards. Shards named in
+    `skip` keep their files, and still advance the replica lanes."""
+    per = int(factory.fleet["tasks_per_shard"])
+    count = planned = 0
+    for repo in factory.repos:
+        if repos and repo.name not in repos:
+            continue
+        path = Path(tasks_dir) / (repo.name + ".jsonl")
+        if not path.exists():
+            continue
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        # Task files are grouped by archetype; mixed shards take similar time.
+        random.Random("shards:" + repo.name).shuffle(lines)
+        for i in range(0, len(lines), per):
+            shard = run_dir / "shards" / ("%s-%03d" % (repo.name, i // per))
+            if shard.name in skip or (shard / "tasks.jsonl").exists():
+                count += 1
+                continue
+            shard.mkdir(parents=True, exist_ok=True)
+            providers, policy, env, chosen = sidecar_files(factory, decide_env, count)
+            shard_tasks = []
+            for line in lines[i:i + per]:
+                task = json.loads(line)
+                task["provider_id"] = chosen[task["model"]]
+                shard_tasks.append(json.dumps(task, ensure_ascii=False))
+            (shard / "tasks.jsonl").write_text("\n".join(shard_tasks) + "\n", encoding="utf-8")
+            (shard / "providers.local.yaml").write_text(providers, encoding="utf-8")
+            (shard / "model-policy.yaml").write_text(policy, encoding="utf-8")
+            (shard / "sidecar.env").write_text(env, encoding="utf-8")
+            (shard / "repo.json").write_text(json.dumps({"repo": repo.name, "commit": repo.commit}), encoding="utf-8")
+            count += 1
+            planned += 1
+    return planned
+
+
+def replan(factory, tasks_dir, run_dir, decide_env):
+    """Plan again every shard that has not started, so a change in serving (a replica
+    added or moved) reaches it; shards that ran or are running keep their files."""
+    run_dir = Path(run_dir)
+    running = set(running_containers(run_dir))
+    removed = 0
+    for shard in (run_dir / "shards").iterdir():
+        if shard.name in running or (shard / "runner.log").exists() or (shard / "rows.jsonl").exists():
+            continue
+        shutil.rmtree(shard)
+        removed += 1
+    started = {s.name for s in (run_dir / "shards").iterdir()}
+    return removed, plan_shards(factory, tasks_dir, run_dir, decide_env, skip=started)
+
+
+class Ledger:
+    """runs/<run>/ledger.jsonl: every container this run started, before it starts."""
+
+    def __init__(self, run_dir):
+        self.path = run_dir / "ledger.jsonl"
+
+    def append(self, **entry):
+        entry["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(self.path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+
+    def containers(self):
+        if not self.path.exists():
+            return []
+        started = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            if entry.get("event") == "start":
+                started.append(entry["container"])
+        return started
+
+
+def reap(factory, run_dir):
+    """Remove this run's containers that still exist, running or not: ledger entries only,
+    by exact name, then release their work directories and cache views. `run` adopts
+    running containers instead; reaping is for abandoning a run."""
+    removed = []
+    for name in Ledger(run_dir).containers():
+        if sh("docker", "container", "inspect", name, check=False).returncode == 0:
+            sh("docker", "rm", "-f", name, check=False)
+            removed.append(name)
+    work = factory.root / "work" / Path(run_dir).name
+    for shard in sorted(work.iterdir()) if work.exists() else []:
+        release_work(shard)
+    return removed
+
+
+def mount_cache(factory, work):
+    """The shared package cache as this shard sees it: the warmed cache read-only below,
+    the shard's own writes above. Nothing a runner installs reaches another runner."""
+    merged = work / "cache"
+    for sub in ("cache-upper", "cache-work", "cache"):
+        (work / sub).mkdir()
+    sh("mount", "-t", "overlay", "overlay", "-o", "lowerdir=%s,upperdir=%s,workdir=%s" % (
+        factory.root / "cache", work / "cache-upper", work / "cache-work"), str(merged))
+    return merged
+
+
+def release_work(work):
+    """Unmount a shard's cache view, then remove its work directory."""
+    if (work / "cache").is_mount():
+        sh("umount", str(work / "cache"), check=False)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def warm_cache(factory, image=None):
+    """Fill the shared package cache once per repository at its pinned commit, before any
+    session runs; runners then read it through their own overlay (mount_cache)."""
+    (factory.root / "cache").mkdir(parents=True, exist_ok=True)
+    procs = {}
+    for repo in factory.repos:
+        name = "bialy-warm-%s" % repo.name
+        script = ('git clone -q --no-hardlinks /repos/{r} /work/{r} && git -C /work/{r} checkout -q {c} && '
+                  '/opt/bialy/setup-repo.sh /work/{r}').format(r=repo.name, c=repo.commit)
+        args = ["docker", "run", "--rm", "--name", name, "--network", factory.network["name"], "--read-only",
+                "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+                "--security-opt", "no-new-privileges", "--tmpfs", "/work:rw,exec,size=16g", "--tmpfs", "/shard:rw,size=1g",
+                "--tmpfs", "/tmp:rw,exec,size=4g", "--tmpfs", "/root:rw,exec,size=4g",
+                "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/cache" % (factory.root / "cache"),
+                "--entrypoint", "bash", image or factory.fleet["image"], "-c", script]
+        procs[repo.name] = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {name: proc.wait() for name, proc in procs.items()}
+
+
+def container_args(factory, run_name, shard, extra_mounts, image=None):
+    fleet = factory.fleet
+    repo = json.loads((shard / "repo.json").read_text(encoding="utf-8"))
+    work = factory.root / "work" / run_name / shard.name
+    if work.exists():
+        release_work(work)
+    (work / "work").mkdir(parents=True)
+    cache = mount_cache(factory, work)
+    name = "bialy-%s-%s" % (run_name, shard.name)
+    args = ["docker", "run", "--rm", "--name", name, "--label", "bialy.run=" + run_name,
+            "--network", factory.network["name"], "--cpus", str(fleet["cpus"]), "--memory", fleet["memory"],
+            "--pids-limit", str(fleet["pids"]), "--cap-drop", "ALL",
+            "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID",
+            "--cap-add", "KILL", "--cap-add", "SETUID", "--cap-add", "SETGID",
+            "--security-opt", "no-new-privileges", "--read-only",
+            "--tmpfs", "/tmp:rw,exec,size=8g", "--tmpfs", "/root:rw,exec,size=4g", "--tmpfs", "/cfg:rw,size=4g",
+            "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/shard" % shard, "-v", "%s:/work" % (work / "work"),
+            "-v", "%s:/cache" % cache,
+            "-e", "REPO=" + repo["repo"], "-e", "COMMIT=" + repo["commit"], "-e", "PROMPT_TIMEOUT=" + fleet["prompt_timeout"]]
+    for host_path, container_path in extra_mounts:
+        args += ["-v", "%s:%s:ro" % (host_path, container_path)]
+    return name, work, args + [image or fleet["image"]]
+
+
+def running_containers(run_dir):
+    """This run's ledger containers that are still running, by shard name."""
+    out = {}
+    starts = {}
+    for line in (run_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines() if (run_dir / "ledger.jsonl").exists() else []:
+        entry = json.loads(line)
+        if entry.get("event") == "start":
+            starts[entry["container"]] = entry["shard"]
+    for name, shard in starts.items():
+        state = sh("docker", "container", "inspect", "-f", "{{.State.Running}}", name, check=False)
+        if state.returncode == 0 and state.stdout.strip() == "true":
+            out[shard] = name
+    return out
+
+
+def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
+    """Run every shard without rows, at most `runners` at a time, until all have finished.
+
+    A restarted run adopts its containers that are still running and waits for them; a
+    ledger container that has stopped without rows is removed and its shard runs again."""
+    run_dir = Path(run_dir)
+    run_name = run_dir.name
+    ledger = Ledger(run_dir)
+    adopted = running_containers(run_dir)
+    for name in Ledger(run_dir).containers():
+        if name not in adopted.values() and sh("docker", "container", "inspect", name, check=False).returncode == 0:
+            sh("docker", "rm", "-f", name, check=False)
+            ledger.append(event="reaped", container=name)
+    (factory.root / "cache").mkdir(parents=True, exist_ok=True)
+    active = {}
+    for shard_name, name in adopted.items():
+        shard = run_dir / "shards" / shard_name
+        ledger.append(event="adopted", container=name, shard=shard_name)
+        active[name] = (subprocess.Popen(["docker", "wait", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                        shard, factory.root / "work" / run_name / shard_name)
+    pending = sorted(s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and s.name not in adopted)
+    for shard in pending:
+        for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part"):
+            (shard / stale).unlink(missing_ok=True)
+    limit = int(runners or factory.fleet["runners"])
+    done = failed = 0
+    while pending or active:
+        while pending and len(active) < limit:
+            shard = pending.pop(0)
+            name, work, args = container_args(factory, run_name, shard, extra_mounts, image)
+            ledger.append(event="start", container=name, shard=shard.name)
+            active[name] = (subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=open(shard / "docker.log", "w")), shard, work)
+        time.sleep(5)
+        for name, (proc, shard, work) in list(active.items()):
+            code = proc.poll()
+            if code is None:
+                continue
+            del active[name]
+            ledger.append(event="exit", container=name, shard=shard.name, code=code)
+            release_work(work)
+            if (shard / "rows.jsonl").exists():
+                done += 1
+            else:
+                failed += 1
+            print("%s exit=%s done=%d failed=%d active=%d pending=%d" % (shard.name, code, done, failed, len(active), len(pending)), flush=True)
+    return done, failed
+
+
+def salvage(run_dir, into):
+    """Keep what a run's live containers already drove before the run is abandoned.
+
+    For every running container, export the rows of the sessions its manifest lists from
+    the live store, and copy them with the manifest into `into`/shards/<shard>, which
+    `collect` reads like any run. Returns the task ids that settled anywhere in the run."""
+    run_dir, into = Path(run_dir), Path(into)
+    saved = 0
+    for shard_name, name in running_containers(run_dir).items():
+        shard = run_dir / "shards" / shard_name
+        manifest = shard / "manifest.jsonl"
+        if not manifest.exists() or not manifest.read_text(encoding="utf-8").strip():
+            continue
+        roots = [json.loads(line)["root_session"] for line in manifest.read_text(encoding="utf-8").splitlines()]
+        (shard / "salvage-roots.txt").write_text("\n".join(roots) + "\n", encoding="utf-8")
+        result = sh("docker", "exec", name, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", "/cfg/store.db",
+                    "--roots", "/shard/salvage-roots.txt", "--out", "/shard/salvage-rows.jsonl", check=False)
+        if result.returncode != 0:
+            print("%s: export failed: %s" % (shard_name, result.stderr.strip()[:200]))
+            continue
+        dest = into / "shards" / shard_name
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(manifest, dest / "manifest.jsonl")
+        shutil.copy2(shard / "salvage-rows.jsonl", dest / "rows.jsonl")
+        saved += 1
+    settled = set()
+    for manifest in (run_dir / "shards").glob("*/manifest.jsonl"):
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            if entry["status"] == "settled":
+                settled.add(entry["task_id"])
+    return saved, settled
+
+
+def collect(run_dir, pass_name, tasks_dir):
+    """Every shard's rows, each carrying its task's metadata, and tasks-driven.jsonl: the
+    full specification of every task the run drove, with its outcome, so a release can
+    say exactly which tasks it contains however the run ended."""
+    run_dir = Path(run_dir)
+    specs = {}
+    for path in Path(tasks_dir).glob("*.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                task = json.loads(line)
+                specs[task["id"]] = task
+    out = run_dir / "rows.jsonl"
+    stats = {"rows": 0, "shards": 0, "tasks": 0, "settled": 0}
+    driven = []
+    with open(out, "w", encoding="utf-8") as fh:
+        for shard in sorted((run_dir / "shards").iterdir()):
+            rows = shard / "rows.jsonl"
+            manifest = shard / "manifest.jsonl"
+            if not rows.exists() or not manifest.exists():
+                continue
+            stats["shards"] += 1
+            meta = {}
+            for line in manifest.read_text(encoding="utf-8").splitlines():
+                entry = json.loads(line)
+                if entry["task_id"] not in specs:
+                    raise ValueError("%s: task %s is not in %s" % (shard.name, entry["task_id"], tasks_dir))
+                stats["tasks"] += 1
+                stats["settled"] += entry["status"] == "settled"
+                # The task file, not the driver's echo, is what a row's grouping comes from.
+                meta[entry["root_session"]] = dict(specs[entry["task_id"]]["meta"], task_status=entry["status"], run=run_dir.name, pass_name=pass_name)
+                driven.append(dict(specs[entry["task_id"]], outcome={"status": entry["status"], "run": run_dir.name, "shard": shard.name,
+                                                                    "pass_name": pass_name, "root_session": entry["root_session"]}))
+            for line in rows.read_text(encoding="utf-8").splitlines():
+                row = json.loads(line)
+                if row["root_session"] not in meta:
+                    raise ValueError("%s: rows from session %s, which the manifest does not list" % (shard.name, row["root_session"]))
+                row["meta"] = meta[row["root_session"]]
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                stats["rows"] += 1
+    with open(run_dir / "tasks-driven.jsonl", "w", encoding="utf-8") as fh:
+        for task in driven:
+            fh.write(json.dumps(task, ensure_ascii=False) + "\n")
+    return out, stats
+

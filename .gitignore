@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+.venv/
+dist/
+.DS_Store
+SOURCE_COMMIT
+config/replicas.local.yaml

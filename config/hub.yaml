@@ -1,0 +1,9 @@
+# Where releases are published. Nothing uploads on its own: `bialy publish`
+# runs only when a person runs it, lists what it would send unless --push is
+# given, and creates a missing repository as private. Each value can be
+# overridden from the environment (CI sets them from repository variables):
+# BIALY_HF_DATASET_REPO, BIALY_HF_MODEL_REPO, BIALY_CODE_REPO.
+# The Hugging Face token only ever comes from HF_TOKEN.
+dataset_repo: paintedwolfcode/bialy-dataset
+model_repo: paintedwolfcode/bialy
+code_repo: https://github.com/paintedwolf-ai/bialy

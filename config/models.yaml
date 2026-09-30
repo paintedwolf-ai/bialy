@@ -1,0 +1,52 @@
+# Open-weights models the factory may run. A model drives sessions
+# (generator) or scores cards (judge) only when a person has read its license
+# and recorded that its outputs may train a model released under Apache-2.0
+# (outputs_trainable). The configuration refuses any other model.
+#
+# A row is judged by a model from another family than the one that drove its
+# session, so no judge grades its own family's behaviour. The judges run on a
+# provider (hosted) rather than on the factory's GPUs; the key comes from the
+# environment variable hosted.key_env.
+models:
+  - id: qwen3.6-35b-a3b
+    hf: Qwen/Qwen3.6-35B-A3B-FP8
+    revision: 95a723d08a9490559dae23d0cff1d9466213d989
+    family: qwen
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-09-27: Apache-2.0 model card; no terms on outputs"
+    roles: [generator]
+    serve:
+      gpu: 0
+      port: 8001
+      args: [--tool-call-parser, qwen3_coder, --reasoning-parser, qwen3, --max-num-seqs, "256", --kv-cache-dtype, fp8]
+  - id: gemma-4-26b-a4b-it
+    hf: google/gemma-4-26B-A4B-it
+    revision: 4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+    family: gemma
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-09-27: Apache-2.0 model card; no terms on outputs"
+    roles: [generator]
+    serve:
+      gpu: 1
+      port: 8002
+      args: [--quantization, fp8, --kv-cache-dtype, fp8, --tool-call-parser, gemma4, --reasoning-parser, gemma4]
+  - id: glm-5.3-flash
+    hf: zai-org/GLM-5.3-Flash
+    revision: eb9eb208eb0d988989d07a6a12d0fdeb5f52574a
+    family: glm
+    license: MIT
+    outputs_trainable: true
+    reviewed: "2026-09-28: MIT license, no terms on outputs"
+    roles: [judge, writer]
+    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p3-flash, key_env: FIREWORKS_API_KEY}
+  - id: inkling
+    hf: thinkingmachines/Inkling
+    revision: 828496eeae4c243ff1a22f7f28ff83694f2f7bc9
+    family: inkling
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-09-28: Apache-2.0 model card; no terms on outputs"
+    roles: [judge, writer]
+    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/inkling, key_env: FIREWORKS_API_KEY}

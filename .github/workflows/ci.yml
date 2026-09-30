@@ -1,0 +1,45 @@
+# Everything a change can be checked with cheaply. Generation, judging, and
+# training need GPUs and hours; they run on a GPU host by hand, never here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --locked --group dev
+
+      - name: Lint
+        run: uv run ruff check src tests
+
+      - name: Test
+        run: uv run pytest -q tests
+
+      - name: Configuration and pins
+        env:
+          BIALY_HF_DATASET_REPO: ${{ vars.HF_DATASET_REPO }}
+          BIALY_HF_MODEL_REPO: ${{ vars.HF_MODEL_REPO }}
+        run: uv run bialy check
+
+      - name: Runner scripts
+        run: shellcheck runner/*.sh

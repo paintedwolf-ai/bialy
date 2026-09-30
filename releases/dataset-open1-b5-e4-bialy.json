@@ -1,0 +1,11 @@
+{
+  "schema": "pw-decide-anchor/1",
+  "kind": "dataset",
+  "version": "open1-b5-e4-bialy",
+  "sha256sums": "38115831206e32f185efbbafd8fcad93c8756f8df89157b3fe1d11f1bcd3c6a9",
+  "holdout": [
+    "ripgrep",
+    "sinatra",
+    "zod"
+  ]
+}
