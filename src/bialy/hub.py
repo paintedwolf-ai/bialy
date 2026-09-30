@@ -1,10 +1,6 @@
-"""Publish a release folder to Hugging Face, only when a person asks.
+"""Publish checksum-verified releases; dry-run unless `push` is set.
 
-Without `push`, publish lists what it would send and where. With `push`, it
-checks the folder against its SHA256SUMS, creates the repository as private
-if it does not exist (making it public is a separate, deliberate step on the
-Hub), uploads the folder as one commit, and tags that commit with the
-release version.
+New repositories are private. Each upload creates one tagged commit.
 """
 
 import subprocess
@@ -78,8 +74,7 @@ def plan(kind, release_dir, repo=None):
 
 
 def committed(path):
-    """Consumers check a release against the anchor in this repository, so the anchor must
-    be committed before the release goes anywhere they can fetch it."""
+    """A committed, unchanged anchor lets consumers verify the published release."""
     root = Path(path).parent.parent
     rel = str(Path(path).relative_to(root))
     tracked = subprocess.run(["git", "-C", str(root), "ls-files", "--error-unmatch", rel], capture_output=True)
