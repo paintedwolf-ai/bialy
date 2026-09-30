@@ -216,7 +216,9 @@ read the skill's full procedure when scoring.
 ### Future improvement: guide labels and the turn state
 
 The September 30 B7 run restored guide omission on labels derived from tool
-calls. Items for the next pass, none of which the run could take on:
+calls. The next pass regenerates the runs with larger driver models rather
+than retraining on the archived rows, so these items are changes to what the
+factory records and judges during generation:
 
 - Judge guide relevance directly. A unit's label is whether its turn called an
   attached or `needed_with` tool, so a unit whose tool is rarely called has few
