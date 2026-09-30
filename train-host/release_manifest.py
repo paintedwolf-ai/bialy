@@ -16,8 +16,10 @@ def header(path):
 
 def build(corpus, heads, release, revision):
     selected, metadata = {}, {}
-    for name in ('turn-load', 'unit-rank', 'code-rank'):
+    for name in ('turn-load', 'guide-load', 'unit-rank', 'code-rank'):
         path = heads / (name + '.safetensors')
+        if name == 'guide-load' and not path.exists():
+            continue
         metadata[name] = header(path)
         selected[name] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'label': metadata[name]['label']}
     turn = metadata['turn-load']
