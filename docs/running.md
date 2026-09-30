@@ -213,6 +213,32 @@ read the skill's full procedure when scoring.
   This motivates expanded-catalog evaluation, not a claim that those live lookups
   failed or that free-text input itself must be reverted.
 
+### Target: one command on one machine
+
+The next pass should run end to end unattended: start it on a desktop with a
+Fireworks key, come back in a day or two to an anchored dataset, a head set,
+and a report. Today the pass is fifteen hand-run stages, `bialy repos`,
+`tasks`, `serve`, `fleet plan/run/reap`, `collect`, `judge`, `split`,
+`release`, the `train-host` scripts on a GPU host, `release-heads`, `audit`,
+and `publish`, and the fleet and training stages assume rented hosts. What is
+missing:
+
+- A `bialy run` orchestrator with a resumable state file: every stage
+  idempotent, skipped when its output is already anchored, restarted from the
+  failed stage after a crash or a provider outage.
+- A single-runner local path for the fleet: one container on the same
+  machine, no replicas, using the existing `fleet image`.
+- One provider for driving and judging, configured per role in
+  `config/factory.yaml`, with a spend ceiling, request rate, and retry policy
+  sized for a run that lasts days.
+- Training on the local machine: the `train-host` recipes as a stage, with a
+  CPU or Apple GPU path and a time budget, or an explicit opt-in to rent a
+  GPU for that stage only.
+- A pinned host checkout and engine build fetched by the run, so `audit heads`
+  and the probes need no manual setup.
+- A final report and no upload without `--push`, so the unattended run ends
+  ready to publish rather than published.
+
 ### Future improvement: guide labels and the turn state
 
 The September 30 B7 run restored guide omission on labels derived from tool
