@@ -37,7 +37,7 @@ def test_rebase_skips_settled_tasks_and_moves_models_in_order(factory, tmp_path)
     out = [json.loads(line) for line in (tmp_path / "rebased" / "flask.jsonl").read_text().splitlines()]
     generators = [m.id for m in factory.generators()]
     assert counts == {"flask": 2} and [t["id"] for t in out] == ["a", "c"]
-    assert {t["model"] for t in out} == {generators[0]} and out[0]["provider_id"] == tasks.provider_id(generators[0])
+    assert {t["model"] for t in out} == {generators[0]} and out[0]["provider_id"] == factory.provider_id(factory.model(generators[0]))
 
     assert (out[1]["workflow"], out[1]["workflow_version"]) == ("implement-dispatch", "2.3.4")
 

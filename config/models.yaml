@@ -39,7 +39,7 @@ models:
     license: MIT
     outputs_trainable: true
     reviewed: "2026-09-28: MIT license, no terms on outputs"
-    roles: [judge, writer]
+    roles: [generator, judge, writer]
     hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p3-flash, key_env: FIREWORKS_API_KEY}
   - id: inkling
     hf: thinkingmachines/Inkling

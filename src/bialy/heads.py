@@ -1,7 +1,7 @@
 """Assemble a heads release: weights, model card with results, notice, and checksums.
 
 The heads are trained and replayed in the Painted Wolf Code repository
-(`scripts/decide/`); this packs what that produced for publishing. Every
+(`scripts/bialy/`); this packs what that produced for publishing. Every
 number on the card comes from a report the engine produced, shipped in `eval/`,
 and a baseline row is one a reader can reproduce from the release.
 """

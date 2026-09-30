@@ -183,7 +183,7 @@ def heads(release, dataset_release, lycaon, engine, split="holdout", tolerance=0
     shipped = json.loads((release / "eval" / ("%s.json" % split)).read_text(encoding="utf-8"))["overall"]
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "replay.json"
-        subprocess.run([sys.executable, str(Path(lycaon) / "scripts/decide/replay_eval.py"), "--corpus", str(dataset_release / "corpus.json"),
+        subprocess.run([sys.executable, str(Path(lycaon) / "scripts/bialy/replay_eval.py"), "--corpus", str(dataset_release / "corpus.json"),
                         "--examples", str(dataset_release / "holdout.jsonl"), "--engine", str(engine),
                         "--holdout-pack", "painted-wolf/browser", "--json", str(out)],
                        check=True, stdout=subprocess.DEVNULL)

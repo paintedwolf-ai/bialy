@@ -6,6 +6,7 @@ model.
 """
 
 import ipaddress
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,20 @@ class Archetype:
     per_repo: int
     workflows: dict
     follow_up_rate: float
+    prompt_timeout: str
+    workflow_prompt_timeout: str
+
+    def timeout(self, workflow):
+        """The per-prompt budget for one of this archetype's tasks."""
+        return self.workflow_prompt_timeout if workflow else self.prompt_timeout
+
+
+def minutes(duration):
+    """A budget written as `<n>m` or `<n>h`, in minutes."""
+    value = str(duration).strip()
+    if len(value) < 2 or value[-1] not in "mh" or not value[:-1].isdigit() or int(value[:-1]) <= 0:
+        raise ConfigError("durations are written as <n>m or <n>h, not %r" % duration)
+    return int(value[:-1]) * (60 if value[-1] == "h" else 1)
 
 
 @dataclass
@@ -78,6 +93,8 @@ class Factory:
     repos: list = field(default_factory=list)
     archetypes: list = field(default_factory=list)
     languages: dict = field(default_factory=dict)
+    # Settings for `bialy run`, from factory.yaml's run section over RUN_DEFAULTS.
+    run: dict = field(default_factory=dict)
 
     def model(self, model_id):
         for m in self.models:
@@ -93,6 +110,9 @@ class Factory:
 
     def generators(self):
         return [m for m in self.models if "generator" in m.roles]
+
+    def provider_id(self, model):
+        return model.hosted["provider"] + "-" + model.id.replace(".", "-") if model.hosted else "vllm-" + model.id.replace(".", "-")
 
     def judge_for(self, generator_model):
         """The judge for a row: a model of another family than the one that drove it."""
@@ -147,11 +167,40 @@ def local_replicas():
     return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("replicas") or {}
 
 
+RUN_DEFAULTS = {
+    "lycaon_bin": "bin", "engine_dir": "engine", "lycaon_checkout": "../paintedwolf-code", "corpus_json": None,
+    "generators": [], "repos": [], "task_cap": None, "seed": 7, "workers": 16, "runners": None, "image": None,
+    "pass_name": "engine-off", "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
+    "spend_ceiling_usd": 0, "engine_launcher": None,
+    "train": {"recipes": ["B5", "B7G"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
+              "requirements": None, "torch_index": None},
+}
+
+
+def run_settings(raw):
+    """factory.yaml's run section over the defaults; paths resolve against the repository."""
+    settings = json.loads(json.dumps(RUN_DEFAULTS))
+    for key, value in (raw or {}).items():
+        if key not in settings:
+            raise ConfigError("run.%s is not a setting" % key)
+        if key == "train":
+            for k, v in (value or {}).items():
+                if k not in settings["train"]:
+                    raise ConfigError("run.train.%s is not a setting" % k)
+                settings["train"][k] = v
+        else:
+            settings[key] = value
+    for key in ("lycaon_bin", "engine_dir", "lycaon_checkout", "corpus_json", "engine_launcher"):
+        if settings.get(key):
+            settings[key] = str((ROOT / str(settings[key])).resolve()) if not Path(str(settings[key])).is_absolute() else settings[key]
+    return settings
+
+
 def load():
     factory = _read("factory.yaml")
     replicas = local_replicas()
     out = Factory(root=Path(factory["root"]), network=factory["network"], fleet=factory["fleet"],
-                  split=factory["split"], judge=factory["judge"])
+                  split=factory["split"], judge=factory["judge"], run=run_settings(factory.get("run")))
     # Docker gives every runner an address on the bridge; beyond the subnet, runs fail to start.
     hosts = ipaddress.ip_network(out.network["subnet"]).num_addresses - 3
     if int(out.fleet["runners"]) > hosts:
@@ -186,8 +235,12 @@ def load():
         workflows = raw.get("workflows") or {}
         if set(workflows) - set(WORKFLOWS) or sum(workflows.values()) > 1.0 or min(workflows.values(), default=0) < 0:
             raise ConfigError("archetype %s: workflows must be installed ones with shares summing to at most 1" % raw["id"])
+        timeout = str(raw.get("prompt_timeout", defaults["prompt_timeout"]))
+        workflow_timeout = str(defaults["workflow_prompt_timeout"])
+        minutes(timeout), minutes(workflow_timeout)
         out.archetypes.append(Archetype(id=raw["id"], brief=raw["brief"].strip(), per_repo=int(raw["per_repo"]),
-                                        workflows=workflows, follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"]))))
+                                        workflows=workflows, follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"])),
+                                        prompt_timeout=timeout, workflow_prompt_timeout=max(timeout, workflow_timeout, key=minutes)))
     names = [r.name for r in out.repos]
     if len(set(names)) != len(names):
         raise ConfigError("repository names must be unique")

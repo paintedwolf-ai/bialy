@@ -66,3 +66,54 @@ def test_collect_joins_rows_to_their_task_and_lists_what_it_drove(tmp_path):
     assert row["meta"] == {"repo": "flask", "task_status": "settled", "run": "run", "pass_name": "engine-off"}
     driven = json.loads((tmp_path / "run" / "tasks-driven.jsonl").read_text())
     assert driven["prompt"] == "p0" and driven["outcome"]["status"] == "settled" and driven["outcome"]["shard"] == "flask-000"
+
+
+def test_shards_are_cut_per_budget_sized_by_time_and_the_longest_start_first(factory, tmp_path):
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    per = factory.fleet["tasks_per_shard"]
+    rows = [{"id": "q%d" % i, "prompt": "p", "model": "qwen3.6-35b-a3b", "meta": {"repo": "flask", "prompt_timeout": "60m"}} for i in range(per)]
+    rows += [{"id": "w%d" % i, "prompt": "p", "model": "qwen3.6-35b-a3b", "meta": {"repo": "flask", "prompt_timeout": "180m"}} for i in range(per)]
+    (tasks / "flask.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    fleet.plan_shards(factory, tasks, tmp_path / "run", {})
+    shards = sorted((tmp_path / "run" / "shards").iterdir())
+    budgets = [json.loads((s / "repo.json").read_text())["prompt_timeout"] for s in shards]
+    sizes = [len((s / "tasks.jsonl").read_text().splitlines()) for s in shards]
+    kinds = [{json.loads(line)["id"][0] for line in (s / "tasks.jsonl").read_text().splitlines()} for s in shards]
+    long_size = max(1, min(per, factory.fleet["shard_minutes"] // 180))
+    assert all(k == {"w"} for k, b in zip(kinds, budgets, strict=True) if b == "180m")
+    assert {size for size, b in zip(sizes, budgets, strict=True) if b == "180m"} <= set(range(1, long_size + 1))
+    assert budgets.count("60m") == 1 and sizes[budgets.index("60m")] == per
+    order = sorted(shards, key=lambda s: (-fleet.shard_minutes(factory, s), s.name))
+    assert fleet.shard_minutes(factory, order[0]) == 180
+
+
+def test_an_engine_payload_missing_a_tool_is_refused(tmp_path):
+    for rel in fleet.ENGINE_PAYLOAD:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).touch()
+    fleet.check_engine(tmp_path)
+    (tmp_path / "browser/chrome-headless-shell").unlink()
+    try:
+        fleet.check_engine(tmp_path)
+    except ValueError as err:
+        assert "browser/chrome-headless-shell" in str(err)
+    else:
+        raise AssertionError("a payload without the browser was accepted")
+
+
+def test_hosted_generator_shard_files_name_the_provider_and_keep_the_key_out(factory, monkeypatch, tmp_path):
+    providers, policy, env, chosen = fleet.sidecar_files(factory, {"LYCAON_DECIDE_DISABLED": "1"}, 0)
+    assert chosen["glm-5.3-flash"] == "fireworks-glm-5-3-flash"
+    assert "api_key_env: FIREWORKS_API_KEY" in providers and "accounts/fireworks/models/glm-5p3-flash" in policy
+    assert "FIREWORKS_API_KEY=" not in providers and "FIREWORKS_API_KEY=" not in env
+    monkeypatch.setenv("FIREWORKS_API_KEY", "k")
+    import dataclasses, json
+    factory = dataclasses.replace(factory, root=tmp_path)
+    shard = tmp_path / "shards" / "x"
+    shard.mkdir(parents=True)
+    (shard / "repo.json").write_text(json.dumps({"repo": "flask", "commit": "c", "prompt_timeout": "5m"}))
+    monkeypatch.setattr(fleet, "mount_cache", lambda factory, work: "/cache")
+    monkeypatch.setattr(fleet, "release_work", lambda work: None)
+    _, _, args = fleet.container_args(factory, "run", shard, [])
+    assert "FIREWORKS_API_KEY" in args and "k" not in args

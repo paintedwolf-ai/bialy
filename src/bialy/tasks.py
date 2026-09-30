@@ -19,14 +19,15 @@ from pathlib import Path
 import yaml
 
 from .config import ROOT, ConfigError
-from .llm import Chat
 
 WORKFLOW_ROOT = ROOT / "runner" / "workflows"
 
 SYSTEM = """You write realistic requests that developers type to an AI coding assistant working in their repository.
 Write each request the way a busy engineer would: some terse, some detailed, some with pasted error output, some polite, some blunt.
 Never tell the assistant which tool or command to use to do the work unless a developer naturally would ("run the tests", "check git blame").
-Refer only to files, functions, and types that appear in the facts you are given.
+When reporting bugs, test failures, or asking for fixes, describe the observed symptom, error message, or failing test behavior rather than revealing the exact root-cause file and line number.
+When asking for new code or edits, developers often ask to follow existing patterns in the codebase or check official documentation for library conventions.
+Refer only to files, functions, and types that appear in the facts you are given. Do not invent non-existent file paths.
 Reply with one JSON object only: {"tasks": [{"prompt": "...", "follow_ups": ["..."]}]}. follow_ups is a list of zero to two later messages in the same conversation."""
 
 REPLY_SCHEMA = {
@@ -105,11 +106,6 @@ def group_prompts(prompts, threshold=0.6, bands=16, rows_per_band=4):
     return [find(i) for i in range(len(prompts))]
 
 
-def provider_id(model_id):
-    """The provider instance a runner's sidecar declares for a served model."""
-    return "vllm-" + model_id.replace(".", "-")
-
-
 def clean(text):
     """Model text as valid UTF-8: a lone surrogate from a broken token becomes "?"."""
     return text.encode("utf-8", "replace").decode("utf-8").strip()
@@ -137,7 +133,7 @@ def generate(factory, repos_dir, out_dir, seed=7, workers=48):
     raw_dir = out_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     generators = factory.generators()
-    chats = {m.id: Chat(factory.base_url(m), m.id) for m in generators}
+    chats = {m.id: factory.chats(m)[0] for m in generators}
     done = set()
     for path in raw_dir.glob("*.jsonl"):
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -227,9 +223,10 @@ def finalize(factory, repo, raw, files, out_path, seed):
         model = rng.choice(generators)
         task = {
             "id": tid, "prompt": t["prompt"], "follow_ups": [{"prompt": f} for f in follow],
-            "provider_id": provider_id(model), "model": model,
+            "provider_id": factory.provider_id(factory.model(model)), "model": model,
             "meta": {"task_id": tid, "repo": repo.name, "split": repo.split, "archetype": arch.id, "prompt_group": group_key,
-                     "lang": t["lang"], "author_model": t["author"], "workflow": pick},
+                     "lang": t["lang"], "author_model": t["author"], "workflow": pick,
+                     "prompt_timeout": arch.timeout(pick)},
         }
         if pick:
             task["workflow"] = pick
@@ -259,7 +256,7 @@ def rebase(factory, src_dir, out_dir, skip_ids):
             if t["id"] in skip_ids:
                 continue
             t["model"] = mapping[t["model"]]
-            t["provider_id"] = provider_id(t["model"])
+            t["provider_id"] = factory.provider_id(factory.model(t["model"]))
             kept.append(json.dumps(t, ensure_ascii=False))
         (out_dir / path.name).write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
         counts[path.stem] = len(kept)

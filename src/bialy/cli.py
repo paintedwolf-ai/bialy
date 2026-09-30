@@ -26,6 +26,9 @@
   bialy audit dataset --release DIR [--unanchored] [--rejudge N --endpoint URL --model ID]
   bialy audit heads --release DIR --dataset DIR --lycaon CHECKOUT --engine LAUNCHER
   bialy check
+  bialy run --run NAME [--until STAGE] [--from STAGE] [--dry-run] [--push] [--rebuild-image]
+            [--task-cap N] [--repo NAME ...] [--runners N] [--rows FILE]
+  bialy run-status --run NAME
 
 Runs live under <root>/runs/<name>; the root and everything else come from config/.
 """
@@ -37,7 +40,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import audit, coderank, config, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
+from . import audit, coderank, config, fleet, heads, hub, judge, provenance, release, repos, run as runmod, serve, skillreq, split, tasks
 
 PILOT_MOUNT = "/opt/decide"
 
@@ -160,10 +163,46 @@ def main(argv=None):
     p.add_argument("--model", help="the pinned judge the endpoint serves, as rows name it")
     p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
     sub.add_parser("check", help="validate the configuration and pins, offline")
+    p = sub.add_parser("run", help="drive a whole pass on this machine, resumable; uploads only with --push")
+    p.add_argument("--run", required=True)
+    p.add_argument("--until", choices=runmod.STAGES, help="stop after this stage")
+    p.add_argument("--from", dest="start", choices=runmod.STAGES, help="rerun from this stage, discarding later results")
+    p.add_argument("--dry-run", action="store_true", help="print the stages this invocation would run")
+    p.add_argument("--push", action="store_true", help="publish the dataset and heads at the end")
+    p.add_argument("--rebuild-image", action="store_true")
+    p.add_argument("--task-cap", type=int, help="at most this many tasks per archetype per repository")
+    p.add_argument("--repo", action="append", help="only these repositories (repeatable)")
+    p.add_argument("--runners", type=int)
+    p.add_argument("--rows", help="judge these rows instead of the run's collected rows")
+    p = sub.add_parser("run-status")
+    p.add_argument("--run", required=True)
     args = ap.parse_args(argv)
     factory = config.load()
     runs = factory.root / "runs"
 
+    if args.cmd in ("run", "run-status"):
+        overrides = {} if args.cmd == "run-status" else {"task_cap": args.task_cap, "repos": args.repo, "runners": args.runners, "rows": args.rows}
+        run = runmod.Run(factory=factory, name=args.run, settings=runmod.settings_for(factory, overrides),
+                         push=getattr(args, "push", False), rebuild_image=getattr(args, "rebuild_image", False),
+                         until=getattr(args, "until", None))
+        if args.cmd == "run-status":
+            state = run.load_state()
+            for name in runmod.STAGES:
+                s = state["stages"].get(name)
+                print("%-14s %s" % (name, "%s at %s (%ss)%s" % (s["status"], s["at"], s.get("seconds", "?"), "  " + s["error"] if s.get("error") else "") if s else "pending"))
+            return 0
+        if args.dry_run:
+            for name, action in runmod.plan(run, args.start, args.until):
+                print("%-14s %s" % (name, action))
+            return 0
+        try:
+            state = runmod.execute(run, args.start, args.until)
+        except runmod.RunError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        report = state["stages"].get("report", {}).get("outputs", {}).get("report")
+        print("run %s finished%s" % (args.run, "; report at " + report if report else ""))
+        return 0
     if args.cmd == "check":
         print("%d models, %d repositories (%d held out), %d archetypes; hub %s, %s" % (
             len(factory.models), len(factory.repos), sum(r.split == "holdout" for r in factory.repos), len(factory.archetypes),

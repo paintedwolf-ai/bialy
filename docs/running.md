@@ -213,31 +213,30 @@ read the skill's full procedure when scoring.
   This motivates expanded-catalog evaluation, not a claim that those live lookups
   failed or that free-text input itself must be reverted.
 
-### Target: one command on one machine
+### One command on one machine
 
-The next pass should run end to end unattended: start it on a desktop with a
+The next pass runs unattended: start `bialy run` on a desktop with a
 Fireworks key, come back in a day or two to an anchored dataset, a head set,
-and a report. Today the pass is fifteen hand-run stages, `bialy repos`,
-`tasks`, `serve`, `fleet plan/run/reap`, `collect`, `judge`, `split`,
-`release`, the `train-host` scripts on a GPU host, `release-heads`, `audit`,
-and `publish`, and the fleet and training stages assume rented hosts. What is
-missing:
+and a report. The orchestrator (`src/bialy/run.py`, README "One command")
+chains the sixteen stages with a resumable state file, runs the fleet as a
+few containers on the same machine, generates and judges through one hosted
+provider (GLM generates, Inkling judges), trains the turn-load and guide-load
+recipes on the local accelerator under a time budget, stops between stages
+when a spend ceiling is crossed, and ends ready to publish. Verified on a
+desktop through the task stage.
 
-- A `bialy run` orchestrator with a resumable state file: every stage
-  idempotent, skipped when its output is already anchored, restarted from the
-  failed stage after a crash or a provider outage.
-- A single-runner local path for the fleet: one container on the same
-  machine, no replicas, using the existing `fleet image`.
-- One provider for driving and judging, configured per role in
-  `config/factory.yaml`, with a spend ceiling, request rate, and retry policy
-  sized for a run that lasts days.
-- Training on the local machine: the `train-host` recipes as a stage, with a
-  CPU or Apple GPU path and a time budget, or an explicit opt-in to rent a
-  GPU for that stage only.
-- A pinned host checkout and engine build fetched by the run, so `audit heads`
-  and the probes need no manual setup.
-- A final report and no upload without `--push`, so the unattended run ends
-  ready to publish rather than published.
+Still by hand or missing:
+
+- The runner binaries (`bin/`, a linux/amd64 build of `lycaon` and
+  `lycaon-debug`) and the engine payload (`engine/`) are built elsewhere and
+  copied in; the run checks for them and stops if they are absent.
+- The unit-rank and code-rank recipes (E4 and code-rank) need the skill
+  request writer stage and the `decide-rerank` binary; `run.train.recipes`
+  lists only B5 and B7G until those are stages.
+- `evaluate` needs an engine launcher for this machine; without one the head
+  release ships without a results table.
+- The local-training torch index is a setting, not a detection: set
+  `run.train.torch_index` to the ROCm or CUDA wheel index for the machine.
 
 ### Future improvement: guide labels and the turn state
 

@@ -11,7 +11,7 @@ excerpts retain their upstream licenses. No proprietary model touches a label
 and no private session contributes a row.
 
 Training, calibration, and replay live beside the engine in the Painted Wolf
-Code repository (`scripts/decide/`), because a head must be encoded exactly
+Code repository (`scripts/bialy/`), because a head must be encoded exactly
 as the engine encodes it. This repository hands them rows in their format,
 `pw-decide-row/1`. Existing row, head, and release-anchor format identifiers
 remain unchanged so archived data and checksum-pinned weights stay readable.
@@ -81,6 +81,39 @@ the rank head ranks in production.
 
 ## Running it
 
+### One command
+
+`bialy run` drives a whole pass on one machine and can be left alone: it
+resumes where it stopped, uploads nothing unless asked, and ends with a
+report. It needs Docker, a provider key for the hosted models in
+`config/models.yaml`, the runner binaries and engine payload (below), and a
+Painted Wolf Code checkout for the trainer. Settings live in `factory.yaml`'s
+`run` section; the flags override them for one run.
+
+```bash
+export FIREWORKS_API_KEY=…
+bialy run --run pass3 --dry-run            # the stages this invocation would run
+bialy run --run pass3                      # repositories → tasks → runners → judge → split → release → train → heads → report
+bialy run --run pass3 --until tasks --task-cap 2 --repo cobra   # a small check of the generation stages
+bialy run-status --run pass3
+bialy run --run pass3 --from judge         # rerun from a stage after a fix
+bialy run --run pass3 --push               # the same pass, publishing at the end
+```
+
+Stages: `check`, `repos`, `corpus`, `tasks`, `image`, `warm`, `plan`,
+`drive`, `collect`, `judge`, `split`, `release`, `train`, `evaluate`,
+`release_heads`, `report`. Each writes under `<root>/runs/<name>/` and its
+status to `run.json` there; a failed stage stops the run with its error in
+`REPORT.md`, and the next invocation starts from it. `train` runs the recipes
+in `run.train.recipes` (turn-load and guide-load today) on this machine's
+accelerator, including a ROCm build of torch through `run.train.torch_index`;
+`evaluate` runs when `run.engine_launcher` names an engine that loads the
+trained heads here, and is otherwise reported as skipped. A spend ceiling in
+`run.spend_ceiling_usd` stops the run between stages once priced hosted
+models (`hosted.price_per_million`) have used it.
+
+### By hand
+
 On the GPU host (Ubuntu with NVIDIA drivers, Docker, and the CUDA toolkit
 that vLLM's kernels compile against):
 
@@ -105,7 +138,7 @@ bialy split --out split/ pass1.judged.jsonl
 bialy coderank harvest --decide-rerank bin/decide-rerank --out coderank/units
 bialy coderank pairs --units coderank/units --out coderank/pairs
 bialy coderank dumps --decide-rerank bin/decide-rerank --units coderank/units --pairs coderank/pairs --out coderank/dumps
-bialy release --split split/ --version v1 --code-ref v1 --out dist/v1 --schema <lycaon>/scripts/decide/row.schema.json \
+bialy release --split split/ --version v1 --code-ref v1 --out dist/v1 --schema <lycaon>/scripts/bialy/row.schema.json \
   --corpus corpus.json --agreement pass1.judged.jsonl.agreement.jsonl --driven runs/pass1/tasks-driven.jsonl \
   --coderank coderank/pairs --stage tasks/provenance.json --stage runs/pass1/provenance.json \
   --stage pass1.judged.jsonl.provenance.json --stage coderank/pairs/provenance.json --stage coderank/dumps/provenance.json

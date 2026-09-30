@@ -9,7 +9,8 @@ fleet:
   cpus: 2                          # per runner
   memory: 8g                       # per runner (a cap, not a reservation)
   pids: 2048                       # per runner
-  tasks_per_shard: 8               # tasks one runner drives, one after another, in one project
+  tasks_per_shard: 8               # most tasks one runner drives, one after another, in one project
+  shard_minutes: 480               # a shard holds only as many tasks as fit, at their prompt budget
   prompt_timeout: 60m              # per prompt; a turn that finishes slowly under load is still a label
   image: bialy-runner
 split:
@@ -17,3 +18,19 @@ split:
   seed: 7
 judge:
   second_judge_fraction: 0.10      # rows the other family also judges, for agreement
+
+# `bialy run`: one pass on this machine, resumable. Paths resolve against the
+# repository. The generators named here must be hosted or served on this host.
+run:
+  lycaon_bin: bin                  # lycaon + lycaon-debug built for the runner image (linux/amd64)
+  engine_dir: engine               # the engine payload the runner image carries
+  lycaon_checkout: ../paintedwolf-code   # the trainer, row schema, and replay scripts
+  corpus_json: null                # set when this host cannot run lycaon-debug itself
+  generators: [glm-5.3-flash]      # hosted generators for a run with one provider key
+  runners: 4                       # concurrent runner containers on this machine
+  spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
+  train:
+    recipes: [B5, B7G]             # turn-load and guide-load; see docs/running.md for the rest
+    device: auto                   # cuda (including ROCm builds of torch), mps, or cpu
+    max_hours: 24
+    torch_index: null              # a torch wheel index for this machine's accelerator
