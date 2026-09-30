@@ -1,0 +1,6 @@
+# Answers for a session nobody watches. The sidecar runs with never_ask, so
+# approvals should not arise; any that still do are rejected with guidance,
+# and a question the coordinator asks gets the standing answer below.
+approval_guidance: Nobody can approve this right now. Continue without it, and say what you could not do.
+answer: Use your best judgment and continue; nobody is available to answer questions for this task.
+max_interventions: 4

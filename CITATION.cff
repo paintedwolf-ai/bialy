@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: If you use this dataset, the decision heads, or the factory that made them, please cite it as below.
+title: "bialy: an open dataset factory for coding-agent tool selection"
+type: software
+authors:
+  - name: Painted Wolf LLC
+repository-code: https://github.com/paintedwolf-ai/bialy
+url: https://huggingface.co/paintedwolfcode
+license: Apache-2.0
+version: 0.1.0
+keywords:
+  - coding agents
+  - tool selection
+  - synthetic data
+  - open weights

@@ -1,0 +1,11 @@
+# More servers of a model's pinned weights, for one deployment. Copy to
+# replicas.local.yaml, which git ignores: hosts and key paths describe where a
+# run happened, not how to reproduce it, so they stay out of the repository and
+# out of release provenance, which records only how many replicas served.
+#
+# A replica runs on another host, bound to its loopback, and is reached through
+# an SSH tunnel onto this host's bridge. The tunnel key may forward to that one
+# address and nothing else (authorized_keys: restrict,port-forwarding,permitopen=...).
+replicas:
+  qwen3.6-35b-a3b:
+    - {port: 8003, ssh: root@gpu-2.example, key: /root/.ssh/bialy_tunnel, remote: "127.0.0.1:8000"}

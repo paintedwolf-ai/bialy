@@ -1,0 +1,32 @@
+name: Data problem
+description: A published dataset or heads release does not reproduce, or contains something wrong.
+labels: ["data"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when `bialy audit` fails on a release, a re-judge disagrees with its scores
+        far more than its card says, a row is mislabeled or leaks across splits, or a release carries
+        something that should not be published. If a row contains personal data or a secret, use the
+        private advisory flow instead and do not quote it here.
+  - type: dropdown
+    id: release
+    attributes:
+      label: Release
+      options: [dataset, heads]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version tag
+      description: The Hugging Face tag you fetched, for example v1.
+    validations:
+      required: true
+  - type: textarea
+    id: audit
+    attributes:
+      label: What you ran and what it reported
+      description: The bialy audit or verify command and its output, or the rows (by session and receipt) you believe are wrong.
+    validations:
+      required: true

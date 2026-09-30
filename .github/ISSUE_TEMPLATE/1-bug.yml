@@ -1,0 +1,39 @@
+name: Bug report
+description: The factory's code does something wrong and you can reproduce it.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This form is for reproducible defects in this repository's code.** A problem with a
+        published dataset or heads release uses the *Data problem* form; a vulnerability uses the
+        private advisory flow, never a public issue.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched existing issues and this is not already reported.
+          required: true
+        - label: Nothing I am pasting below contains secrets or credentials. This issue will be public forever.
+          required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse HEAD` of the checkout you ran."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact bialy commands, and the configuration you changed if any.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+    validations:
+      required: true

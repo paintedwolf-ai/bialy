@@ -1,0 +1,50 @@
+[
+  {
+    "case": "git-history",
+    "need": "I need to find which commit introduced this regression and understand why the code changed."
+  },
+  {
+    "case": "containers",
+    "need": "I need to build a container image, run the application in it, and inspect its service logs."
+  },
+  {
+    "case": "tests",
+    "need": "I need to choose and run checks that establish whether my code change works."
+  },
+  {
+    "case": "visual",
+    "need": "I need to inspect the rendered web UI at desktop and phone widths and check for layout regressions."
+  },
+  {
+    "case": "tls",
+    "need": "I need to diagnose why an HTTPS connection fails certificate verification."
+  },
+  {
+    "case": "data",
+    "need": "I need to join local CSV datasets and calculate grouped totals without loading all the records into the prompt."
+  },
+  {
+    "case": "profile",
+    "need": "I need to inspect a CPU profiler export and identify where the application spends its time."
+  },
+  {
+    "case": "dependencies",
+    "need": "I need to upgrade a library, adapt callers to its new API, and verify the change."
+  },
+  {
+    "case": "structural",
+    "need": "I need to change the same code pattern across many source files without touching comments or string literals."
+  },
+  {
+    "case": "mobile",
+    "need": "I need to build the Android application and exercise it on an emulator."
+  },
+  {
+    "case": "network",
+    "need": "I need to reach a development service on another machine and check whether it responds."
+  },
+  {
+    "case": "docs",
+    "need": "I need to expand the project setup documentation and verify the documented commands."
+  }
+]

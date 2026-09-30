@@ -1,0 +1,7 @@
+id: implement-dispatch
+version: 1.0.0
+extends: implement@1.0.0
+name: Implement with workers
+description: Implement, planning the work as a batch of parallel worker legs.
+controls:
+  default_execution_mode: orchestrate

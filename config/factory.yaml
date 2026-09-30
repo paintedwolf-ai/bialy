@@ -1,0 +1,19 @@
+# Where the factory runs and how hard it pushes the GPU host.
+root: /scratch/bialy               # everything the factory writes on the host
+network:
+  name: bialy                      # private Docker bridge; vLLM binds only to its gateway
+  subnet: 172.30.0.0/22
+  gateway: 172.30.0.1
+fleet:
+  runners: 320                     # concurrent runner containers; each takes a bridge address
+  cpus: 2                          # per runner
+  memory: 8g                       # per runner (a cap, not a reservation)
+  pids: 2048                       # per runner
+  tasks_per_shard: 8               # tasks one runner drives, one after another, in one project
+  prompt_timeout: 60m              # per prompt; a turn that finishes slowly under load is still a label
+  image: bialy-runner
+split:
+  val_fraction: 0.15
+  seed: 7
+judge:
+  second_judge_fraction: 0.10      # rows the other family also judges, for agreement
