@@ -2,11 +2,12 @@
 
 The open dataset factory for Bialy, the tuned local decision
 engine in Painted Wolf Code. It
-writes realistic developer requests for pinned public repositories, drives
+writes realistic developer requests, both for work in pinned public
+repositories and for new projects started from an empty directory, drives
 them through sandboxed Painted Wolf Code sidecars with open-weights models,
 exports every turn decision as a training row, has an open-weights judge
 score skill and tool cards, and splits the result into train, validation, and
-held-out repositories. Factory-authored material is Apache-2.0; repository
+held-out workspaces. Factory-authored material is Apache-2.0; repository
 excerpts retain their upstream licenses. No proprietary model touches a label
 and no private session contributes a row.
 
@@ -28,27 +29,32 @@ The native runtime in Painted Wolf Code derives from
 
 ## How a dataset is made
 
-1. **Pins.** `config/models.yaml` names the open-weights models, each pinned
-   by revision and recorded as reviewed for training use; `config/repos.yaml`
-   names the repositories, each pinned by commit, permissively licensed, and
-   marked `train` or `holdout`.
+1. **Pins and workspaces.** `config/models.yaml` names the open-weights
+   models, each pinned by revision and recorded as reviewed for training use.
+   Every task runs in a workspace, `train` or `holdout`: `config/repos.yaml`
+   names the repositories, each pinned by commit and permissively licensed,
+   and `config/stacks.yaml` names the greenfield stacks, toolchains whose
+   sessions start in an empty directory to build something new.
 2. **Serve.** `bialy serve start` runs one vLLM server per model on the
    GPU host, bound to a private Docker bridge. A model can have replicas on
    another host, reached through an SSH tunnel whose key can forward to that
    one server and nothing else.
-3. **Tasks.** `bialy tasks` has the generator models read facts about each
-   repository and write requests for each archetype (`config/archetypes.yaml`),
-   in several languages, some starting a workflow that plans worker legs.
-   Requests naming files the repository lacks are dropped; near-duplicates
-   share a prompt group. Workflow tasks carry both `workflow` and
+3. **Tasks.** `bialy tasks` has the generator models write requests for
+   each archetype (`config/archetypes.yaml`), in several languages, some
+   starting a workflow that plans worker legs. For a repository they read
+   facts about it, and requests naming files it lacks are dropped unless the
+   archetype asks for new files in directories it has; for a stack they get
+   the toolchain and a drawn project idea and scale, and write requests that
+   start a project. Near-duplicates share a prompt group. Workflow tasks carry both `workflow` and
    `workflow_version`, taken from the exact manifest under `runner/workflows/`
    that the runner image installs. This pins replay to the same workflow
    definition; rebasing tasks changes their driving models and preserves that
    identity. Rebuild task files from their raw batches when adopting a new
    workflow version.
 4. **Runners.** `bialy fleet run` drives the tasks through runner
-   containers: a fresh checkout at the pinned commit with its dependencies
-   installed, one sidecar with approval prompts off, and
+   containers: the task's workspace (a fresh checkout at the pinned commit
+   with its dependencies installed, or an empty directory with git
+   initialised), one sidecar with approval prompts off, and
    `lycaon-debug decide generate` driving each task in its own session. A
    runner can reach the model servers and the public web on ports 80 and 443,
    nothing else: private ranges and the cloud metadata service are dropped,
@@ -63,8 +69,8 @@ The native runtime in Painted Wolf Code derives from
    repository with the engine's own parsers, pairs each with requests (the
    unit's leading comment, and requests the generator models write), and
    builds the candidate sets the code-rank trainer reads.
-7. **Split and release.** `bialy split` holds out whole repositories and
-   splits the rest by prompt group; `bialy release` writes the splits, the
+7. **Split and release.** `bialy split` holds out whole workspaces, both
+   repositories and stacks, and splits the rest by prompt group; `bialy release` writes the splits, the
    code-rank pairs, a dataset card, provenance, and checksums. Nothing uploads.
 
 A release lists every task its sessions were driven with (`tasks.jsonl`,
@@ -95,8 +101,8 @@ override them for one run.
 export FIREWORKS_API_KEY=…
 bialy run --run pass3 --dry-run            # the stages this invocation would run
 bialy run --run pass3                      # build → tasks → drive → judge → pilot heads → drive again → release → heads → report
-bialy run --run pass3 --until tasks --task-cap 2 --repo cobra          # a small check of the generation stages
-bialy run --run pass3 --task-cap 1 --repo cobra --runners 1 --epochs 1   # the whole chain, small
+bialy run --run pass3 --until tasks --task-cap 2 --workspace cobra --workspace react-vite   # a small check of the generation stages
+bialy run --run pass3 --task-cap 1 --workspace cobra --runners 1 --epochs 1                 # the whole chain, small
 bialy run-status --run pass3
 bialy run --run pass3 --from judge         # rerun from a stage after a fix, discarding later results
 bialy run --run pass3 --redo image --rebuild-image   # rerun one stage, keeping the rest

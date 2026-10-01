@@ -3,24 +3,43 @@
 #
 # Mounts: /repos (read-only seed clones), /shard (this shard's tasks.jsonl and
 # sidecar.env; its outputs land here), /cache (this runner's view of the package cache).
-# Environment: REPO, COMMIT, PROMPT_TIMEOUT, and the model servers in
-# /shard/providers.local.yaml and /shard/model-policy.yaml.
+# Environment: WORKSPACE and WORKSPACE_KIND (repository or stack), COMMIT for a
+# repository, PROMPT_TIMEOUT, and the model servers in /shard/providers.local.yaml and
+# /shard/model-policy.yaml.
 set -euo pipefail
-: "${REPO:?}" "${COMMIT:?}" "${PROMPT_TIMEOUT:=20m}"
+: "${WORKSPACE:?}" "${WORKSPACE_KIND:?}" "${PROMPT_TIMEOUT:=20m}"
 out=/shard
+project=/work/"$WORKSPACE"
 exec >>"$out/runner.log" 2>&1
-echo "shard start $(date -u +%FT%TZ) repo=$REPO commit=$COMMIT"
+echo "shard start $(date -u +%FT%TZ) workspace=$WORKSPACE kind=$WORKSPACE_KIND commit=${COMMIT:-}"
 
-# A fresh checkout at the pinned commit; the seed clone is never written.
-git clone -q --no-hardlinks /repos/"$REPO" /work/"$REPO"
-git -C /work/"$REPO" checkout -q "$COMMIT"
-git -C /work/"$REPO" config user.email runner@paintedwolf.invalid
-git -C /work/"$REPO" config user.name "Painted Wolf runner"
-# Project workflows a task can start; git ignores them so the checkout stays clean.
-mkdir -p /work/"$REPO"/.paintedwolf
-cp -R /opt/bialy/workflows /work/"$REPO"/.paintedwolf/workflows
-echo /.paintedwolf/ >>/work/"$REPO"/.git/info/exclude
-/opt/bialy/setup-repo.sh /work/"$REPO"
+case "$WORKSPACE_KIND" in
+  repository)
+    # A fresh checkout at the pinned commit; the seed clone is never written.
+    : "${COMMIT:?}"
+    git clone -q --no-hardlinks /repos/"$WORKSPACE" "$project"
+    git -C "$project" checkout -q "$COMMIT"
+    ;;
+  stack)
+    # Greenfield: an empty directory with git initialised and nothing else, as a
+    # developer starting a new project has.
+    mkdir -p "$project"
+    git -C "$project" init -q -b main
+    ;;
+  *)
+    echo "unknown workspace kind $WORKSPACE_KIND"
+    exit 1
+    ;;
+esac
+git -C "$project" config user.email runner@paintedwolf.invalid
+git -C "$project" config user.name "Painted Wolf runner"
+# Project workflows a task can start; git ignores them so the workspace stays clean.
+mkdir -p "$project"/.paintedwolf
+cp -R /opt/bialy/workflows "$project"/.paintedwolf/workflows
+echo /.paintedwolf/ >>"$project"/.git/info/exclude
+if [ "$WORKSPACE_KIND" = repository ]; then
+  /opt/bialy/setup-repo.sh "$project"
+fi
 
 # The sidecar's own configuration: model servers, no approval prompts, and
 # whatever decision engine this pass runs with (sidecar.env).
@@ -66,7 +85,7 @@ for pair in "${hosted[@]}"; do
 done
 
 /opt/bialy/bin/lycaon-debug decide generate --addr http://127.0.0.1:8850 --token "$(cat /cfg/api.token)" \
-  --tasks "$out/tasks.jsonl" --project /work/"$REPO" --project-name "$REPO" --manifest "$out/manifest.jsonl" \
+  --tasks "$out/tasks.jsonl" --project "$project" --project-name "$WORKSPACE" --manifest "$out/manifest.jsonl" \
   --unattended /opt/bialy/unattended.yaml --timeout "$PROMPT_TIMEOUT" || echo "driver exited $?"
 stop_sidecar
 trap - EXIT

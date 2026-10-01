@@ -145,10 +145,11 @@ def test_check_refuses_a_ceiling_without_prices_and_a_missing_key(factory, tmp_p
 
 
 def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
-    run = make_run(factory, tmp_path, task_cap=1, generators=["glm-5.3-flash"], repos=["flask"])
+    run = make_run(factory, tmp_path, task_cap=1, generators=["glm-5.3-flash"], workspaces=["flask", "react-vite"])
     scaled = runmod.scaled_factory(run)
-    assert all(a.per_repo == 1 for a in scaled.archetypes)
-    assert [m.id for m in scaled.generators()] == ["glm-5.3-flash"] and [r.name for r in scaled.repos] == ["flask"]
+    assert all(a.per_workspace == 1 for a in scaled.archetypes)
+    assert [m.id for m in scaled.generators()] == ["glm-5.3-flash"]
+    assert [w.name for w in scaled.workspaces()] == ["flask", "react-vite"]
     assert scaled.judge_for("glm-5.3-flash").family != "glm"
     assert runmod.writer_model(run).id in {m.id for m in factory.models if "writer" in m.roles}
     # A model named as neither generator nor judge keeps its other roles.

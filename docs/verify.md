@@ -35,12 +35,13 @@ uv run bialy audit dataset --release dataset-v1
 - **Shape.** Every row matches `row.schema.json`, the schema the Painted Wolf
   Code commit named in `PROVENANCE.json` exported the rows with.
 - **Statistics.** Rows, hosts, languages, partial turns, prompt groups, and
-  repositories per split, compared with `PROVENANCE.json` and the card.
+  workspaces per split, compared with `PROVENANCE.json` and the card.
 - **No leakage.** No prompt group (a request and its near-duplicates) appears
-  in two splits, and every held-out repository appears only in the test
-  split, so validation and test numbers measure requests and codebases the
-  heads never saw. The held-out repositories come from the anchor, and
-  `PROVENANCE.json` must name the same ones.
+  in two splits, and every held-out workspace (a repository, or a greenfield
+  stack) appears only in the test split, so validation and test numbers
+  measure requests, codebases, and toolchains the heads never saw. The
+  held-out workspaces come from the anchor, and `PROVENANCE.json` must name
+  the same ones.
 - **Tasks.** Every row comes from a task `tasks.jsonl` lists, and the task
   outcomes match `PROVENANCE.json`; `tasks.jsonl` is what a rebuild drives.
 - **Judge agreement.** The quadratic-weighted kappa between the two judge
@@ -90,7 +91,7 @@ CPU and the GPU or Apple silicon the report was made on.
 ## What this cannot check
 
 Sessions are sampled, so no one can regenerate the exact rows. What a rebuild
-reproduces is the process: the same pinned models, repositories, tasks, and
+reproduces is the process: the same pinned models, workspaces, tasks, and
 engine build, with this repository at the tag the release names, as its
 `PROVENANCE.json` recipe records them.
 Steps 1–4 establish that the released rows are internally consistent, that

@@ -1,8 +1,19 @@
-# The kinds of request the task generator writes for each repository. Each
-# archetype tells the generating model what a developer would ask; it never
-# names a tool, because a request that says which tool to call teaches the
-# head to read tool names out of prose. `per_repo` is how many tasks each
-# repository gets, before deduplication.
+# The kinds of request the task generator writes. Each archetype tells the
+# generating model what a developer would ask; it never names a tool, because a
+# request that says which tool to call teaches the head to read tool names out
+# of prose.
+#
+# Every task runs in a workspace. `workspace: repository` (the default) writes
+# requests about one of the pinned repositories (repos.yaml), and its sessions
+# start in a fresh checkout. `workspace: stack` writes greenfield requests for
+# one of the stacks (stacks.yaml), and its sessions start in an empty
+# directory. `per_workspace` is how many tasks each workspace of that kind
+# gets, before deduplication.
+#
+# A repository request may only name files the repository has, which keeps
+# the generator from inventing code to talk about. `new_files: true` lets an
+# archetype's requests also name files to create, as long as each would sit
+# in a directory the repository has. Every file a stack request names is new.
 #
 # Prompt diversity, not session count, is what a head learns from, so every
 # archetype asks for varied phrasing, length, and specificity.
@@ -27,77 +38,117 @@ defaults:
 
 archetypes:
   - id: question
-    per_repo: 14
+    per_workspace: 14
     brief: A question about the project that can be answered by explaining, sometimes without opening any file (concepts, design choices, how to use the library).
   - id: explain_code
-    per_repo: 16
+    per_workspace: 16
     brief: Ask how a specific part of this codebase works, naming a real file, type, or function, so answering means reading code.
   - id: locate
-    per_repo: 20
+    per_workspace: 20
     brief: Ask the assistant to find something in the repository for the developer - where a function, type, or constant is defined, which file handles a behaviour, where a value or config option is set, every place something is used or called, which test covers a function, where an error message comes from, or which files match a description. Vary the phrasing from terse ("where's the retry logic?") to detailed.
   - id: bugfix
-    per_repo: 18
+    per_workspace: 18
     brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
     workflows: {implement-dispatch: 0.2}
     prompt_timeout: 150m
   - id: small_change
-    per_repo: 18
+    per_workspace: 18
+    new_files: true
     brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one. Often ask to follow existing patterns in sibling packages.
     prompt_timeout: 90m
   - id: refactor
-    per_repo: 8
+    per_workspace: 8
     brief: Ask for a structural refactor across several call sites, or a mechanical rewrite of a pattern throughout the code.
     workflows: {implement-dispatch: 0.4}
     prompt_timeout: 150m
   - id: run_and_verify
-    per_repo: 16
+    per_workspace: 16
     brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running or background processes.
     prompt_timeout: 120m
   - id: git_history
-    per_repo: 10
+    per_workspace: 10
     brief: Ask about history - who changed something and why, what changed between two points, show a commit, blame a line, list branches, or compare two refs.
   - id: commit
-    per_repo: 14
+    per_workspace: 14
     follow_up_rate: 0.6
     brief: Ask to commit work - commit my changes, split what is uncommitted into logical commits, write a good commit message, create or switch a branch, amend the last commit, revert a commit, stash or restore work in progress. Some requests should first ask for a small edit and then, as a follow-up, ask to commit it.
   - id: data_files
-    per_repo: 8
+    per_workspace: 8
     brief: Ask to inspect or edit structured files in the repo (JSON, YAML, TOML, package manifests, lockfiles), count or measure things, or extract an archive the task provides.
   - id: web
-    per_repo: 8
+    per_workspace: 8
     brief: Ask something that needs the live web - a CVE, an HTTP endpoint's live response, a status page, or a screenshot of a web page.
   - id: docs_online
-    per_repo: 14
+    per_workspace: 14
     brief: Ask to look something up in documentation online - how a dependency's API or config option works per its official docs, what a framework's guide recommends, the latest published version of a package, a migration guide between versions, or what an error message means according to the project that raises it.
     workflows: {implement-dispatch: 0.25}
   - id: dependencies
-    per_repo: 6
+    per_workspace: 6
     brief: Ask to upgrade, audit, or add a dependency, or to check what a dependency upgrade would break. Often ask to check documentation or migration guides for breaking changes in the new version.
     workflows: {implement-dispatch: 0.4}
     prompt_timeout: 90m
   - id: security
-    per_repo: 6
+    per_workspace: 6
     brief: Ask for a security review of part of the code, to scan the project for vulnerabilities or secrets, or to triage findings from a scan.
     workflows: {implement-dispatch: 0.3}
     prompt_timeout: 90m
   - id: multi_part
-    per_repo: 10
+    per_workspace: 10
     brief: Ask for a broad piece of work with several independent parts that a lead engineer would split among helpers. Mix the kinds of part - some need an external library's or standard's documentation looked up online, some need the codebase investigated to find how or where something is done, and some are changes to make (for example, check what the upstream docs recommend for X, find every place we do Y, then update Z and its tests).
     workflows: {implement-dispatch: 0.7}
     prompt_timeout: 150m
+  - id: new_module
+    per_workspace: 8
+    new_files: true
+    brief: Ask to add a new piece to this codebase that does not exist yet - a subcommand, a middleware, an adapter for another backend, a plugin, an example program, or a small module with its tests. Say where it should live and which existing code it should follow or plug into, or leave that to the assistant; the new files do not exist yet.
+    workflows: {implement-dispatch: 0.4}
+    prompt_timeout: 150m
+  - id: project_setup
+    per_workspace: 6
+    new_files: true
+    brief: Ask to add project infrastructure the repository lacks or to replace what it has - a CI workflow, a Dockerfile or dev container, a Makefile or task runner, a linter or formatter configuration, a pre-commit hook, a benchmark harness, or an issue template - and make it work with how the project builds and tests today.
+    prompt_timeout: 90m
   - id: research_change
-    per_repo: 8
+    per_workspace: 8
     brief: Ask to find out how something should be done from an external source - a library's official documentation, a migration guide, a specification or RFC, or a well-known project's approach - and then apply it in this codebase, checking where the code currently differs.
     workflows: {implement-dispatch: 0.7}
     prompt_timeout: 150m
   - id: docs
-    per_repo: 6
+    per_workspace: 6
+    new_files: true
     brief: Ask to update or write documentation, a changelog entry, a diagram of the architecture, or release notes.
     workflows: {implement-dispatch: 0.2}
   - id: chores
-    per_repo: 14
+    per_workspace: 14
     brief: Ask for a routine chore - format the code, run the linter and fix what it reports, bump the version number, add an entry to .gitignore, find all TODO comments, clean build artifacts, rename a file and update its references, show what changed today, count lines of code, or check that the project builds.
     prompt_timeout: 90m
   - id: ops
-    per_repo: 6
+    per_workspace: 6
     brief: Ask to generate a secret or token for local development, inspect or stop running processes, open an interactive terminal session, or wait for something to become ready.
+
+  # Greenfield: each stack's sessions start in an empty directory. The generator
+  # gets the stack and a drawn project idea and scale (stacks.yaml), not
+  # repository facts.
+  - id: new_project
+    workspace: stack
+    per_workspace: 24
+    follow_up_rate: 0.6
+    brief: Ask the assistant to build something new from scratch in this empty directory - a small application, game, tool, service, or site for the idea given. Some requests spell out the framework, the files, and the features; others only describe what it should do and leave every choice to the assistant. Follow-ups ask for the next feature, report that something did not work when they tried it, or ask for polish, tests, or a README.
+    workflows: {implement-dispatch: 0.3}
+    prompt_timeout: 150m
+  - id: prototype
+    workspace: stack
+    per_workspace: 10
+    brief: Ask for a quick spike or proof of concept before committing to an approach - try a library, an API, or an algorithm for the idea given, and report whether it works. Often ask the assistant to check the library's documentation for how it is meant to be used.
+    workflows: {implement-dispatch: 0.2}
+    prompt_timeout: 90m
+  - id: scaffold
+    workspace: stack
+    per_workspace: 8
+    brief: Ask to set up a project skeleton for the idea given before much code exists - the folder layout, package or build configuration, a test runner with one passing test, a linter or formatter, a .gitignore, a README with how to run it, and a git repository with a first commit.
+    prompt_timeout: 90m
+  - id: port
+    workspace: stack
+    per_workspace: 8
+    brief: Paste a short program, script, or function written in another language or framework (include its code in the request, ten to sixty lines) and ask to rewrite it as a working project on this stack, keeping its behaviour, and to show that it runs.
+    prompt_timeout: 120m

@@ -3,7 +3,7 @@ from bialy import cli
 
 def test_check_validates_the_configuration(capsys):
     assert cli.main(["check"]) == 0
-    assert "16 repositories (3 held out)" in capsys.readouterr().out
+    assert "16 repositories and 11 stacks (6 held out)" in capsys.readouterr().out
 
 
 def test_audit_from_the_command_line(factory, split_dir, corpus_file, tmp_path, capsys):

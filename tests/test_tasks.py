@@ -23,6 +23,69 @@ def test_requests_naming_missing_files_are_dropped():
     assert not tasks.mentioned_paths_exist("Fix the bug in src/flask/router.py", files)
 
 
+def test_new_files_may_be_named_in_directories_the_repository_has():
+    files = ["src/flask/ctx.py", "tests/test_config.py", "pyproject.toml"]
+    request = "Add src/flask/limits.py with a rate limiter, tests/test_limits.py, and a CHANGES.md entry."
+    assert not tasks.mentioned_paths_exist(request, files)
+    assert tasks.mentioned_paths_exist(request, files, new_files=True)
+    # A file to create still has to sit somewhere the repository has.
+    assert not tasks.mentioned_paths_exist("Put it in lib/vendor/limits.py", files, new_files=True)
+
+
+def test_what_a_request_may_name_follows_its_workspace(factory):
+    flask, stack = factory.workspace("flask"), factory.workspace("react-vite")
+    archetype = {a.id: a for a in factory.archetypes}
+    locate, small, new = archetype["locate"], archetype["small_change"], archetype["new_project"]
+    assert "Do not invent non-existent file paths" in tasks.system_prompt(flask, locate)
+    assert "may have any name, in a directory the facts show" in tasks.system_prompt(flask, small)
+    assert "starting in an empty directory" in tasks.system_prompt(stack, new) and "facts" not in tasks.system_prompt(stack, new)
+
+
+class Writer:
+    """A generator that answers every batch with two requests naming new files."""
+    calls = []
+
+    def __init__(self, base_url, model, **kw):
+        self.model = model
+
+    def json(self, system, user, **kw):
+        Writer.calls.append((system, user))
+        if len(Writer.calls) == 1:
+            return {"tasks": [{"prompt": "Make a snake game: index.html, src/main.ts, and src/snake.ts, arrow keys to steer.",
+                               "follow_ups": ["Add a score."]},
+                              {"prompt": "Build a tiny counter app in src/App.tsx with a reset button and tests for it.", "follow_ups": []}]}
+        return {"tasks": [{"prompt": "I want a budget tracker where I can log expenses by category and see monthly totals.",
+                           "follow_ups": []},
+                          {"prompt": "Set up a weather page that calls a public API and shows a five day forecast as cards.",
+                           "follow_ups": []}]}
+
+
+def test_a_stack_request_starts_from_an_idea_and_an_empty_directory(factory, tmp_path, monkeypatch):
+    import dataclasses
+
+    from bialy import llm
+
+    Writer.calls = []
+    monkeypatch.setattr(llm, "Chat", Writer)
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test")
+    stack = factory.workspace("react-vite")
+    new_project = next(dataclasses.replace(a, per_workspace=12) for a in factory.archetypes if a.id == "new_project")
+    scoped = dataclasses.replace(factory, repos=[], stacks=[stack], archetypes=[new_project])
+    counts = tasks.generate(scoped, tmp_path / "repos", tmp_path / "tasks", seed=7, workers=1)
+    assert counts == {"react-vite": 4}
+    for system, user in Writer.calls:
+        assert "empty directory" in system and "Do not invent" not in system
+        assert "Stack: react-vite - React with TypeScript" in user and "Project idea:" in user and "Scale:" in user
+    out = [json.loads(line) for line in (tmp_path / "tasks" / "react-vite.jsonl").read_text().splitlines()]
+    for task in out:
+        meta = task["meta"]
+        assert (meta["workspace"], meta["workspace_kind"], meta["split"], meta["archetype"]) == ("react-vite", "stack", "train", "new_project")
+        assert meta["seed"]["domain"] in factory.seeds["domains"] and meta["seed"]["scale"] in factory.seeds["scales"]
+        assert meta["prompt_group"].startswith("react-vite:")
+    # Requests naming the files they create are kept: the workspace is empty.
+    assert any("src/main.ts" in t["prompt"] for t in out)
+
+
 def test_model_text_is_valid_utf8():
     assert tasks.clean("  bad \ud800 text ") == "bad ? text"
 

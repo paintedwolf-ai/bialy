@@ -156,14 +156,14 @@ def roster(run):
 
 
 def scaled_factory(run):
-    """The factory with generation limited to the run's cap, roster, and repositories."""
+    """The factory with generation limited to the run's cap, roster, and workspaces."""
     f = run.factory
     cap = run.setting("task_cap")
     models = roster(run)
-    archetypes = [dataclasses.replace(a, per_repo=min(a.per_repo, int(cap))) if cap else a for a in f.archetypes]
-    repo_names = run.setting("repos") or []
-    repo_list = [r for r in f.repos if not repo_names or r.name in repo_names]
-    return dataclasses.replace(f, models=models, archetypes=archetypes, repos=repo_list)
+    archetypes = [dataclasses.replace(a, per_workspace=min(a.per_workspace, int(cap))) if cap else a for a in f.archetypes]
+    names = set(run.setting("workspaces") or [])
+    return dataclasses.replace(f, models=models, archetypes=archetypes, repos=[r for r in f.repos if not names or r.name in names],
+                               stacks=[s for s in f.stacks if not names or s.name in names])
 
 
 # ---- check --------------------------------------------------------------------
@@ -181,6 +181,9 @@ def stage_check(run):
         faults.append("no generator model is usable: name hosted generators in run.generators or serve one locally")
     used = list(generators)
     scaled = scaled_factory(run)
+    unknown = set(run.setting("workspaces") or []) - {w.name for w in f.workspaces()}
+    if unknown:
+        faults.append("run.workspaces names %s, which no repository or stack is" % ", ".join(sorted(unknown)))
     for name in run.setting("judges") or []:
         if not any(m.id == name and "judge" in m.roles for m in f.models):
             faults.append("run.judges names %s, which is not a judge in models.yaml" % name)
@@ -221,7 +224,7 @@ def stage_check(run):
     if faults:
         raise RunError("; ".join(faults))
     return {"generators": [m.id for m in generators], "judges": sorted({scaled.judge_for(m.id).id for m in generators}),
-            "writer": writer_model(run).id, "repositories": len(scaled_factory(run).repos),
+            "writer": writer_model(run).id, "repositories": len(scaled.repos), "stacks": len(scaled.stacks),
             "runners": int(run.setting("runners") or f.fleet["runners"]), "engine_on": run.engine_on, "recipes": recipes,
             "scanner": run.setting("scanner") if scanner else "none",
             "accelerator": training.accelerator(), "go": "host" if shutil.which("go") else build.GO_IMAGE,
@@ -295,7 +298,8 @@ def stage_skillreq(run):
         families = {k: min(v, 1) for k, v in families.items()}
     none_families = min(int(settings["none_families"]), 2) if cap else int(settings["none_families"])
     report = skillreq.write(scaled_factory(run), corpus(run), out, writer.id, families, none_families, int(settings["per_family"]),
-                            seed=int(run.setting("seed", 7)), workers=int(run.setting("workers", 16)), repos=tuple(run.setting("repos") or ()))
+                            seed=int(run.setting("seed", 7)), workers=int(run.setting("workers", 16)),
+                            workspaces=tuple(run.setting("workspaces") or ()))
     provenance.record(run.factory, str(out) + ".provenance.json", "skillreq", uses_engine=False, writer=writer.id, families=families,
                       none_families=none_families, per_family=int(settings["per_family"]), seed=int(run.setting("seed", 7)),
                       corpus_revision=corpus(run)["catalog_revision"])
@@ -311,7 +315,7 @@ def stage_warm(run):
     failed = {name: code for name, code in fleet.warm_cache(scaled, run.image("off")).items() if code}
     if failed:
         raise RunError("cache warm failed for %s; see %s" % (", ".join(sorted(failed)), run.factory.root / "warm"))
-    return {"warmed": len(scaled.repos)}
+    return {"warmed": len(scaled.repos) + sum(1 for s in scaled.stacks if s.warm)}
 
 
 def plan_pass(run, pass_name, pilot):
@@ -323,7 +327,7 @@ def plan_pass(run, pass_name, pilot):
         # of the pass are stale; containers still running are kept and adopted.
         _, planned = fleet.replan(scaled_factory(run), run.path("tasks"), run_dir, decide_env, fresh=True)
     else:
-        planned = fleet.plan_shards(scaled_factory(run), run.path("tasks"), run_dir, decide_env, run.setting("repos") or None)
+        planned = fleet.plan_shards(scaled_factory(run), run.path("tasks"), run_dir, decide_env, run.setting("workspaces") or None)
     tasks_record = run.path("tasks", "provenance.json")
     provenance.record(run.factory, run_dir / "provenance.json", "fleet", bin_dir=run.bin_dir, tasks=str(run.path("tasks")),
                       pilot=str(pilot) if pilot else None, decide_env=decide_env, image=provenance.image(run.image(pass_name)),
@@ -480,9 +484,11 @@ def stage_coderank(run):
     decide-rerank build and the writer model."""
     if "code-rank" not in (run.setting("train", {}).get("recipes") or []):
         return {"skipped": "code-rank is not in run.train.recipes"}
+    scaled = scaled_factory(run)
+    if not scaled.repos:
+        return {"skipped": "code-rank pairs come from repositories' code, and this run names none"}
     binary = str(run.host_bin_dir / "decide-rerank")
     base = run.path("coderank")
-    scaled = scaled_factory(run)
     per_repo = int(run.setting("coderank", {}).get("per_repo") or 40)
     if run.setting("task_cap"):
         per_repo = min(per_repo, 4)

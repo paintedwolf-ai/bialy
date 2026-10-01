@@ -1,7 +1,8 @@
 """Runner containers on the GPU host: build, isolate, shard, run, and reap.
 
-Each shard is one container: a fresh checkout of one repository, one sidecar,
-and a handful of tasks driven one after another. Containers sit on a private
+Each shard is one container: one workspace (a fresh checkout of a pinned
+repository, or an empty directory for a greenfield stack), one sidecar, and a
+handful of tasks driven one after another. Containers sit on a private
 bridge whose only routes are the factory's model servers on the bridge
 gateway and the public web on ports 80 and 443; private ranges and the cloud
 metadata service are dropped. Every container this factory starts is written
@@ -202,21 +203,21 @@ def sidecar_files(factory, decide_env, lane):
     return "\n".join(providers) + "\n", "\n".join(policy) + "\n", env + "\n", chosen, wire_model
 
 
-def plan_shards(factory, tasks_dir, run_dir, decide_env, repos=None, skip=()):
-    """Split every repository's tasks into shards under run_dir/shards. Shards named in
+def plan_shards(factory, tasks_dir, run_dir, decide_env, workspaces=None, skip=()):
+    """Split every workspace's tasks into shards under run_dir/shards. Shards named in
     `skip` keep their files, and still advance the replica lanes."""
     per = int(factory.fleet["tasks_per_shard"])
     count = planned = 0
-    for repo in factory.repos:
-        if repos and repo.name not in repos:
+    for workspace in factory.workspaces():
+        if workspaces and workspace.name not in workspaces:
             continue
-        path = Path(tasks_dir) / (repo.name + ".jsonl")
+        path = Path(tasks_dir) / (workspace.name + ".jsonl")
         if not path.exists():
             continue
         lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         # Task files are grouped by archetype; mixed shards take similar time. Shards are
         # cut per prompt budget, so a shard of quick tasks never waits on a long budget.
-        random.Random("shards:" + repo.name).shuffle(lines)
+        random.Random("shards:" + workspace.name).shuffle(lines)
         budget = lambda line: (json.loads(line).get("meta") or {}).get("prompt_timeout") or factory.fleet["prompt_timeout"]  # noqa: E731
         lines.sort(key=lambda line: -config.minutes(budget(line)))
         # A shard of long-budget tasks could otherwise run for most of a day; its size is
@@ -230,7 +231,7 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, repos=None, skip=()):
             groups.append(group)
             i += len(group)
         for index, group in enumerate(groups):
-            shard = run_dir / "shards" / ("%s-%03d" % (repo.name, index))
+            shard = run_dir / "shards" / ("%s-%03d" % (workspace.name, index))
             if shard.name in skip or (shard / "tasks.jsonl").exists():
                 count += 1
                 continue
@@ -249,8 +250,10 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, repos=None, skip=()):
             (shard / "model-policy.yaml").write_text(policy, encoding="utf-8")
             (shard / "sidecar.env").write_text(env, encoding="utf-8")
             timeout = max((budget(line) for line in group), key=config.minutes)
-            (shard / "repo.json").write_text(json.dumps({"repo": repo.name, "commit": repo.commit, "prompt_timeout": timeout}),
-                                             encoding="utf-8")
+            spec = {"workspace": workspace.name, "kind": workspace.kind, "prompt_timeout": timeout}
+            if workspace.kind == "repository":
+                spec["commit"] = workspace.commit
+            (shard / "workspace.json").write_text(json.dumps(spec), encoding="utf-8")
             count += 1
             planned += 1
     return planned
@@ -333,34 +336,37 @@ def release_work(work):
 
 
 def warm_cache(factory, image=None):
-    """Fill the shared package cache once per repository at its pinned commit, before any
-    session runs; runners then read it through their own overlay (mount_cache)."""
+    """Fill the shared package cache before any session runs: once per repository at its
+    pinned commit, and once per stack that names what its new projects commonly install.
+    Runners then read the cache through their own overlay (mount_cache)."""
     (factory.root / "cache").mkdir(parents=True, exist_ok=True)
     (factory.root / "warm").mkdir(parents=True, exist_ok=True)
+    scripts = {repo.name: ('git clone -q --no-hardlinks /repos/{r} /work/{r} && git -C /work/{r} checkout -q {c} && '
+                           '/opt/bialy/setup-repo.sh /work/{r}').format(r=repo.name, c=repo.commit) for repo in factory.repos}
+    scripts.update({stack.name: "mkdir -p /work/%s && cd /work/%s && %s" % (stack.name, stack.name, stack.warm)
+                    for stack in factory.stacks if stack.warm})
     procs = {}
-    for repo in factory.repos:
-        name = "bialy-warm-%s" % repo.name
-        script = ('git clone -q --no-hardlinks /repos/{r} /work/{r} && git -C /work/{r} checkout -q {c} && '
-                  '/opt/bialy/setup-repo.sh /work/{r}').format(r=repo.name, c=repo.commit)
-        args = ["docker", "run", "--rm", "--name", name, "--network", factory.network["name"], "--read-only",
+    for name, script in scripts.items():
+        args = ["docker", "run", "--rm", "--name", "bialy-warm-%s" % name, "--network", factory.network["name"], "--read-only",
                 "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
                 "--security-opt", "no-new-privileges", "--tmpfs", "/work:rw,exec,size=16g", "--tmpfs", "/shard:rw,size=1g",
                 "--tmpfs", "/tmp:rw,exec,size=4g", "--tmpfs", "/root:rw,exec,size=4g",
                 "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/cache" % (factory.root / "cache"),
                 "--entrypoint", "bash", image or factory.fleet["image"], "-c", script]
-        # Each repository's log stays under <root>/warm/ for a failed warm to be read.
-        procs[repo.name] = subprocess.Popen(args, stdout=open(factory.root / "warm" / (repo.name + ".log"), "w"), stderr=subprocess.STDOUT)
+        # Each workspace's log stays under <root>/warm/ for a failed warm to be read.
+        procs[name] = subprocess.Popen(args, stdout=open(factory.root / "warm" / (name + ".log"), "w"), stderr=subprocess.STDOUT)
     return {name: proc.wait() for name, proc in procs.items()}
 
 
 def shard_minutes(factory, shard):
-    repo = json.loads((shard / "repo.json").read_text(encoding="utf-8"))
-    return config.minutes(repo.get("prompt_timeout") or factory.fleet["prompt_timeout"])
+    """The per-prompt budget of a shard's tasks."""
+    spec = json.loads((shard / "workspace.json").read_text(encoding="utf-8"))
+    return config.minutes(spec.get("prompt_timeout") or factory.fleet["prompt_timeout"])
 
 
 def container_args(factory, run_name, shard, extra_mounts, image=None):
     fleet = factory.fleet
-    repo = json.loads((shard / "repo.json").read_text(encoding="utf-8"))
+    spec = json.loads((shard / "workspace.json").read_text(encoding="utf-8"))
     work = factory.root / "work" / run_name / shard.name
     if work.exists():
         release_work(work)
@@ -376,7 +382,10 @@ def container_args(factory, run_name, shard, extra_mounts, image=None):
             "--tmpfs", "/tmp:rw,exec,size=8g", "--tmpfs", "/root:rw,exec,size=4g", "--tmpfs", "/cfg:rw,size=4g",
             "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/shard" % shard, "-v", "%s:/work" % (work / "work"),
             "-v", "%s:/cache" % cache,
-            "-e", "REPO=" + repo["repo"], "-e", "COMMIT=" + repo["commit"], "-e", "PROMPT_TIMEOUT=" + (repo.get("prompt_timeout") or fleet["prompt_timeout"])]
+            "-e", "WORKSPACE=" + spec["workspace"], "-e", "WORKSPACE_KIND=" + spec["kind"],
+            "-e", "PROMPT_TIMEOUT=" + (spec.get("prompt_timeout") or fleet["prompt_timeout"])]
+    if spec["kind"] == "repository":
+        args += ["-e", "COMMIT=" + spec["commit"]]
     for host_path, container_path in extra_mounts:
         args += ["-v", "%s:%s:ro" % (host_path, container_path)]
     # Hosted generators: the key travels as an environment variable, never in a shard file.
@@ -401,16 +410,63 @@ def running_containers(run_dir):
     return out
 
 
-# A shard's tasks each get their prompt budget, and the runner spends time on setup,
-# exports, and the turns after a timed-out prompt, so a shard is overdue only well past
-# the sum of its budgets.
+# Every prompt of a shard's tasks (a request and each of its follow-ups) gets the
+# shard's budget, and the runner spends time on setup, exports, and the turns after a
+# timed-out prompt, so a shard is overdue only well past the sum of its prompts' budgets.
 OVERDUE_FACTOR, OVERDUE_GRACE_MINUTES = 1.5, 30
+
+
+def shard_tasks(shard):
+    return [json.loads(line) for line in (shard / "tasks.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def shard_deadline(factory, shard, started):
     """When a shard started at `started` (epoch seconds) counts as stuck."""
-    tasks = sum(1 for line in (shard / "tasks.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
-    return started + 60 * (OVERDUE_FACTOR * tasks * shard_minutes(factory, shard) + OVERDUE_GRACE_MINUTES)
+    prompts = sum(1 + len(task.get("follow_ups") or []) for task in shard_tasks(shard))
+    return started + 60 * (OVERDUE_FACTOR * prompts * shard_minutes(factory, shard) + OVERDUE_GRACE_MINUTES)
+
+
+def export_live(container, shard, out_name, roots=None):
+    """Export rows from a running container's live store into the shard: the sessions
+    rooted at `roots`, or every session the store holds. Returns whether it succeeded."""
+    args = ["docker", "exec", container, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", "/cfg/store.db",
+            "--out", "/shard/" + out_name]
+    if roots is not None:
+        (shard / (out_name + ".roots")).write_text("".join(r + "\n" for r in roots), encoding="utf-8")
+        args += ["--roots", "/shard/%s.roots" % out_name]
+    result = sh(*args, check=False)
+    if result.returncode != 0:
+        print("%s: export failed: %s" % (shard.name, result.stderr.strip()[:200]), flush=True)
+    return result.returncode == 0
+
+
+def keep_overdue(shard, exported):
+    """Keep what an overdue shard drove, as a timed-out session keeps the turns it
+    finished. `exported` holds every session of its store, exported before the container
+    was stopped. The runner drives a shard's tasks in order, so a session no manifest
+    entry names is the task after the last one listed, cut off mid-prompt; it is listed
+    as overdue with its session, and every task after it as overdue without one.
+    Returns whether any row was kept."""
+    manifest = shard / "manifest.jsonl"
+    entries = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()] if manifest.exists() else []
+    rows = [line for line in exported.read_text(encoding="utf-8").splitlines() if line.strip()] if exported.exists() else []
+    listed = {e["root_session"] for e in entries}
+    unlisted = sorted({json.loads(line)["root_session"] for line in rows} - listed)
+    finished = {e["task_id"] for e in entries}
+    pending = [t["id"] for t in shard_tasks(shard) if t["id"] not in finished]
+    if len(unlisted) > 1:
+        # More than one session no manifest entry names cannot be matched to its task.
+        rows = [line for line in rows if json.loads(line)["root_session"] in listed]
+        unlisted = []
+    if not rows:
+        return False
+    with open(manifest, "a", encoding="utf-8") as fh:
+        for n, task_id in enumerate(pending):
+            root = unlisted[0] if n == 0 and unlisted else None
+            fh.write(json.dumps({"task_id": task_id, "root_session": root, "status": "overdue"}) + "\n")
+    (shard / "rows.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    exported.unlink()
+    return True
 
 
 def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
@@ -418,7 +474,9 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
 
     A restarted run adopts its containers that are still running and waits for them; a
     ledger container that has stopped without rows is removed and its shard runs again.
-    A container still running past its shard's deadline is killed and counted failed.
+    A container still running past its shard's deadline is stopped, and the shard keeps
+    what it drove (keep_overdue): its finished sessions and the finished turns of the one
+    it cut off. A shard that drove nothing is counted failed and runs again.
 
     A provider that refuses the account (no credit, a revoked key) fails every session at
     its first call, and the driver records each such task as failed and moves on, so a
@@ -446,7 +504,7 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and s.name not in adopted),
                      key=lambda s: (-shard_minutes(factory, s), s.name))
     for shard in pending:
-        for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part"):
+        for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part", "overdue-rows.part"):
             (shard / stale).unlink(missing_ok=True)
     limit = int(runners or factory.fleet["runners"])
     done = failed = 0
@@ -462,10 +520,14 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
         for name, (proc, shard, work, deadline) in list(active.items()):
             code = proc.poll()
             if code is None and time.time() > deadline:
+                exported = export_live(name, shard, "overdue-rows.part")
+                sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
                 sh("docker", "kill", name, check=False)
-                ledger.append(event="overdue", container=name, shard=shard.name)
-                (shard / "rows.jsonl").unlink(missing_ok=True)
                 code = proc.wait()
+                kept = exported and keep_overdue(shard, shard / "overdue-rows.part")
+                ledger.append(event="overdue", container=name, shard=shard.name, kept=kept)
+                if not kept:
+                    (shard / "rows.jsonl").unlink(missing_ok=True)
             if code is None:
                 continue
             del active[name]
@@ -530,11 +592,7 @@ def salvage(run_dir, into):
         if not manifest.exists() or not manifest.read_text(encoding="utf-8").strip():
             continue
         roots = [json.loads(line)["root_session"] for line in manifest.read_text(encoding="utf-8").splitlines()]
-        (shard / "salvage-roots.txt").write_text("\n".join(roots) + "\n", encoding="utf-8")
-        result = sh("docker", "exec", name, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", "/cfg/store.db",
-                    "--roots", "/shard/salvage-roots.txt", "--out", "/shard/salvage-rows.jsonl", check=False)
-        if result.returncode != 0:
-            print("%s: export failed: %s" % (shard_name, result.stderr.strip()[:200]))
+        if not export_live(name, shard, "salvage-rows.jsonl", roots):
             continue
         dest = into / "shards" / shard_name
         dest.mkdir(parents=True, exist_ok=True)
@@ -578,9 +636,12 @@ def collect(run_dir, pass_name, tasks_dir):
                     raise ValueError("%s: task %s is not in %s" % (shard.name, entry["task_id"], tasks_dir))
                 stats["tasks"] += 1
                 stats["settled"] += entry["status"] == "settled"
-                # The task file, not the driver's echo, is what a row's grouping comes from.
-                meta[entry["root_session"]] = dict(specs[entry["task_id"]]["meta"], task_status=entry["status"], run=run_dir.name, pass_name=pass_name)
-                model_of[entry["root_session"]] = specs[entry["task_id"]]["model"]
+                # The task file, not the driver's echo, is what a row's grouping comes from. A task
+                # an overdue shard never reached has no session.
+                if entry["root_session"]:
+                    meta[entry["root_session"]] = dict(specs[entry["task_id"]]["meta"], task_status=entry["status"], run=run_dir.name,
+                                                       pass_name=pass_name)
+                    model_of[entry["root_session"]] = specs[entry["task_id"]]["model"]
                 driven.append(dict(specs[entry["task_id"]], outcome={"status": entry["status"], "run": run_dir.name, "shard": shard.name,
                                                                     "pass_name": pass_name, "root_session": entry["root_session"]}))
             for line in rows.read_text(encoding="utf-8").splitlines():

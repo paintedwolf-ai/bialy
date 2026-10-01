@@ -1,4 +1,4 @@
-"""The factory's configuration: models, repositories, archetypes, and the host.
+"""The factory's configuration: models, workspaces, archetypes, and the host.
 
 Everything is read from config/ and validated once, so a run never starts
 with an unpinned repository or a model whose outputs may not train an open
@@ -17,8 +17,11 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config"
 
 PERMISSIVE = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unlicense", "MIT OR Apache-2.0", "Unlicense OR MIT"}
-# Project workflows the runner image installs in every checkout.
+# Project workflows the runner image installs in every workspace.
 WORKFLOWS = ("implement-dispatch",)
+# Where a task's session runs: a checkout of a pinned public repository, or an
+# empty directory a request starts a new project in, for one stack.
+WORKSPACE_KINDS = ("repository", "stack")
 
 
 class ConfigError(ValueError):
@@ -50,6 +53,7 @@ class Model:
 
 @dataclass(frozen=True)
 class Repo:
+    """A public repository pinned by commit; its sessions start in a fresh checkout."""
     name: str
     url: str
     commit: str
@@ -57,17 +61,43 @@ class Repo:
     language: str
     split: str
     license_files: dict
+    kind = "repository"
+
+    def describe(self):
+        return "the %s repository (%s)" % (self.name, self.language)
+
+
+@dataclass(frozen=True)
+class Stack:
+    """A toolchain for greenfield work; its sessions start in an empty directory. `warm`
+    is a shell command run once in an empty directory to fill the package cache with
+    what new projects on this stack commonly install."""
+    name: str
+    language: str
+    brief: str
+    split: str
+    warm: str | None = None
+    kind = "stack"
+
+    def describe(self):
+        return "a new %s project (%s)" % (self.name, self.brief)
 
 
 @dataclass(frozen=True)
 class Archetype:
+    """A kind of request. `workspace` is the kind of workspace its tasks run in, and
+    `per_workspace` how many each such workspace gets. `new_files` lets a request in a
+    repository name files the repository does not have yet, as long as they would sit
+    in a directory it has; requests in a stack's empty directory always may."""
     id: str
     brief: str
-    per_repo: int
+    workspace: str
+    per_workspace: int
     workflows: dict
     follow_up_rate: float
     prompt_timeout: str
     workflow_prompt_timeout: str
+    new_files: bool = False
 
     def timeout(self, workflow):
         """The per-prompt budget for one of this archetype's tasks."""
@@ -91,6 +121,9 @@ class Factory:
     judge: dict
     models: list = field(default_factory=list)
     repos: list = field(default_factory=list)
+    stacks: list = field(default_factory=list)
+    # What a greenfield request is about: {"domains": [...], "scales": [...]}, drawn per batch.
+    seeds: dict = field(default_factory=dict)
     archetypes: list = field(default_factory=list)
     languages: dict = field(default_factory=dict)
     # Settings for `bialy run`, from factory.yaml's run section over RUN_DEFAULTS.
@@ -107,6 +140,23 @@ class Factory:
             if r.name == name:
                 return r
         raise ConfigError("unknown repository %r" % name)
+
+    def workspaces(self):
+        """Every workspace a task can run in: the repositories, then the stacks."""
+        return [*self.repos, *self.stacks]
+
+    def workspace(self, name):
+        for w in self.workspaces():
+            if w.name == name:
+                return w
+        raise ConfigError("unknown workspace %r" % name)
+
+    def archetypes_for(self, workspace):
+        return [a for a in self.archetypes if a.workspace == workspace.kind]
+
+    def holdout(self):
+        """The held-out workspaces: none of their rows trains a head."""
+        return {w.name for w in self.workspaces() if w.split == "holdout"}
 
     def generators(self):
         return [m for m in self.models if "generator" in m.roles]
@@ -168,7 +218,7 @@ def local_replicas():
 
 
 RUN_DEFAULTS = {
-    "lycaon_checkout": "../paintedwolf-code", "generators": [], "judges": [], "repos": [], "task_cap": None, "seed": 7, "workers": 16,
+    "lycaon_checkout": "../paintedwolf-code", "generators": [], "judges": [], "workspaces": [], "task_cap": None, "seed": 7, "workers": 16,
     "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
     "engine_on": {"enabled": True, "deadline_ms": 60000},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
@@ -233,6 +283,16 @@ def load():
         if not repo.license_files or any(len(str(d)) != 64 for d in repo.license_files.values()):
             raise ConfigError("repository %s: pin the sha256 of each license text a person read" % repo.name)
         out.repos.append(repo)
+    greenfield = _read("stacks.yaml")
+    for raw in greenfield["stacks"]:
+        stack = Stack(name=raw["name"], language=raw["language"], brief=" ".join(raw["brief"].split()), split=raw["split"],
+                      warm=" ".join(raw["warm"].split()) if raw.get("warm") else None)
+        if stack.split not in ("train", "holdout"):
+            raise ConfigError("stack %s: split is train or holdout" % stack.name)
+        out.stacks.append(stack)
+    out.seeds = {key: list(greenfield.get(key) or []) for key in ("domains", "scales")}
+    if out.stacks and not all(out.seeds.values()):
+        raise ConfigError("stacks.yaml needs domains and scales to seed greenfield requests")
     arch = _read("archetypes.yaml")
     defaults = arch["defaults"]
     out.languages = defaults["languages"]
@@ -240,13 +300,23 @@ def load():
         workflows = raw.get("workflows") or {}
         if set(workflows) - set(WORKFLOWS) or sum(workflows.values()) > 1.0 or min(workflows.values(), default=0) < 0:
             raise ConfigError("archetype %s: workflows must be installed ones with shares summing to at most 1" % raw["id"])
+        workspace = raw.get("workspace", "repository")
+        if workspace not in WORKSPACE_KINDS:
+            raise ConfigError("archetype %s: workspace is one of %s" % (raw["id"], ", ".join(WORKSPACE_KINDS)))
+        if workspace == "stack" and "new_files" in raw:
+            raise ConfigError("archetype %s: a stack's workspace starts empty, so every file is new; drop new_files" % raw["id"])
         timeout = str(raw.get("prompt_timeout", defaults["prompt_timeout"]))
         workflow_timeout = str(defaults["workflow_prompt_timeout"])
         minutes(timeout), minutes(workflow_timeout)
-        out.archetypes.append(Archetype(id=raw["id"], brief=raw["brief"].strip(), per_repo=int(raw["per_repo"]),
-                                        workflows=workflows, follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"])),
-                                        prompt_timeout=timeout, workflow_prompt_timeout=max(timeout, workflow_timeout, key=minutes)))
-    names = [r.name for r in out.repos]
+        out.archetypes.append(Archetype(id=raw["id"], brief=" ".join(raw["brief"].split()), workspace=workspace,
+                                        per_workspace=int(raw["per_workspace"]), workflows=workflows,
+                                        follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"])),
+                                        prompt_timeout=timeout, workflow_prompt_timeout=max(timeout, workflow_timeout, key=minutes),
+                                        new_files=workspace == "stack" or bool(raw.get("new_files", False))))
+    names = [w.name for w in out.workspaces()]
     if len(set(names)) != len(names):
-        raise ConfigError("repository names must be unique")
+        raise ConfigError("repository and stack names must be unique together: a workspace's name is its rows' identity")
+    for kind in WORKSPACE_KINDS:
+        if any(w.kind == kind for w in out.workspaces()) and not any(a.workspace == kind for a in out.archetypes):
+            raise ConfigError("no archetype writes requests for a %s workspace" % kind)
     return out

@@ -72,6 +72,41 @@ positives; read them with their support.
 - Throughput settled at 11–20 tasks a minute and fell as the quick tasks ran
   out; the pass took about six hours.
 
+## Greenfield work
+
+Pass 1 drove every session in a mature library at a pinned commit, and its
+task writer dropped any request naming a file the repository lacked, so no
+row shows a project being started. Real use starts projects often, and the
+heads showed the gap: on the shipped unit-rank head, "create the app files:
+index.html, style.css, and game.js" scored `write` under the request bar.
+
+Every task now runs in a workspace of one of two kinds. A repository is a
+pinned checkout, as before. A stack (`config/stacks.yaml`) is a toolchain, such
+as React with Vite, a Python CLI, or a Rust CLI, whose sessions start in an
+empty directory with git initialised. Stack archetypes (`new_project`,
+`prototype`, `scaffold`, `port`) are written from the toolchain and a drawn
+project idea and scale instead of repository facts, so a stack's tasks spread
+over many kinds of project; the idea and scale stay on each task as
+`meta.seed`. Repository archetypes that create code (`small_change`, `docs`,
+`new_module`, `project_setup`) may name files to create, as long as each would
+sit in a directory the repository has; the rest still name only files that
+exist.
+
+Stacks are held out like repositories: a held-out stack (Vue, Ruby, and Java
+with Maven) never contributes a training row, so its rows measure transfer to
+a toolchain the heads never saw a project started on. A stack may name a
+`warm` command that fills the package cache with what its new projects
+commonly install, which saves sessions minutes of downloads without limiting
+what they install.
+
+Greenfield sessions run long and reach for tools repository sessions rarely
+touch: scaffolding and package installs, documentation lookups, many new files,
+running a server or opening the page they built. Their budgets are 90 to 150
+minutes a prompt, and `new_project` continues with follow-ups most of the time,
+since a new project grows by the next feature. A session cut off by its budget
+keeps every turn it finished, and a shard past its deadline keeps its sessions
+(see the deadline note under One command on one machine).
+
 ## Engine payload
 
 The runners' engine root must carry bundled git, the headless browser, and
@@ -229,12 +264,16 @@ the anchors, opens the release pull request, and uploads.
 
 What a small run on an AMD desktop established, and what it did not:
 
-- The chain runs end to end at `--task-cap 1 --repo cobra --runners 1
+- The chain runs end to end at `--task-cap 1 --workspace cobra --runners 1
   --epochs 1`. Head quality at that size means nothing; the check is that
   every stage's inputs and outputs line up.
-- The runner containers hold a shard's deadline: a container still running
-  well past the sum of its tasks' budgets is killed and its shard counted
-  failed, so one hung session cannot stall the pass.
+- The runner containers hold a shard's deadline, so one hung session cannot
+  stall the pass: a container still running well past the sum of its prompts'
+  budgets (a request and each follow-up get the full budget) is stopped. The
+  shard keeps what it drove, as a timed-out session keeps the turns it
+  finished: the sessions it completed, and the finished turns of the one it cut
+  off, which the runner's task order identifies. The tasks it never reached
+  are listed as overdue, so the shard is not driven again.
 - The runners' engine is the CPU build, and turn decisions in a container take
   seconds, so the engine-on image raises the turn deadlines
   (`run.engine_on.deadline_ms`). The deadline decides only whether an answer

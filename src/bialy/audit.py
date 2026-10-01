@@ -6,7 +6,7 @@ Everything a release claims is recomputed from the files it ships:
 - every statistic on the card and in PROVENANCE.json (rows, hosts, languages,
   prompt groups per split) is recounted from the rows
 - the split does not leak: no prompt group on two sides, and every held-out
-  repository only in the test split
+  workspace (a repository or a greenfield stack) only in the test split
 - the judge agreement is recomputed from the second-judge sample it ships
   (`agreement.jsonl`)
 
@@ -43,7 +43,7 @@ def split_stats(rows):
         "languages": dict(sorted(collections.Counter(r["lang"] for r in rows).items())),
         "partial": sum(1 for r in rows if r["partial"]),
         "prompt_groups": len({r["meta"]["prompt_group"] for r in rows}),
-        "repositories": dict(sorted(collections.Counter(r["meta"]["repo"] for r in rows).items())),
+        "workspaces": dict(sorted(collections.Counter(r["meta"]["workspace"] for r in rows).items())),
     }
 
 
@@ -87,11 +87,11 @@ def check_task_meta(rows_by_split):
     for split, rows in rows_by_split.items():
         for n, row in enumerate(rows, 1):
             meta = row.get("meta") or {}
-            if not (meta.get("task_id") and meta.get("repo") and meta.get("prompt_group")):
-                raise AuditError("%s row %d has no task, repository, or prompt group" % (split, n))
+            if not (meta.get("task_id") and meta.get("workspace") and meta.get("prompt_group")):
+                raise AuditError("%s row %d has no task, workspace, or prompt group" % (split, n))
 
 
-def check_leakage(rows_by_split, holdout_repos):
+def check_leakage(rows_by_split, holdout):
     groups = {split: {r["meta"]["prompt_group"] for r in rows} for split, rows in rows_by_split.items()}
     names = list(groups)
     for i, a in enumerate(names):
@@ -100,22 +100,22 @@ def check_leakage(rows_by_split, holdout_repos):
             if shared:
                 raise AuditError("%d prompt groups appear in both %s and %s" % (len(shared), a, b))
     for split, rows in rows_by_split.items():
-        repos = {r["meta"]["repo"] for r in rows}
-        if split == "test" and repos - holdout_repos:
-            raise AuditError("test split has rows from training repositories: %s" % ", ".join(sorted(repos - holdout_repos)))
-        if split != "test" and repos & holdout_repos:
-            raise AuditError("%s split has rows from held-out repositories: %s" % (split, ", ".join(sorted(repos & holdout_repos))))
+        workspaces = {r["meta"]["workspace"] for r in rows}
+        if split == "test" and workspaces - holdout:
+            raise AuditError("test split has rows from training workspaces: %s" % ", ".join(sorted(workspaces - holdout)))
+        if split != "test" and workspaces & holdout:
+            raise AuditError("%s split has rows from held-out workspaces: %s" % (split, ", ".join(sorted(workspaces & holdout))))
 
 
 def dataset(release, anchored=True):
     """Every check a consumer can run offline; raises AuditError on the first failure.
 
-    The held-out repositories come from the release's anchor, which the release
+    The held-out workspaces come from the release's anchor, which the release
     cannot rewrite; the provenance must state the same set."""
     release = Path(release)
     check("dataset", release, anchored)
     provenance = json.loads((release / "PROVENANCE.json").read_text(encoding="utf-8"))
-    stated = {r["name"] for r in provenance["repositories"] if r["split"] == "holdout"}
+    stated = {w["name"] for w in provenance["repositories"] + provenance["stacks"] if w["split"] == "holdout"}
     holdout = set(anchor.match("dataset", release)["holdout"]) if anchored else stated
     if stated != holdout:
         raise AuditError("PROVENANCE.json holds out %s; the release's anchor holds out %s" % (sorted(stated), sorted(holdout)))
