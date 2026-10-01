@@ -162,3 +162,82 @@ def test_a_shard_is_overdue_well_past_the_sum_of_its_budgets(factory, tmp_path):
     (shard / "tasks.jsonl").write_text('{"id":1}\n{"id":2}\n')
     (shard / "repo.json").write_text(json.dumps({"repo": "flask", "commit": "c", "prompt_timeout": "20m"}))
     assert fleet.shard_deadline(factory, shard, 1000) == 1000 + 60 * (1.5 * 2 * 20 + 30)
+
+
+class Refusal(Exception):
+    status_code = 402
+
+
+def fake_chat(refuse):
+    class Completions:
+        def create(self, **kw):
+            if refuse:
+                raise Refusal("insufficient credit")
+
+    class Client:
+        chat = type("Chat", (), {"completions": Completions()})()
+
+        def with_options(self, **kw):
+            return self
+
+    class Chat:
+        def __init__(self, base_url, model_id, api_key="unused", hosted=False):
+            self.client, self.model = Client(), model_id
+
+    return Chat
+
+
+def test_an_account_refusal_names_the_generator(factory, monkeypatch):
+    monkeypatch.setattr(fleet.llm, "Chat", fake_chat(refuse=False))
+    assert fleet.account_refusal(factory) is None
+    monkeypatch.setattr(fleet.llm, "Chat", fake_chat(refuse=True))
+    assert fleet.account_refusal(factory) == "glm-5.3-flash: HTTP 402"
+
+
+def test_a_refused_account_stops_the_fleet_and_keeps_lost_shards_for_a_resume(factory, monkeypatch, tmp_path):
+    import dataclasses
+
+    factory = dataclasses.replace(factory, root=tmp_path)
+    run_dir = tmp_path / "runs" / "r"
+    # a drives cleanly; b loses a task to the refused account; c must never start.
+    outcomes = {"a": ["settled", "settled"], "b": ["settled", "failed"], "c": ["settled", "settled"]}
+    for name in outcomes:
+        shard = run_dir / "shards" / name
+        shard.mkdir(parents=True)
+        (shard / "tasks.jsonl").write_text('{"id":1}\n{"id":2}\n')
+        (shard / "repo.json").write_text(json.dumps({"repo": "flask", "commit": "c", "prompt_timeout": "5m"}))
+    started = []
+
+    class Container:
+        def __init__(self, args, **kw):
+            shard = run_dir / "shards" / args[0]
+            started.append(shard.name)
+            (shard / "manifest.jsonl").write_text("".join(json.dumps({"status": s}) + "\n" for s in outcomes[shard.name]))
+            (shard / "rows.jsonl").write_text("{}\n")
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(fleet, "running_containers", lambda run_dir: {})
+    monkeypatch.setattr(fleet, "container_args", lambda factory, run_name, shard, mounts, image: (shard.name, None, [shard.name]))
+    monkeypatch.setattr(fleet, "release_work", lambda work: None)
+    monkeypatch.setattr(fleet.subprocess, "Popen", Container)
+    monkeypatch.setattr(fleet.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fleet, "account_refusal", lambda factory: "glm-5.3-flash: HTTP 402")
+    with pytest.raises(fleet.AccountRefused, match="HTTP 402.*2 shards wait"):
+        fleet.run(factory, run_dir, runners=1)
+    assert started == ["a", "b"]
+    assert (run_dir / "shards" / "a" / "rows.jsonl").exists()
+    assert not (run_dir / "shards" / "b" / "rows.jsonl").exists()
+
+
+def test_a_task_failing_for_its_own_reasons_keeps_the_fleet_going(factory, monkeypatch, tmp_path):
+    shard = tmp_path / "s"
+    shard.mkdir()
+    (shard / "rows.jsonl").write_text("{}\n")
+    (shard / "manifest.jsonl").write_text('{"status": "settled"}\n{"status": "timeout"}\n')
+    assert not fleet.lost_tasks(shard)
+    (shard / "manifest.jsonl").write_text('{"status": "settled"}\n{"status": "failed"}\n')
+    assert fleet.lost_tasks(shard)
+    monkeypatch.setattr(fleet.llm, "Chat", fake_chat(refuse=False))
+    assert fleet.account_refusal(factory) is None

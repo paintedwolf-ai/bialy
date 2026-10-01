@@ -11,6 +11,11 @@ from .usage import record_usage
 FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
+def account_failure(exc):
+    """Account and authentication refusals (no credit, a revoked key) cannot improve by retrying."""
+    return getattr(exc, "status_code", None) in {401, 402, 403, 412}
+
+
 class Chat:
     def __init__(self, base_url, model_id, api_key="unused", hosted=False):
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=600, max_retries=8)

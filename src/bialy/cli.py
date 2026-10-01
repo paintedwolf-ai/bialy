@@ -306,7 +306,11 @@ def main(argv=None):
         if args.action == "run":
             fleet.ensure_network(factory)
             mounts = [(args.pilot, fleet.PILOT_MOUNT)] if args.pilot else []
-            done, failed = fleet.run(factory, run_dir, args.runners, mounts, args.image)
+            try:
+                done, failed = fleet.run(factory, run_dir, args.runners, mounts, args.image)
+            except fleet.AccountRefused as exc:
+                print("fleet stopped: %s" % exc, file=sys.stderr)
+                return 1
             print("shards done=%d failed=%d" % (done, failed))
             return 0 if not failed else 1
         if args.action == "salvage":

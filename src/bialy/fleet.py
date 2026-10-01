@@ -16,7 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import config
+from . import config, llm
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -418,7 +418,14 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
 
     A restarted run adopts its containers that are still running and waits for them; a
     ledger container that has stopped without rows is removed and its shard runs again.
-    A container still running past its shard's deadline is killed and counted failed."""
+    A container still running past its shard's deadline is killed and counted failed.
+
+    A provider that refuses the account (no credit, a revoked key) fails every session at
+    its first call, and the driver records each such task as failed and moves on, so a
+    shard would finish in seconds with rows that are never driven again. When a shard
+    loses tasks, the hosted generators are asked whether they still serve this account;
+    on a refusal no further shard starts, the shards still running finish, those that
+    lost tasks keep no rows, and AccountRefused stops the pass for a later resume."""
     run_dir = Path(run_dir)
     run_name = run_dir.name
     ledger = Ledger(run_dir)
@@ -443,8 +450,9 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
             (shard / stale).unlink(missing_ok=True)
     limit = int(runners or factory.fleet["runners"])
     done = failed = 0
-    while pending or active:
-        while pending and len(active) < limit:
+    refused = None
+    while (pending and not refused) or active:
+        while pending and len(active) < limit and not refused:
             shard = pending.pop(0)
             name, work, args = container_args(factory, run_name, shard, extra_mounts, image)
             ledger.append(event="start", container=name, shard=shard.name)
@@ -463,12 +471,49 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
             del active[name]
             ledger.append(event="exit", container=name, shard=shard.name, code=code)
             release_work(work)
+            if lost_tasks(shard):
+                refused = refused or account_refusal(factory)
+                if refused:
+                    (shard / "rows.jsonl").unlink(missing_ok=True)
             if (shard / "rows.jsonl").exists():
                 done += 1
             else:
                 failed += 1
             print("%s exit=%s done=%d failed=%d active=%d pending=%d" % (shard.name, code, done, failed, len(active), len(pending)), flush=True)
+    if refused:
+        waiting = sum(1 for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists())
+        raise AccountRefused("%s refused the account; %d shards wait to be driven, and running the pass again resumes them"
+                             % (refused, waiting))
     return done, failed
+
+
+class AccountRefused(RuntimeError):
+    """A hosted generator's provider refused the account mid-pass."""
+
+
+def lost_tasks(shard):
+    """Whether a finished shard lost tasks: it left no rows, or a task in its manifest failed."""
+    if not (shard / "rows.jsonl").exists():
+        return True
+    manifest = shard / "manifest.jsonl"
+    lines = manifest.read_text(encoding="utf-8").splitlines() if manifest.exists() else []
+    return any(json.loads(line).get("status") == "failed" for line in lines if line.strip())
+
+
+def account_refusal(factory):
+    """The first hosted generator whose provider refuses this account, as "model: HTTP n",
+    or None. One token per generator, asked only after a shard lost tasks."""
+    for m in factory.generators():
+        if not m.hosted:
+            continue
+        chat = llm.Chat(m.hosted["base_url"], m.hosted["model"], os.environ.get(m.hosted["key_env"], ""), hosted=True)
+        try:
+            chat.client.with_options(max_retries=2, timeout=60).chat.completions.create(
+                model=chat.model, max_tokens=1, messages=[{"role": "user", "content": "ok"}])
+        except Exception as exc:
+            if llm.account_failure(exc):
+                return "%s: HTTP %s" % (m.id, exc.status_code)
+    return None
 
 
 def salvage(run_dir, into):

@@ -21,6 +21,8 @@ import random
 import threading
 from pathlib import Path
 
+from .llm import account_failure
+
 SYSTEM = """You judge which skills and tools a coding assistant will need to carry out a developer's request.
 For each numbered candidate you are given its description. Score relevance from 0 to 4: 0 the request will never need it, 1 unlikely, 2 possible, 3 likely, 4 certain.
 A skill is a procedure the assistant reads before working; score it by whether following it would carry out this request, not by shared words.
@@ -73,11 +75,6 @@ def score_cards(chat, task, cards, seed, system=SYSTEM, available=()):
 
 
 UNITS = ("skills", "tools", "requests")
-
-
-def account_failure(exc):
-    """Account and authentication refusals cannot improve by retrying rows."""
-    return getattr(exc, "status_code", None) in {401, 402, 403, 412}
 
 
 def attempt(score, tries=3):
