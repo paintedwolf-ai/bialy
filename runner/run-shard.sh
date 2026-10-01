@@ -71,7 +71,10 @@ for _ in $(seq 1 120); do
 done
 # Hosted providers: the key goes from this container's environment into the sidecar's
 # credential store on its tmpfs, then out of the environment the sessions run in.
+# Providers can share one key, so the keys leave the environment only once every
+# provider has its own.
 IFS=, read -ra hosted <<<"${BIALY_HOSTED_PROVIDERS:-}"
+key_envs=()
 for pair in "${hosted[@]}"; do
   [ -n "$pair" ] || continue
   provider=${pair%%:*}
@@ -81,6 +84,9 @@ for pair in "${hosted[@]}"; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $(cat /cfg/api.token)" \
     -H 'Content-Type: application/json' --data-binary "$body" "http://127.0.0.1:8850/v1/providers/$provider/credential")
   [ "$code" = 200 ] || { echo "hosted provider $provider: storing the key returned HTTP $code"; exit 1; }
+  key_envs+=("$key_env")
+done
+for key_env in "${key_envs[@]}"; do
   unset "$key_env"
 done
 
