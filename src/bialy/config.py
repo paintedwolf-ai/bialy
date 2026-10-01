@@ -169,7 +169,7 @@ def local_replicas():
 
 RUN_DEFAULTS = {
     "lycaon_checkout": "../paintedwolf-code", "generators": [], "judges": [], "repos": [], "task_cap": None, "seed": 7, "workers": 16,
-    "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
+    "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
     "engine_on": {"enabled": True, "deadline_ms": 60000},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
     "coderank": {"per_repo": 40},
@@ -194,8 +194,10 @@ def run_settings(raw):
                 settings[key][k] = v
         else:
             settings[key] = value
-    checkout = str(settings["lycaon_checkout"])
-    settings["lycaon_checkout"] = checkout if Path(checkout).is_absolute() else str((ROOT / checkout).resolve())
+    for key in ("lycaon_checkout", "scanner_candidate"):
+        value = settings.get(key)
+        if value:
+            settings[key] = str(value) if Path(str(value)).is_absolute() else str((ROOT / str(value)).resolve())
     return settings
 
 

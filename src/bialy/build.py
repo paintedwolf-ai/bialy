@@ -155,16 +155,40 @@ def browser(lycaon_bin, engine_dir):
     return {"path": str(target / "chrome-headless-shell")}
 
 
-def payload(checkout, engine_dir, bin_dir, cache_root, scanner=True):
-    """The engine payload the runner image copies: schemas, git, the browser, and, unless
-    the run declines it, Opengrep."""
+CANDIDATE_FILES = ("opengrep", "provenance.json", "source-lock.json")
+
+
+def opengrep_candidate(candidate, engine_dir):
+    """A development Opengrep build (the downstream repository's artifact directory for
+    linux/amd64), copied as the payload's scanner; development sidecars accept it."""
+    candidate = Path(candidate)
+    missing = [f for f in CANDIDATE_FILES if not (candidate / f).is_file()]
+    if missing:
+        raise BuildError("scanner candidate %s lacks %s" % (candidate, ", ".join(missing)))
+    provenance = json.loads((candidate / "provenance.json").read_text(encoding="utf-8"))
+    if (provenance.get("platform"), provenance.get("architecture")) != ("linux", "x86_64"):
+        raise BuildError("scanner candidate %s was built for %s/%s, not the linux/x86_64 runners"
+                         % (candidate, provenance.get("platform"), provenance.get("architecture")))
+    target = Path(engine_dir) / "opengrep"
+    shutil.rmtree(target, ignore_errors=True)
+    shutil.copytree(candidate, target)
+    os.chmod(target / "opengrep", 0o755)
+    return {"candidate": str(candidate), "version": provenance.get("version"), "binary_sha256": provenance.get("binary_sha256")}
+
+
+def payload(checkout, engine_dir, bin_dir, cache_root, scanner=True, candidate=None):
+    """The engine payload the runner image copies: schemas, git, the browser, and the
+    scanner: the checkout's pinned Opengrep release, a development candidate, or none
+    when the run declines it."""
     checkout, engine_dir = Path(checkout).resolve(), Path(engine_dir).resolve()
     engine_dir.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(engine_dir / "schemas", ignore_errors=True)
     shutil.copytree(checkout / "schemas", engine_dir / "schemas")
     report = {"schemas": len(list((engine_dir / "schemas").glob("*")))}
     report["gitengine"] = gitengine(checkout, engine_dir / "gitengine")
-    if scanner:
+    if candidate:
+        report["opengrep"] = opengrep_candidate(candidate, engine_dir)
+    elif scanner:
         report["opengrep"] = opengrep(checkout, engine_dir, cache_root)
     else:
         shutil.rmtree(engine_dir / "opengrep", ignore_errors=True)

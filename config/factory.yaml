@@ -29,7 +29,8 @@ run:
   judges: []                       # judges to use; empty keeps every judge in models.yaml
   runners: 4                       # concurrent runner containers on this machine
   spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
-  scanner: pinned                  # the checkout's pinned Opengrep for linux/amd64; none runs without a scanner
+  scanner: pinned                  # the checkout's pinned Opengrep for linux/amd64; candidate takes a local build; none runs without one
+  scanner_candidate: null          # for candidate: the downstream repository's artifact directory (opengrep, provenance.json, source-lock.json)
   engine_on:
     enabled: true                  # a second pass with the pilot heads deciding
     deadline_ms: 60000             # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long

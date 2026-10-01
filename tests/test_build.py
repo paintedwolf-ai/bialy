@@ -97,3 +97,20 @@ def test_binaries_write_a_build_record(tmp_path, monkeypatch):
 def test_rust_channel_comes_from_the_checkouts_toolchain_file(tmp_path):
     (tmp_path / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.97.1"\nprofile = "minimal"\n')
     assert build.rust_channel(tmp_path) == "1.97.1" and build.rust_image(tmp_path) == "rust:1.97.1-bullseye"
+
+
+def test_a_scanner_candidate_is_checked_for_the_runner_platform(tmp_path):
+    candidate = tmp_path / "artifact"
+    candidate.mkdir()
+    (candidate / "opengrep").write_bytes(b"bin")
+    (candidate / "source-lock.json").write_text("{}")
+    (candidate / "provenance.json").write_text(json.dumps({"platform": "darwin", "architecture": "arm64", "version": "1.30.0+paintedwolf.37"}))
+    try:
+        build.opengrep_candidate(candidate, tmp_path / "engine")
+    except build.BuildError as exc:
+        assert "darwin/arm64" in str(exc)
+    else:
+        raise AssertionError("a macOS candidate was accepted for linux runners")
+    (candidate / "provenance.json").write_text(json.dumps({"platform": "linux", "architecture": "x86_64", "version": "1.30.0+paintedwolf.37", "binary_sha256": "ab"}))
+    report = build.opengrep_candidate(candidate, tmp_path / "engine")
+    assert report["version"] == "1.30.0+paintedwolf.37" and (tmp_path / "engine/opengrep/opengrep").exists()

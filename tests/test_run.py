@@ -43,6 +43,10 @@ def test_scanner_setting_is_pinned_or_none(factory, tmp_path):
     assert make_run(factory, tmp_path, scanner="none").scanner is False
     with pytest.raises(runmod.RunError, match="run.scanner"):
         runmod.run_scanner("maybe")
+    with pytest.raises(runmod.RunError, match="scanner_candidate"):
+        runmod.run_scanner("candidate")
+    run = make_run(factory, tmp_path, scanner="candidate", scanner_candidate=str(tmp_path / "artifact"))
+    assert run.scanner is True and run.scanner_candidate == str(tmp_path / "artifact")
 
 
 def test_flag_overrides_reach_nested_settings(factory):

@@ -95,7 +95,11 @@ class Run:
 
     @property
     def scanner(self):
-        return run_scanner(self.setting("scanner"))
+        return run_scanner(self.setting("scanner"), self.setting("scanner_candidate"))
+
+    @property
+    def scanner_candidate(self):
+        return self.setting("scanner_candidate") if self.setting("scanner") == "candidate" else None
 
     @property
     def engine_on(self):
@@ -105,10 +109,14 @@ class Run:
         return "%s:%s-%s" % (self.factory.fleet["image"], self.name, pass_name)
 
 
-def run_scanner(value):
-    if value not in ("pinned", "none"):
-        raise RunError("run.scanner must be pinned or none, not %r" % value)
-    return value == "pinned"
+def run_scanner(value, candidate=None):
+    """Whether the payload carries a scanner: the pinned release, a candidate build, or
+    none. Returns False for none and True otherwise."""
+    if value not in ("pinned", "none", "candidate"):
+        raise RunError("run.scanner must be pinned, candidate, or none, not %r" % value)
+    if value == "candidate" and not candidate:
+        raise RunError("run.scanner: candidate needs run.scanner_candidate, the artifact directory of a linux/amd64 build")
+    return value != "none"
 
 
 def stamp():
@@ -215,7 +223,7 @@ def stage_check(run):
     return {"generators": [m.id for m in generators], "judges": sorted({scaled.judge_for(m.id).id for m in generators}),
             "writer": writer_model(run).id, "repositories": len(scaled_factory(run).repos),
             "runners": int(run.setting("runners") or f.fleet["runners"]), "engine_on": run.engine_on, "recipes": recipes,
-            "scanner": "pinned" if scanner else "none",
+            "scanner": run.setting("scanner") if scanner else "none",
             "accelerator": training.accelerator(), "go": "host" if shutil.which("go") else build.GO_IMAGE,
             "cargo": "rustup" if shutil.which("rustup") else build.rust_image(run.checkout), "priced_models": priced,
             "spend_note": "provider usage inside runner sessions is not metered here; the provider's dashboard is the record for driving"}
@@ -238,7 +246,7 @@ def stage_build(run):
         goos = platform.system().lower()
         goarch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
         out["host"] = build.binaries(run.checkout, run.host_bin_dir, run.cache_root, goos, goarch)
-    out["payload"] = build.payload(run.checkout, run.engine_dir, run.bin_dir, run.cache_root, scanner=run.scanner)
+    out["payload"] = build.payload(run.checkout, run.engine_dir, run.bin_dir, run.cache_root, scanner=run.scanner, candidate=run.scanner_candidate)
     return out
 
 
