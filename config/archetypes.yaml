@@ -9,8 +9,17 @@
 #
 # `workflows` gives the share of an archetype's tasks that start a project
 # workflow with the request (runner/workflows/). implement-dispatch plans the
-# work as a batch of parallel worker legs, so those sessions always run workers.
+# work as a batch of parallel worker legs, so those sessions always run
+# workers, and the request's shape decides which: parts that need online
+# documentation go to a web researcher, parts that need the codebase
+# investigated to a repo researcher, and changes to an implementer.
+#
+# `prompt_timeout` bounds each prompt of a task; a task that starts a workflow
+# gets the workflow budget, since its coordinator waits on worker legs. The
+# budgets follow what pass 1 measured (docs/running.md).
 defaults:
+  prompt_timeout: 60m
+  workflow_prompt_timeout: 180m
   follow_up_rate: 0.3        # share of tasks that continue with one or two follow-ups
   languages:                 # share of tasks written in another language than English
     other_rate: 0.15
@@ -28,17 +37,22 @@ archetypes:
     brief: Ask the assistant to find something in the repository for the developer - where a function, type, or constant is defined, which file handles a behaviour, where a value or config option is set, every place something is used or called, which test covers a function, where an error message comes from, or which files match a description. Vary the phrasing from terse ("where's the retry logic?") to detailed.
   - id: bugfix
     per_repo: 18
-    brief: Report a plausible bug or failing behaviour in a real function and ask for a fix, sometimes with a stack trace or error message pasted in.
+    brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
+    workflows: {implement-dispatch: 0.2}
+    prompt_timeout: 150m
   - id: small_change
     per_repo: 18
-    brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one.
+    brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one. Often ask to follow existing patterns in sibling packages.
+    prompt_timeout: 90m
   - id: refactor
     per_repo: 8
     brief: Ask for a structural refactor across several call sites, or a mechanical rewrite of a pattern throughout the code.
     workflows: {implement-dispatch: 0.4}
+    prompt_timeout: 150m
   - id: run_and_verify
     per_repo: 16
     brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running or background processes.
+    prompt_timeout: 120m
   - id: git_history
     per_repo: 10
     brief: Ask about history - who changed something and why, what changed between two points, show a commit, blame a line, list branches, or compare two refs.
@@ -55,17 +69,27 @@ archetypes:
   - id: docs_online
     per_repo: 14
     brief: Ask to look something up in documentation online - how a dependency's API or config option works per its official docs, what a framework's guide recommends, the latest published version of a package, a migration guide between versions, or what an error message means according to the project that raises it.
+    workflows: {implement-dispatch: 0.25}
   - id: dependencies
     per_repo: 6
-    brief: Ask to upgrade, audit, or add a dependency, or to check what a dependency upgrade would break.
+    brief: Ask to upgrade, audit, or add a dependency, or to check what a dependency upgrade would break. Often ask to check documentation or migration guides for breaking changes in the new version.
+    workflows: {implement-dispatch: 0.4}
+    prompt_timeout: 90m
   - id: security
     per_repo: 6
     brief: Ask for a security review of part of the code, to scan the project for vulnerabilities or secrets, or to triage findings from a scan.
     workflows: {implement-dispatch: 0.3}
+    prompt_timeout: 90m
   - id: multi_part
     per_repo: 10
-    brief: Ask for a broad change with several independent parts (for example, update three modules and their tests, or investigate several areas in parallel) that a lead engineer would split among helpers.
+    brief: Ask for a broad piece of work with several independent parts that a lead engineer would split among helpers. Mix the kinds of part - some need an external library's or standard's documentation looked up online, some need the codebase investigated to find how or where something is done, and some are changes to make (for example, check what the upstream docs recommend for X, find every place we do Y, then update Z and its tests).
     workflows: {implement-dispatch: 0.7}
+    prompt_timeout: 150m
+  - id: research_change
+    per_repo: 8
+    brief: Ask to find out how something should be done from an external source - a library's official documentation, a migration guide, a specification or RFC, or a well-known project's approach - and then apply it in this codebase, checking where the code currently differs.
+    workflows: {implement-dispatch: 0.7}
+    prompt_timeout: 150m
   - id: docs
     per_repo: 6
     brief: Ask to update or write documentation, a changelog entry, a diagram of the architecture, or release notes.
@@ -73,6 +97,7 @@ archetypes:
   - id: chores
     per_repo: 14
     brief: Ask for a routine chore - format the code, run the linter and fix what it reports, bump the version number, add an entry to .gitignore, find all TODO comments, clean build artifacts, rename a file and update its references, show what changed today, count lines of code, or check that the project builds.
+    prompt_timeout: 90m
   - id: ops
     per_repo: 6
     brief: Ask to generate a secret or token for local development, inspect or stop running processes, open an interactive terminal session, or wait for something to become ready.

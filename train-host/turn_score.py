@@ -56,7 +56,7 @@ def main():
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--threshold', type=float, action='append')
     args = parser.parse_args()
-    sys.path.insert(0, str(Path(args.trainer) / 'scripts/decide'))
+    sys.path.insert(0, str(Path(args.trainer) / 'scripts/bialy'))
     from corpus import Corpus
     from rows import load, tool_targets
     corpus = Corpus.load(args.corpus)

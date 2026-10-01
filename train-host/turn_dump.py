@@ -13,7 +13,7 @@ from rank_eval import head_hashes
 def main():
     trainer, corpus_path, rows_path, launcher, output, *heads = sys.argv[1:]
     hashes = head_hashes(heads)
-    sys.path.insert(0, str(Path(trainer) / 'scripts/decide'))
+    sys.path.insert(0, str(Path(trainer) / 'scripts/bialy'))
     from corpus import Corpus
     from replay_eval import Engine
 

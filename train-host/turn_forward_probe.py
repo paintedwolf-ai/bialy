@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--model', default='convaiinnovations/laya-multilingual')
     parser.add_argument('--limit', type=int, default=6, help='complete rows to score; 0 scores every complete row')
     args = parser.parse_args()
-    sys.path.insert(0, str(Path(args.trainer) / 'scripts/decide'))
+    sys.path.insert(0, str(Path(args.trainer) / 'scripts/bialy'))
     import laya
     import torch
     from corpus import Corpus

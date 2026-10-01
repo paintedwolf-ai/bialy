@@ -11,9 +11,9 @@ printf '#!/bin/sh\nexport CUDA_VISIBLE_DEVICES=%s\nexec %s serve --model %s/ --m
   "$GPU" "$ENGINE" "$SNAP" "$TL" "$UR" > $L
 chmod +x $L; cd $R/lycaon
 case $KIND in
-  calibrate) python3 scripts/decide/calibrate.py --corpus $CORPUS --examples $ROWS --engine $L --tool-truth $TRUTH > $R/eval/$NAME.txt 2> $R/eval/$NAME.err ;;
-  replay) python3 scripts/decide/replay_eval.py --corpus $CORPUS --examples $ROWS --engine $L --holdout-pack painted-wolf/browser --tool-truth $TRUTH --json $R/eval/$NAME.json > /dev/null 2> $R/eval/$NAME.err ;;
+  calibrate) python3 scripts/bialy/calibrate.py --corpus $CORPUS --examples $ROWS --engine $L --tool-truth $TRUTH > $R/eval/$NAME.txt 2> $R/eval/$NAME.err ;;
+  replay) python3 scripts/bialy/replay_eval.py --corpus $CORPUS --examples $ROWS --engine $L --holdout-pack painted-wolf/browser --tool-truth $TRUTH --json $R/eval/$NAME.json > /dev/null 2> $R/eval/$NAME.err ;;
   rank-dump) python3 "$SCRIPT_DIR/rank_eval.py" dump --trainer "$R/lycaon" --corpus "$CORPUS" --rows "$ROWS" --engine "$L" --head-file "turn-load=$TL" --head-file "unit-rank=$UR" --out "$R/eval/$NAME.jsonl" > "$R/eval/$NAME.txt" 2> "$R/eval/$NAME.err" ;;
-  discovery) python3 scripts/decide/skill_discovery.py --corpus $CORPUS --examples $ROWS --engine $L --train $R/data/judged/train.jsonl ${ROSTER:+--roster $ROSTER} --json $R/eval/$NAME.json > $R/eval/$NAME.txt 2> $R/eval/$NAME.err ;;
+  discovery) python3 scripts/bialy/skill_discovery.py --corpus $CORPUS --examples $ROWS --engine $L --train $R/data/judged/train.jsonl ${ROSTER:+--roster $ROSTER} --json $R/eval/$NAME.json > $R/eval/$NAME.txt 2> $R/eval/$NAME.err ;;
   *) echo "unknown evaluation kind $KIND" >&2; exit 2 ;;
 esac

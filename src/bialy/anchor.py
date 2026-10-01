@@ -1,12 +1,5 @@
-"""Release anchors: what a release must be, recorded outside it.
-
-Everything inside a release folder (its checksums, card, and provenance) can be
-rewritten together by whoever holds a copy. An anchor is a file in this
-repository's releases/ directory, committed when the release is built, that
-records the digest of the release's SHA256SUMS and the repositories held out
-of training. `verify` and `audit` check a release against its anchor, so a
-mirrored or re-uploaded copy that was edited and re-checksummed fails, and the
-leakage check reads the holdout set from the anchor, not from the release.
+"""Committed release anchors pin checksums and training holdouts independently
+of the release folder, so rewriting that folder cannot change verification.
 """
 
 import json
@@ -27,8 +20,7 @@ def path(kind, version):
 
 
 def record(kind, version, release_dir, holdout=None):
-    """Write the anchor for a release just built. A version's anchor never changes: a
-    rebuild that differs needs a new version."""
+    """Each release version has one immutable checksum and holdout anchor."""
     doc = {"schema": SCHEMA, "kind": kind, "version": version, "sha256sums": file_sha256(Path(release_dir) / "SHA256SUMS")}
     if holdout is not None:
         doc["holdout"] = sorted(holdout)

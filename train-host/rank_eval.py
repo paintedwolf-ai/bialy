@@ -26,7 +26,7 @@ def paired(row, unit):
 
 
 def dump(args):
-    sys.path.insert(0, str(Path(args.trainer) / 'scripts/decide'))
+    sys.path.insert(0, str(Path(args.trainer) / 'scripts/bialy'))
     from corpus import Corpus
     from replay_eval import Engine
     corpus = Corpus.load(args.corpus)

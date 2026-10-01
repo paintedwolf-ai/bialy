@@ -1,6 +1,6 @@
 #!/bin/bash
 # setup.sh LYCAON_TAR DATA_DIR: prepare a GPU host to train and evaluate heads. The trainer
-# comes from a Painted Wolf Code checkout (scripts/decide at a recorded commit, as a tar),
+# comes from a Painted Wolf Code checkout (scripts/bialy at a recorded commit, as a tar),
 # the backbone from its pinned revision.
 set -euxo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
