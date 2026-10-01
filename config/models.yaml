@@ -4,10 +4,12 @@
 # (outputs_trainable). The configuration refuses any other model.
 #
 # A row is judged by a model from another family than the one that drove its
-# session, so no judge grades its own family's behaviour. The two flash models
-# drive, write, and judge: each judges the other's sessions, and judges a
-# sample of its own family's rows only as the second judge that measures
-# agreement. They run on a provider (hosted); the key comes from the
+# session, so no judge grades its own family's behaviour. GLM-5.3-Flash drives
+# the sessions and writes requests; DeepSeek-V4.1-Flash, of another family,
+# judges them, and GLM scores a sample again as the second judge that measures
+# agreement. DeepSeek does not drive: in the pass-3 pilot it reasoned for about
+# 2,700 output tokens a call against GLM's 225, several times GLM's cost per
+# session. They run on a provider (hosted); the key comes from the
 # environment variable hosted.key_env, and price_per_million (list prices,
 # uncached input) lets a run total what its metered stages spent.
 models:
@@ -52,7 +54,7 @@ models:
     license: MIT
     outputs_trainable: true
     reviewed: "2026-10-01: MIT license on the model card; no terms on outputs (Chris Beckman)"
-    roles: [generator, judge, writer]
+    roles: [judge]
     hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4p1-flash, key_env: FIREWORKS_API_KEY,
              price_per_million: {input: 0.30, output: 1.20}}
 

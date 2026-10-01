@@ -133,8 +133,18 @@ Orientation calls are command, command_output, and the git read tools. Choose
 drivers on a pilot of a few hundred tasks by these numbers, above all by how
 often a driver uses the tools it asks for: a need whose tools go unused is a
 positive the rank head never sees confirmed. GLM-5.3-Flash (MIT) is the
-strongest candidate; it serves from a provider, so runners would need egress
-to that one endpoint and the key kept out of the sandbox.
+strongest candidate and drives alone; it serves from a provider, so runners
+need egress to that one endpoint and the key kept out of the sandbox.
+
+Cost per session matters as much, and it follows how long a driver reasons.
+In the pass-3 pilot on Fireworks, over about 200 calls each, GLM-5.3-Flash
+wrote 225 output tokens a call with 73% of its input cached ($0.0023 a call);
+DeepSeek-V4.1-Flash wrote 2,720 with 89% cached ($0.0061 a call), and its
+sessions ran longer and made more calls, so its tasks cost five to eight times
+GLM's. Its reasoning can be turned off (`reasoning_effort: none`), but driving
+without it is unmeasured. DeepSeek judges instead, where the judge already
+asks for low reasoning effort. Weigh a second driving family for diversity
+against that cost on a pilot before adding one.
 
 ## Judging and snapshots
 
@@ -256,8 +266,8 @@ and a report. The orchestrator (`src/bialy/run.py`, README "One command")
 chains the stages with a resumable state file, builds the runner binaries,
 engine payload, and decision engine from the pinned checkout, runs the fleet
 as a few containers on the same machine, generates, writes, and judges
-through one hosted provider (GLM-5.3-Flash and DeepSeek-V4.1-Flash each
-drive and write, and judge the other's sessions),
+through one hosted provider (GLM-5.3-Flash drives and writes, and
+DeepSeek-V4.1-Flash, of another family, judges),
 drives a second pass with pilot heads deciding, trains all four recipes on the
 local accelerator under a time budget, evaluates through the host engine,
 stops between stages when a spend ceiling is crossed, and, asked to, commits

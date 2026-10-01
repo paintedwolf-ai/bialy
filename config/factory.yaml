@@ -25,7 +25,7 @@ judge:
 # and code-rank pairs.
 run:
   lycaon_checkout: ../paintedwolf-code   # built into the runner binaries, engine, and trainer the run uses
-  generators: [glm-5.3-flash, deepseek-v4.1-flash]   # hosted generators; tasks alternate between them
+  generators: [glm-5.3-flash]      # hosted generators; with several, tasks alternate between them
   judges: []                       # judges to use; empty keeps every judge in models.yaml
   runners: 4                       # concurrent runner containers on this machine
   spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
