@@ -105,7 +105,7 @@ def test_a_row_judged_by_another_model_is_refused(factory, tmp_path, monkeypatch
     monkeypatch.setattr(llm, "Chat", lambda base_url, model, **kw: FakeChat())
     monkeypatch.setenv("FIREWORKS_API_KEY", "test")
     rows = tmp_path / "rows.jsonl"
-    rows.write_text(json.dumps(row("flask", "g", 1, judge_model="inkling")) + "\n")
+    rows.write_text(json.dumps(row("flask", "g", 1, judge_model="deepseek-v4.1-flash")) + "\n")
     corpus = {"skills": [], "tools": [{"name": "edit", "card": "Edit a file"}]}
     report = judge.run(factory, corpus, rows, tmp_path / "out.jsonl", workers=1, second=0.0, units=("tools",))
     assert report["rows"] == 0 and report["failed"] == 1
@@ -156,7 +156,7 @@ def test_a_need_the_second_judge_fails_stays_unpaired(factory, tmp_path, monkeyp
 
     class Refuses(FakeChat):
         def json(self, system, user, **kw):
-            if self.model == "inkling" and user.startswith("Request:\nedit a file"):
+            if self.model == "deepseek-v4p1-flash" and user.startswith("Request:\nedit a file"):
                 raise ValueError("no JSON in reply: ''")
             return super().json(system, user, **kw)
 
@@ -182,7 +182,7 @@ def test_a_partial_pass_keeps_earlier_second_scores(factory, tmp_path, monkeypat
 
     monkeypatch.setattr(llm, "Chat", lambda base_url, model, **kw: FakeChat())
     monkeypatch.setenv("FIREWORKS_API_KEY", "test")
-    earlier = {"model": "inkling", "missed": ["need0"], "skills": {"commit": 2}, "tools": {"edit": 1}, "requests": [None]}
+    earlier = {"model": "deepseek-v4.1-flash", "missed": ["need0"], "skills": {"commit": 2}, "tools": {"edit": 1}, "requests": [None]}
     judged = dict(row("flask", "g", 1, skill_scores={"commit": 3}, second_scores=earlier), judge={"model": "glm-5.3-flash", "units": list(judge.UNITS)})
     rows = tmp_path / "rows.jsonl"
     rows.write_text(json.dumps(judged) + "\n")

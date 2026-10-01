@@ -256,7 +256,8 @@ and a report. The orchestrator (`src/bialy/run.py`, README "One command")
 chains the stages with a resumable state file, builds the runner binaries,
 engine payload, and decision engine from the pinned checkout, runs the fleet
 as a few containers on the same machine, generates, writes, and judges
-through one hosted provider (GLM generates and writes, Inkling judges),
+through one hosted provider (GLM-5.3-Flash and DeepSeek-V4.1-Flash each
+drive and write, and judge the other's sessions),
 drives a second pass with pilot heads deciding, trains all four recipes on the
 local accelerator under a time budget, evaluates through the host engine,
 stops between stages when a spend ceiling is crossed, and, asked to, commits

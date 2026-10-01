@@ -136,8 +136,12 @@ def test_spend_ceiling_stops_the_run(factory, tmp_path):
 
 
 def test_check_refuses_a_ceiling_without_prices_and_a_missing_key(factory, tmp_path, monkeypatch):
+    import dataclasses
+
     monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
-    run = make_run(factory, tmp_path, spend_ceiling_usd=5, generators=["glm-5.3-flash"], lycaon_checkout=str(tmp_path))
+    unpriced = dataclasses.replace(factory, models=[
+        dataclasses.replace(m, hosted={k: v for k, v in m.hosted.items() if k != "price_per_million"}) if m.hosted else m for m in factory.models])
+    run = make_run(unpriced, tmp_path, spend_ceiling_usd=5, generators=["glm-5.3-flash"], lycaon_checkout=str(tmp_path))
     with pytest.raises(runmod.RunError) as exc:
         runmod.stage_check(run)
     message = str(exc.value)
@@ -154,9 +158,9 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
     assert runmod.writer_model(run).id in {m.id for m in factory.models if "writer" in m.roles}
     # A model named as neither generator nor judge keeps its other roles.
     assert "writer" in scaled.model("glm-5.3-flash").roles and "qwen3.6-35b-a3b" not in {m.id for m in scaled.models}
-    run = make_run(factory, tmp_path, generators=["glm-5.3-flash"], judges=["inkling"])
+    run = make_run(factory, tmp_path, generators=["glm-5.3-flash"], judges=["deepseek-v4.1-flash"])
     scaled = runmod.scaled_factory(run)
-    assert [m.id for m in scaled.models if "judge" in m.roles] == ["inkling"]
+    assert [m.id for m in scaled.models if "judge" in m.roles] == ["deepseek-v4.1-flash"]
 
 
 def test_an_early_stop_still_leaves_a_current_report(factory, tmp_path):
