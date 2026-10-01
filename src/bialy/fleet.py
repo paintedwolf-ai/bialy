@@ -31,19 +31,23 @@ def sh(*args, check=True, **kw):
 
 DECISION_SECTIONS = ("turn", "request", "lookup", "tool_event")
 # The sidecar embeds its configuration; LYCAON_CONFIG_ROOT (set in the image to the
-# engine's overlay/) puts a file at this path in front of the embedded copy.
+# engine's overlay/) replaces the whole embedded tree with the config/ under it, so the
+# overlay carries the complete tree of the commit the binaries were built from.
 DECISIONS = Path("overlay/config/packs/painted-wolf/platform/host/decisions.yaml")
 
 
-def raise_decision_deadlines(source, engine_dir, deadline_ms):
-    """Stage `source`, the decisions.yaml of the commit the binaries were built from,
-    with a longer deadline on every turn decision.
+def raise_decision_deadlines(config_dir, engine_dir, deadline_ms):
+    """Stage `config_dir`, the lycaon/config tree of the commit the binaries were built
+    from, with a longer deadline on every turn decision.
 
     A runner's CPU answers a turn in seconds, and past the deadline the engine abstains.
     The deadline decides only whether an answer arrives, never what it is, so an
     engine-on pass raises it."""
+    overlay = Path(engine_dir) / "overlay" / "config"
+    shutil.rmtree(overlay, ignore_errors=True)
+    shutil.copytree(config_dir, overlay, symlinks=False)
     path = Path(engine_dir) / DECISIONS
-    lines = Path(source).read_text(encoding="utf-8").splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     section = None
     for i, line in enumerate(lines):
         if line and not line.startswith((" ", "#")) and line.endswith(":"):
@@ -56,21 +60,39 @@ def raise_decision_deadlines(source, engine_dir, deadline_ms):
 
 # What the sidecar needs from its engine root to offer the tools it advertises. A run
 # without them still produces rows, from sessions whose git, browser, and scanner tools
-# fail, so the image refuses to build instead.
-ENGINE_PAYLOAD = ("schemas", "gitengine/bin/git", "browser/chrome-headless-shell",
-                  "opengrep/opengrep", "opengrep/provenance.json", "opengrep/source-lock.json")
+# fail, so the image refuses to build instead. The scanner alone can be declined
+# explicitly, for a platform the checkout pins no Opengrep release for; the sidecar
+# then reports the scanner unavailable, which its scan tools surface as such.
+ENGINE_PAYLOAD = ("schemas", "gitengine/bin/git", "browser/chrome-headless-shell")
+SCANNER_PAYLOAD = ("opengrep/opengrep", "opengrep/provenance.json", "opengrep/source-lock.json")
 
 
-def check_engine(engine_dir):
-    missing = [rel for rel in ENGINE_PAYLOAD if not (Path(engine_dir) / rel).exists()]
+PILOT_MOUNT = "/opt/decide"
+
+
+def pilot_env(pilot):
+    """The sidecar's decision engine for a pass: off, or the engine and heads in `pilot`
+    (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT."""
+    if not pilot:
+        return {"LYCAON_DECIDE_DISABLED": "1"}
+    heads = sorted(p.stem for p in (Path(pilot) / "heads").glob("*.safetensors"))
+    if not heads:
+        raise ValueError("pilot %s carries no heads" % pilot)
+    return {"LYCAON_DECIDE_BINARY": PILOT_MOUNT + "/bialy", "LYCAON_DECIDE_MODEL_DIR": PILOT_MOUNT + "/model",
+            "LYCAON_DECIDE_HEADS": ",".join("%s=%s/heads/%s.safetensors" % (h, PILOT_MOUNT, h) for h in heads)}
+
+
+def check_engine(engine_dir, scanner=True):
+    wanted = ENGINE_PAYLOAD + (SCANNER_PAYLOAD if scanner else ())
+    missing = [rel for rel in wanted if not (Path(engine_dir) / rel).exists()]
     if missing:
         raise ValueError("engine payload %s lacks %s; see README (engine/)" % (engine_dir, ", ".join(missing)))
 
 
-def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, decisions=None):
+def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, config_dir=None, scanner=True):
     """Assemble the build context from runner/, the pinned lycaon binaries, and the
     engine payload, then build the runner image."""
-    check_engine(engine_dir)
+    check_engine(engine_dir, scanner)
     ctx = factory.root / "build" / "runner"
     if ctx.exists():
         shutil.rmtree(ctx)
@@ -80,7 +102,7 @@ def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, dec
         shutil.copy2(Path(lycaon_bin) / name, ctx / "bin" / name)
     shutil.copytree(engine_dir, ctx / "engine", symlinks=False)
     if deadline_ms:
-        raise_decision_deadlines(decisions, ctx / "engine", deadline_ms)
+        raise_decision_deadlines(config_dir, ctx / "engine", deadline_ms)
     shutil.copy2(CONFIG / "unattended.yaml", ctx / "unattended.yaml")
     subprocess.run(["docker", "build", "-q", "-t", tag or factory.fleet["image"], str(ctx)], check=True)
 
@@ -171,8 +193,13 @@ def sidecar_files(factory, decide_env, lane):
               "lite: {provider_id: %s, model: %s}" % (chosen[first.id], wire_model[first.id]),
               "agent_pool:", "  selection: random", "  models:"]
     policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], wire_model[m.id]) for m in gens]
-    env = "\n".join("%s=%s" % kv for kv in sorted(decide_env.items()))
-    return "\n".join(providers) + "\n", "\n".join(policy) + "\n", env + "\n", chosen
+    # The sidecar takes provider keys only from its own credential store, so the shard
+    # names which provider gets which environment variable's key; run-shard.sh stores it
+    # through the API after the sidecar starts. The names travel, never the keys.
+    hosted = ",".join("%s:%s" % (chosen[m.id], m.hosted["key_env"]) for m in gens if m.hosted)
+    lines = dict(decide_env, BIALY_HOSTED_PROVIDERS=hosted) if hosted else dict(decide_env)
+    env = "\n".join("%s=%s" % kv for kv in sorted(lines.items()))
+    return "\n".join(providers) + "\n", "\n".join(policy) + "\n", env + "\n", chosen, wire_model
 
 
 def plan_shards(factory, tasks_dir, run_dir, decide_env, repos=None, skip=()):
@@ -208,11 +235,14 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, repos=None, skip=()):
                 count += 1
                 continue
             shard.mkdir(parents=True, exist_ok=True)
-            providers, policy, env, chosen = sidecar_files(factory, decide_env, count)
+            providers, policy, env, chosen, wire_model = sidecar_files(factory, decide_env, count)
             shard_tasks = []
             for line in group:
                 task = json.loads(line)
+                # The driver names the model as the sidecar's provider knows it; the task
+                # file keeps the factory id, which collect restores on the rows.
                 task["provider_id"] = chosen[task["model"]]
+                task["model"] = wire_model[task["model"]]
                 shard_tasks.append(json.dumps(task, ensure_ascii=False))
             (shard / "tasks.jsonl").write_text("\n".join(shard_tasks) + "\n", encoding="utf-8")
             (shard / "providers.local.yaml").write_text(providers, encoding="utf-8")
@@ -226,14 +256,20 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, repos=None, skip=()):
     return planned
 
 
-def replan(factory, tasks_dir, run_dir, decide_env):
-    """Plan again every shard that has not started, so a change in serving (a replica
-    added or moved) reaches it; shards that ran or are running keep their files."""
+def replan(factory, tasks_dir, run_dir, decide_env, fresh=False):
+    """Plan again every shard without rows, so a change in serving (a replica added or
+    moved) or in the shard files reaches it; shards that produced rows or are running
+    keep their files. A shard that ran and failed is planned again like one that never
+    started. `fresh` discards finished shards too, for a pass planned over from the start;
+    running containers are always kept and adopted."""
     run_dir = Path(run_dir)
     running = set(running_containers(run_dir))
     removed = 0
+    if fresh:
+        for stale in ("rows.jsonl", "tasks-driven.jsonl"):
+            (run_dir / stale).unlink(missing_ok=True)
     for shard in (run_dir / "shards").iterdir():
-        if shard.name in running or (shard / "runner.log").exists() or (shard / "rows.jsonl").exists():
+        if shard.name in running or (not fresh and (shard / "rows.jsonl").exists()):
             continue
         shutil.rmtree(shard)
         removed += 1
@@ -300,6 +336,7 @@ def warm_cache(factory, image=None):
     """Fill the shared package cache once per repository at its pinned commit, before any
     session runs; runners then read it through their own overlay (mount_cache)."""
     (factory.root / "cache").mkdir(parents=True, exist_ok=True)
+    (factory.root / "warm").mkdir(parents=True, exist_ok=True)
     procs = {}
     for repo in factory.repos:
         name = "bialy-warm-%s" % repo.name
@@ -311,7 +348,8 @@ def warm_cache(factory, image=None):
                 "--tmpfs", "/tmp:rw,exec,size=4g", "--tmpfs", "/root:rw,exec,size=4g",
                 "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/cache" % (factory.root / "cache"),
                 "--entrypoint", "bash", image or factory.fleet["image"], "-c", script]
-        procs[repo.name] = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Each repository's log stays under <root>/warm/ for a failed warm to be read.
+        procs[repo.name] = subprocess.Popen(args, stdout=open(factory.root / "warm" / (repo.name + ".log"), "w"), stderr=subprocess.STDOUT)
     return {name: proc.wait() for name, proc in procs.items()}
 
 
@@ -363,11 +401,24 @@ def running_containers(run_dir):
     return out
 
 
+# A shard's tasks each get their prompt budget, and the runner spends time on setup,
+# exports, and the turns after a timed-out prompt, so a shard is overdue only well past
+# the sum of its budgets.
+OVERDUE_FACTOR, OVERDUE_GRACE_MINUTES = 1.5, 30
+
+
+def shard_deadline(factory, shard, started):
+    """When a shard started at `started` (epoch seconds) counts as stuck."""
+    tasks = sum(1 for line in (shard / "tasks.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
+    return started + 60 * (OVERDUE_FACTOR * tasks * shard_minutes(factory, shard) + OVERDUE_GRACE_MINUTES)
+
+
 def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     """Run every shard without rows, at most `runners` at a time, until all have finished.
 
     A restarted run adopts its containers that are still running and waits for them; a
-    ledger container that has stopped without rows is removed and its shard runs again."""
+    ledger container that has stopped without rows is removed and its shard runs again.
+    A container still running past its shard's deadline is killed and counted failed."""
     run_dir = Path(run_dir)
     run_name = run_dir.name
     ledger = Ledger(run_dir)
@@ -382,7 +433,7 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
         shard = run_dir / "shards" / shard_name
         ledger.append(event="adopted", container=name, shard=shard_name)
         active[name] = (subprocess.Popen(["docker", "wait", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
-                        shard, factory.root / "work" / run_name / shard_name)
+                        shard, factory.root / "work" / run_name / shard_name, shard_deadline(factory, shard, time.time()))
     # Longest budgets first: the shards that run longest start while the fleet is full,
     # instead of trailing a nearly idle fleet at the end of the pass.
     pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and s.name not in adopted),
@@ -397,10 +448,16 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
             shard = pending.pop(0)
             name, work, args = container_args(factory, run_name, shard, extra_mounts, image)
             ledger.append(event="start", container=name, shard=shard.name)
-            active[name] = (subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=open(shard / "docker.log", "w")), shard, work)
+            active[name] = (subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=open(shard / "docker.log", "w")), shard, work,
+                            shard_deadline(factory, shard, time.time()))
         time.sleep(5)
-        for name, (proc, shard, work) in list(active.items()):
+        for name, (proc, shard, work, deadline) in list(active.items()):
             code = proc.poll()
+            if code is None and time.time() > deadline:
+                sh("docker", "kill", name, check=False)
+                ledger.append(event="overdue", container=name, shard=shard.name)
+                (shard / "rows.jsonl").unlink(missing_ok=True)
+                code = proc.wait()
             if code is None:
                 continue
             del active[name]
@@ -469,7 +526,7 @@ def collect(run_dir, pass_name, tasks_dir):
             if not rows.exists() or not manifest.exists():
                 continue
             stats["shards"] += 1
-            meta = {}
+            meta, model_of = {}, {}
             for line in manifest.read_text(encoding="utf-8").splitlines():
                 entry = json.loads(line)
                 if entry["task_id"] not in specs:
@@ -478,6 +535,7 @@ def collect(run_dir, pass_name, tasks_dir):
                 stats["settled"] += entry["status"] == "settled"
                 # The task file, not the driver's echo, is what a row's grouping comes from.
                 meta[entry["root_session"]] = dict(specs[entry["task_id"]]["meta"], task_status=entry["status"], run=run_dir.name, pass_name=pass_name)
+                model_of[entry["root_session"]] = specs[entry["task_id"]]["model"]
                 driven.append(dict(specs[entry["task_id"]], outcome={"status": entry["status"], "run": run_dir.name, "shard": shard.name,
                                                                     "pass_name": pass_name, "root_session": entry["root_session"]}))
             for line in rows.read_text(encoding="utf-8").splitlines():
@@ -485,6 +543,7 @@ def collect(run_dir, pass_name, tasks_dir):
                 if row["root_session"] not in meta:
                     raise ValueError("%s: rows from session %s, which the manifest does not list" % (shard.name, row["root_session"]))
                 row["meta"] = meta[row["root_session"]]
+                row["model"] = model_of[row["root_session"]]
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                 stats["rows"] += 1
     with open(run_dir / "tasks-driven.jsonl", "w", encoding="utf-8") as fh:

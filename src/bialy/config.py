@@ -168,31 +168,34 @@ def local_replicas():
 
 
 RUN_DEFAULTS = {
-    "lycaon_bin": "bin", "engine_dir": "engine", "lycaon_checkout": "../paintedwolf-code", "corpus_json": None,
-    "generators": [], "repos": [], "task_cap": None, "seed": 7, "workers": 16, "runners": None, "image": None,
-    "pass_name": "engine-off", "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
-    "spend_ceiling_usd": 0, "engine_launcher": None,
-    "train": {"recipes": ["B5", "B7G"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
-              "requirements": None, "torch_index": None},
+    "lycaon_checkout": "../paintedwolf-code", "generators": [], "judges": [], "repos": [], "task_cap": None, "seed": 7, "workers": 16,
+    "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
+    "engine_on": {"enabled": True, "deadline_ms": 60000},
+    "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
+    "coderank": {"per_repo": 40},
+    "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
+              "requirements": None, "torch_index": None, "epochs": None},
 }
 
 
 def run_settings(raw):
-    """factory.yaml's run section over the defaults; paths resolve against the repository."""
+    """factory.yaml's run section over the defaults; paths resolve against the repository.
+    Unknown keys are refused, so a misspelt setting never silently keeps its default."""
     settings = json.loads(json.dumps(RUN_DEFAULTS))
     for key, value in (raw or {}).items():
         if key not in settings:
             raise ConfigError("run.%s is not a setting" % key)
-        if key == "train":
+        if key == "engine_on" and isinstance(value, bool):
+            settings[key]["enabled"] = value
+        elif isinstance(settings[key], dict):
             for k, v in (value or {}).items():
-                if k not in settings["train"]:
-                    raise ConfigError("run.train.%s is not a setting" % k)
-                settings["train"][k] = v
+                if k not in settings[key]:
+                    raise ConfigError("run.%s.%s is not a setting" % (key, k))
+                settings[key][k] = v
         else:
             settings[key] = value
-    for key in ("lycaon_bin", "engine_dir", "lycaon_checkout", "corpus_json", "engine_launcher"):
-        if settings.get(key):
-            settings[key] = str((ROOT / str(settings[key])).resolve()) if not Path(str(settings[key])).is_absolute() else settings[key]
+    checkout = str(settings["lycaon_checkout"])
+    settings["lycaon_checkout"] = checkout if Path(checkout).is_absolute() else str((ROOT / checkout).resolve())
     return settings
 
 

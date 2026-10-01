@@ -84,33 +84,63 @@ the rank head ranks in production.
 ### One command
 
 `bialy run` drives a whole pass on one machine and can be left alone: it
-resumes where it stopped, uploads nothing unless asked, and ends with a
-report. It needs Docker, a provider key for the hosted models in
-`config/models.yaml`, the runner binaries and engine payload (below), and a
-Painted Wolf Code checkout for the trainer. Settings live in `factory.yaml`'s
-`run` section; the flags override them for one run.
+builds what it runs on, resumes where it stopped, uploads nothing unless asked,
+and ends with a report. It needs Docker, a provider key for the hosted models
+in `config/models.yaml`, `uv`, and a Painted Wolf Code checkout at the commit
+to build; Go and Rust toolchains are used when present and otherwise run in
+pinned images. Settings live in `factory.yaml`'s `run` section; the flags
+override them for one run.
 
 ```bash
 export FIREWORKS_API_KEY=…
 bialy run --run pass3 --dry-run            # the stages this invocation would run
-bialy run --run pass3                      # repositories → tasks → runners → judge → split → release → train → heads → report
-bialy run --run pass3 --until tasks --task-cap 2 --repo cobra   # a small check of the generation stages
+bialy run --run pass3                      # build → tasks → drive → judge → pilot heads → drive again → release → heads → report
+bialy run --run pass3 --until tasks --task-cap 2 --repo cobra          # a small check of the generation stages
+bialy run --run pass3 --task-cap 1 --repo cobra --runners 1 --epochs 1   # the whole chain, small
 bialy run-status --run pass3
-bialy run --run pass3 --from judge         # rerun from a stage after a fix
+bialy run --run pass3 --from judge         # rerun from a stage after a fix, discarding later results
+bialy run --run pass3 --redo image --rebuild-image   # rerun one stage, keeping the rest
 bialy run --run pass3 --push               # the same pass, publishing at the end
 ```
 
-Stages: `check`, `repos`, `corpus`, `tasks`, `image`, `warm`, `plan`,
-`drive`, `collect`, `judge`, `split`, `release`, `train`, `evaluate`,
+Stages, in order: `check`, `repos`, `build`, `image`, `corpus`, `tasks`,
+`skillreq`, `warm`, `plan`, `drive`, `collect`, `judge`, `judge_skillreq`,
+`split_pilot`, `train_pilot`, `engine`, `pilot`, `plan_on`, `drive_on`,
+`collect_on`, `judge_on`, `split`, `coderank`, `release`, `train`, `evaluate`,
 `release_heads`, `report`. Each writes under `<root>/runs/<name>/` and its
 status to `run.json` there; a failed stage stops the run with its error in
-`REPORT.md`, and the next invocation starts from it. `train` runs the recipes
-in `run.train.recipes` (turn-load and guide-load today) on this machine's
-accelerator, including a ROCm build of torch through `run.train.torch_index`;
-`evaluate` runs when `run.engine_launcher` names an engine that loads the
-trained heads here, and is otherwise reported as skipped. A spend ceiling in
-`run.spend_ceiling_usd` stops the run between stages once priced hosted
-models (`hosted.price_per_million`) have used it.
+`REPORT.md`, and the next invocation starts from it.
+
+- `build` cross-compiles `lycaon`, `lycaon-debug`, and `decide-rerank` for the
+  runners and assembles the engine payload (schemas, the pinned git, the
+  headless browser, Opengrep) from the checkout; `engine` builds the decision
+  engine for this host with cargo. The checkout pins Opengrep releases per
+  platform; until it pins a Linux one, `run.scanner: none` runs the pass without
+  the scanner, which the sidecar then reports unavailable.
+- The first pass drives with the engine off. `train_pilot` trains the recipes
+  on its rows, `pilot` packs them with a linux engine and the checkpoint, and
+  the `_on` stages drive the same tasks with those heads deciding. Turn
+  `run.engine_on` off (or pass `--no-engine-on`) for a single pass.
+- `skillreq` writes requests for every skill and `coderank` harvests units and
+  writes request pairs, both through the writer model, so the unit-rank and
+  code-rank recipes have their data; `train` runs every recipe in
+  `run.train.recipes` under `run.train.max_hours` on this machine's
+  accelerator (ROCm, CUDA, Apple silicon, or CPU, with the torch index chosen
+  from what it finds).
+- `evaluate` replays validation and holdout rows through the host engine
+  loading the trained heads, and `release_heads` puts the results on the card.
+- With `--push`, `report` commits the release anchors on `release/<version>`,
+  pushes it, opens a pull request with `gh`, and uploads both releases to the
+  Hub. Without it, the report lists the commands.
+- `run.spend_ceiling_usd` stops the run between stages once priced hosted
+  models (`hosted.price_per_million`) have used it. Calls the runners' own
+  sidecars make while driving are not metered here; the provider's dashboard is
+  the record for that part.
+
+The fleet stages mount cache overlays and set bridge firewall rules, so
+`bialy run` runs as root from the `warm` stage on; `check` says so when it is
+not. To leave a pass running through logouts, sleep, and reboots, install
+`deploy/bialy-run.service` (instructions in the file).
 
 ### By hand
 

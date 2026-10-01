@@ -37,14 +37,16 @@ ENV PATH=/work/.venv/bin:/opt/cargo/bin:/usr/local/go/bin:/root/go/bin:/usr/loca
     CARGO_HOME=/cache/cargo CARGO_TARGET_DIR=/work/.target BUNDLE_PATH=/cache/bundle COMPOSER_CACHE_DIR=/cache/composer \
     GRADLE_USER_HOME=/cache/gradle COREPACK_HOME=/cache/corepack MAVEN_OPTS=-Dmaven.repo.local=/cache/m2
 
+# Seed clones are mounted from the host, whose owner is not the container's root.
+RUN git config --system --add safe.directory '*'
+
 COPY engine/ /opt/bialy/engine/
 COPY bin/ /opt/bialy/bin/
 COPY --chmod=755 run-shard.sh setup-repo.sh /opt/bialy/
 COPY unattended.yaml /opt/bialy/
 COPY workflows/ /opt/bialy/workflows/
 # The browser tool's headless Chrome needs the libraries and fonts above; the overlay
-# holds staged configuration, such as an engine-on pass's decision deadlines; the
-# scanner is a Linux Opengrep build, which only development binaries accept.
-ENV LYCAON_ENGINE_ROOT=/opt/bialy/engine LYCAON_CONFIG_ROOT=/opt/bialy/engine/overlay \
-    LYCAON_OPENGREP_CANDIDATE=/opt/bialy/engine/opengrep
+# holds staged configuration, such as an engine-on pass's decision deadlines. The
+# scanner, when the payload carries one, is named by run-shard.sh.
+ENV LYCAON_ENGINE_ROOT=/opt/bialy/engine LYCAON_CONFIG_ROOT=/opt/bialy/engine/overlay
 ENTRYPOINT ["/opt/bialy/run-shard.sh"]

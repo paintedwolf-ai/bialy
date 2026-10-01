@@ -31,6 +31,11 @@ set -a
 # shellcheck disable=SC1091
 . "$out/sidecar.env"
 set +a
+# A Linux Opengrep build, which only development binaries accept; without it the
+# sidecar reports the scanner unavailable.
+if [ -x /opt/bialy/engine/opengrep/opengrep ]; then
+  export LYCAON_OPENGREP_CANDIDATE=/opt/bialy/engine/opengrep
+fi
 LYCAON_ADDR=127.0.0.1:8850 LYCAON_CONFIG_DIR=/cfg /opt/bialy/bin/lycaon serve >"$out/sidecar.log" 2>&1 &
 sidecar=$!
 stop_sidecar() {
@@ -45,12 +50,35 @@ for _ in $(seq 1 120); do
   kill -0 "$sidecar" || { echo "sidecar exited during startup"; exit 1; }
   sleep 1
 done
+# Hosted providers: the key goes from this container's environment into the sidecar's
+# credential store on its tmpfs, then out of the environment the sessions run in.
+IFS=, read -ra hosted <<<"${BIALY_HOSTED_PROVIDERS:-}"
+for pair in "${hosted[@]}"; do
+  [ -n "$pair" ] || continue
+  provider=${pair%%:*}
+  key_env=${pair#*:}
+  if [ -z "${!key_env:-}" ]; then echo "hosted provider $provider: $key_env is not set"; exit 1; fi
+  body=$(printf '{"api_key": "%s"}' "${!key_env}")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $(cat /cfg/api.token)" \
+    -H 'Content-Type: application/json' --data-binary "$body" "http://127.0.0.1:8850/v1/providers/$provider/credential")
+  [ "$code" = 200 ] || { echo "hosted provider $provider: storing the key returned HTTP $code"; exit 1; }
+  unset "$key_env"
+done
 
 /opt/bialy/bin/lycaon-debug decide generate --addr http://127.0.0.1:8850 --token "$(cat /cfg/api.token)" \
   --tasks "$out/tasks.jsonl" --project /work/"$REPO" --project-name "$REPO" --manifest "$out/manifest.jsonl" \
   --unattended /opt/bialy/unattended.yaml --timeout "$PROMPT_TIMEOUT" || echo "driver exited $?"
 stop_sidecar
 trap - EXIT
+
+# A shard is finished only when every task reached the manifest; one the driver gave up
+# on writes no rows.jsonl, so the run counts it failed and drives it again.
+planned=$(grep -c . "$out/tasks.jsonl")
+driven=$(grep -c . "$out/manifest.jsonl" 2>/dev/null || true)
+if [ "${driven:-0}" -ne "$planned" ]; then
+  echo "shard incomplete: $driven of $planned tasks driven"
+  exit 1
+fi
 
 # Rows from the sessions this shard drove, and the store they came from, so a
 # later label change can export again without driving anything.

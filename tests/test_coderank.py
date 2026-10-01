@@ -29,10 +29,22 @@ class FakeChat:
         return self.replies.pop(0)
 
 
-def test_model_pairs_drop_requests_that_name_the_unit(factory, monkeypatch):
+def test_model_pairs_keep_requests_that_name_the_unit_apart(factory, monkeypatch):
     chat = FakeChat([{"task": "how do we stop clients editing their login state", "query": "signed cookie"},
                      {"task": "where is the secure cookie interface", "query": "cookie"}])
-    monkeypatch.setattr(coderank, "endpoints", lambda f: [chat])
-    rows = coderank.model_pairs(factory, [UNIT, dict(UNIT, line=20)], count=2, workers=1)
+    monkeypatch.setattr(coderank, "endpoints", lambda f, w=None: [chat])
+    rows, named = coderank.model_pairs(factory, [UNIT, dict(UNIT, line=20)], count=2, workers=1)
     assert [r["task"] for r in rows] == ["how do we stop clients editing their login state"]
+    assert [r["task"] for r in named] == ["where is the secure cookie interface"] and named[0]["names_unit"]
     assert rows[0]["source"] == "model:gemma" and rows[0]["lang"] in coderank.LANGUAGES
+
+
+def test_screened_replies_are_replaced_until_the_count_is_met(factory, monkeypatch):
+    replies = [{"task": "where is the secure cookie thing", "query": "q"}, {"task": "how do we keep clients from editing state", "query": "q"},
+               {"task": "session handling please", "query": "q"}, {"task": "what signs the data a browser holds", "query": "q"}]
+    chat = FakeChat(list(replies))
+    monkeypatch.setattr(coderank, "endpoints", lambda f, w=None: [chat])
+    units = [dict(UNIT, line=n) for n in range(4)]
+    rows, named = coderank.model_pairs(factory, units, count=2, workers=1)
+    assert [r["task"] for r in rows] == ["how do we keep clients from editing state", "what signs the data a browser holds"]
+    assert [r["task"] for r in named] == ["where is the secure cookie thing", "session handling please"]

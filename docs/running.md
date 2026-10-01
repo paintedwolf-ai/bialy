@@ -218,25 +218,44 @@ read the skill's full procedure when scoring.
 The next pass runs unattended: start `bialy run` on a desktop with a
 Fireworks key, come back in a day or two to an anchored dataset, a head set,
 and a report. The orchestrator (`src/bialy/run.py`, README "One command")
-chains the sixteen stages with a resumable state file, runs the fleet as a
-few containers on the same machine, generates and judges through one hosted
-provider (GLM generates, Inkling judges), trains the turn-load and guide-load
-recipes on the local accelerator under a time budget, stops between stages
-when a spend ceiling is crossed, and ends ready to publish. Verified on a
-desktop through the task stage.
+chains the stages with a resumable state file, builds the runner binaries,
+engine payload, and decision engine from the pinned checkout, runs the fleet
+as a few containers on the same machine, generates, writes, and judges
+through one hosted provider (GLM generates and writes, Inkling judges),
+drives a second pass with pilot heads deciding, trains all four recipes on the
+local accelerator under a time budget, evaluates through the host engine,
+stops between stages when a spend ceiling is crossed, and, asked to, commits
+the anchors, opens the release pull request, and uploads.
 
-Still by hand or missing:
+What a small run on an AMD desktop established, and what it did not:
 
-- The runner binaries (`bin/`, a linux/amd64 build of `lycaon` and
-  `lycaon-debug`) and the engine payload (`engine/`) are built elsewhere and
-  copied in; the run checks for them and stops if they are absent.
-- The unit-rank and code-rank recipes (E4 and code-rank) need the skill
-  request writer stage and the `decide-rerank` binary; `run.train.recipes`
-  lists only B5 and B7G until those are stages.
-- `evaluate` needs an engine launcher for this machine; without one the head
-  release ships without a results table.
-- The local-training torch index is a setting, not a detection: set
-  `run.train.torch_index` to the ROCm or CUDA wheel index for the machine.
+- The chain runs end to end at `--task-cap 1 --repo cobra --runners 1
+  --epochs 1`. Head quality at that size means nothing; the check is that
+  every stage's inputs and outputs line up.
+- The runner containers hold a shard's deadline: a container still running
+  well past the sum of its tasks' budgets is killed and its shard counted
+  failed, so one hung session cannot stall the pass.
+- The runners' engine is the CPU build, and turn decisions in a container take
+  seconds, so the engine-on image raises the turn deadlines
+  (`run.engine_on.deadline_ms`). The deadline decides only whether an answer
+  arrives, never what it is. At 20 seconds on 2-CPU runners, 14 of 33
+  engine-on rows still abstained on the deadline; the default is now 60.
+- An engine-on row records how the engine answered (`engine.state`), and
+  `collect_on` refuses a pass whose rows all say the engine was unavailable:
+  the first attempt did exactly that, because the pilot's checkpoint lacked the
+  host's completion marker, and nothing else in the chain would have noticed.
+- Rerunning a stage after a fix is the common case, so `--redo STAGE` reruns one
+  stage while keeping the others, a replanned pass discards its stale shards, and
+  a judging whose inputs changed clears its resumable manifest instead of
+  refusing.
+- Driving spend is not metered by the orchestrator: sessions call the
+  provider from inside their containers. Generation, writing, and judging are.
+- The scanner is the one payload part the checkout cannot yet supply for
+  Linux: its downstream Opengrep repository releases macOS builds and pins one
+  artifact per platform. The desktop run set `run.scanner: none`, so its
+  sessions saw the scan tools report the scanner unavailable; a pass meant for
+  release waits for a pinned Linux release, and the fleet provenance records
+  which of the two a pass ran with.
 
 ### Future improvement: guide labels and the turn state
 

@@ -50,3 +50,54 @@ models:
     reviewed: "2026-09-28: Apache-2.0 model card; no terms on outputs"
     roles: [judge, writer]
     hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/inkling, key_env: FIREWORKS_API_KEY}
+
+# Larger hosted candidates for the next pass, on the same provider. Each is pinned
+# and licensed as its model card states; a person reads the license, fills in
+# `reviewed`, and moves the entry above before the configuration accepts it.
+# Custom licenses (GLM-5.3, Kimi-K3, MiniMax-M3, Qwen3.8) need that reading most.
+#
+#  - id: deepseek-v4-pro
+#    hf: deepseek-ai/DeepSeek-V4-Pro
+#    revision: b5968e9190ef611bbf34a7229255be88a0e937c1
+#    family: deepseek
+#    license: MIT
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge, writer]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4-pro, key_env: FIREWORKS_API_KEY}
+#  - id: glm-5.2
+#    hf: zai-org/GLM-5.2
+#    revision: cf457fa734ab149ffef225f80893eb38c6ff5cdc
+#    family: glm
+#    license: MIT
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge, writer]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p2, key_env: FIREWORKS_API_KEY}
+#  - id: gpt-oss-120b
+#    hf: openai/gpt-oss-120b
+#    revision: b5c939de8f754692c1647ca79fbf85e8c1e70f8a
+#    family: openai
+#    license: Apache-2.0
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [judge]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/gpt-oss-120b, key_env: FIREWORKS_API_KEY}
+#  - id: glm-5.3
+#    hf: zai-org/GLM-5.3
+#    revision: aca966e4e02791568aa6a4ced368624b3d897f42
+#    family: glm
+#    license: LicenseRef-GLM-5.3     # custom; read it before use
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge, writer]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p3, key_env: FIREWORKS_API_KEY}
+#  - id: kimi-k3
+#    hf: moonshotai/Kimi-K3
+#    revision: f831ab66814297da540d832a5235f8e904f29d06
+#    family: kimi
+#    license: LicenseRef-Kimi-K3     # custom; read it before use
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/kimi-k3, key_env: FIREWORKS_API_KEY}

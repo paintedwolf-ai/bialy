@@ -20,17 +20,29 @@ judge:
   second_judge_fraction: 0.10      # rows the other family also judges, for agreement
 
 # `bialy run`: one pass on this machine, resumable. Paths resolve against the
-# repository. The generators named here must be hosted or served on this host.
+# repository. The generators named here must be hosted or served on this host;
+# the judge is chosen from another family, and the writer writes skill requests
+# and code-rank pairs.
 run:
-  lycaon_bin: bin                  # lycaon + lycaon-debug built for the runner image (linux/amd64)
-  engine_dir: engine               # the engine payload the runner image carries
-  lycaon_checkout: ../paintedwolf-code   # the trainer, row schema, and replay scripts
-  corpus_json: null                # set when this host cannot run lycaon-debug itself
+  lycaon_checkout: ../paintedwolf-code   # built into the runner binaries, engine, and trainer the run uses
   generators: [glm-5.3-flash]      # hosted generators for a run with one provider key
+  judges: []                       # judges to use; empty keeps every judge in models.yaml
   runners: 4                       # concurrent runner containers on this machine
   spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
+  scanner: pinned                  # the checkout's pinned Opengrep for linux/amd64; none runs without a scanner
+  engine_on:
+    enabled: true                  # a second pass with the pilot heads deciding
+    deadline_ms: 60000             # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long
+  skillreq:
+    writer: null                   # the first usable writer in models.yaml
+    families: {clear: 2, nearmiss: 1, multi: 1}   # request families per skill and kind
+    none_families: 24
+    per_family: 6
+  coderank:
+    per_repo: 40                   # written request pairs per repository
   train:
-    recipes: [B5, B7G]             # turn-load and guide-load; see docs/running.md for the rest
+    recipes: [B5, B7G, E4, code-rank]   # turn-load, guide-load, unit-rank, code-rank
     device: auto                   # cuda (including ROCm builds of torch), mps, or cpu
-    max_hours: 24
-    torch_index: null              # a torch wheel index for this machine's accelerator
+    max_hours: 24                  # for all recipes of one training stage together
+    torch_index: null              # a torch wheel index; detected from the accelerator when null
+    epochs: null                   # cap for short checks; null keeps each recipe's own

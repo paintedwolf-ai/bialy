@@ -1,0 +1,33 @@
+# A pass as a system service: it runs as root, which the fleet needs for its cache
+# overlays and bridge rules, survives logouts, restarts after a crash or reboot, and
+# keeps the machine awake while it runs.
+#
+#   sudo cp deploy/bialy-run.service /etc/systemd/system/
+#   sudo systemctl edit bialy-run        # set WorkingDirectory, RUN, UV, and the key file
+#   sudo systemctl enable --now bialy-run
+#   journalctl -u bialy-run -f
+#
+# The key file holds one line, FIREWORKS_API_KEY=..., mode 600, outside the repository.
+[Unit]
+Description=Painted Wolf Code decision-head pass (bialy run)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+StartLimitIntervalSec=3600
+StartLimitBurst=6
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bialy
+Environment=RUN=pass3
+Environment=UV=/usr/local/bin/uv
+EnvironmentFile=/etc/bialy/provider.env
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --who=bialy --why="a pass is running" ${UV} run bialy run --run ${RUN}
+# A failed stage exits 1 and the next start resumes at it: ten minutes between
+# attempts and at most six an hour, so a broken stage does not spend money in a loop.
+# Once the report stage is done, bialy run exits 0 and the unit stays finished.
+Restart=on-failure
+RestartSec=600
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
