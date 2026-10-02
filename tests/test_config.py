@@ -59,7 +59,7 @@ def copied_config(tmp_path, monkeypatch, edit):
     root = tmp_path / "config"
     shutil.copytree(config.CONFIG, root)
     monkeypatch.setattr(config, "CONFIG", root)
-    for name in ("archetypes.yaml", "stacks.yaml"):
+    for name in ("archetypes.yaml", "stacks.yaml", "models.yaml"):
         data = yaml.safe_load((root / name).read_text())
         edit(name, data)
         (root / name).write_text(yaml.safe_dump(data))
@@ -89,4 +89,13 @@ def test_every_kind_of_workspace_gets_requests(tmp_path, monkeypatch):
             data["archetypes"] = [a for a in data["archetypes"] if a.get("workspace") != "stack"]
     copied_config(tmp_path, monkeypatch, edit)
     with pytest.raises(config.ConfigError, match="no archetype writes requests for a stack"):
+        config.load()
+
+
+def test_a_reasoning_effort_must_be_one_a_provider_takes(tmp_path, monkeypatch):
+    def edit(name, data):
+        if name == "models.yaml":
+            next(m for m in data["models"] if m["id"] == "glm-5.3-flash")["hosted"]["reasoning_effort"] = "minimal"
+    copied_config(tmp_path, monkeypatch, edit)
+    with pytest.raises(config.ConfigError, match="reasoning_effort is one of none, low, medium, high"):
         config.load()

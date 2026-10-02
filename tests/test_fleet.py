@@ -376,3 +376,14 @@ def test_warm_fills_the_cache_for_repositories_and_stacks_that_name_packages(fac
     assert set(codes) == {r.name for r in factory.repos} | {s.name for s in factory.stacks if s.warm}
     assert "bialy-warm-web-static" not in started
     assert started["bialy-warm-react-vite"].startswith("mkdir -p /work/react-vite && cd /work/react-vite && npm create vite")
+
+
+def test_a_hosted_model_drives_at_its_configured_reasoning_effort(factory):
+    import dataclasses
+
+    glm = factory.model("glm-5.3-flash")
+    quiet = dataclasses.replace(glm, hosted=dict(glm.hosted, reasoning_effort="none"))
+    providers, *_ = fleet.sidecar_files(dataclasses.replace(factory, models=[quiet]), {}, 0)
+    assert "models: [{id: accounts/fireworks/models/glm-5p3-flash, reasoning_effort: none}]" in providers
+    providers, *_ = fleet.sidecar_files(factory, {}, 0)
+    assert "models: [{id: accounts/fireworks/models/glm-5p3-flash}]" in providers

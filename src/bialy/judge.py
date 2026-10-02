@@ -122,7 +122,7 @@ def judge_row(chats, row, skill_cards, tool_cards, judge_model, units=UNITS, len
                       lambda v, request=request: request.__setitem__("scores", v), lambda request=request: request.__setitem__("scores", None))
     earlier = (row.get("judge") or {}).get("units", []) if set(units) != set(UNITS) else []
     judged = sorted(set(earlier) | set(units), key=UNITS.index)
-    reasoning = "low reasoning effort" if chat.hosted else "no reasoning"
+    reasoning = "%s reasoning effort" % (chat.reasoning_effort or "low") if chat.hosted else "no reasoning"
     row["judge"] = {"model": judge_model, "units": judged, "decoding": "greedy, seeded order, schema-constrained, %s" % reasoning}
     if missed:
         row["judge"]["missed"] = missed

@@ -22,6 +22,8 @@ WORKFLOWS = ("implement-dispatch",)
 # Where a task's session runs: a checkout of a pinned public repository, or an
 # empty directory a request starts a new project in, for one stack.
 WORKSPACE_KINDS = ("repository", "stack")
+# What a hosted model can be asked to spend on reasoning; none turns it off.
+REASONING_EFFORTS = ("none", "low", "medium", "high")
 
 
 class ConfigError(ValueError):
@@ -40,7 +42,14 @@ class Model:
     replicas: tuple = ()
     # A provider endpoint serving the pinned weights, instead of a local server:
     # {provider, base_url, model, key_env}. The key is read from key_env at call time.
+    # Optional: price_per_million {input, output}, and reasoning_effort (none, low,
+    # medium, high), the effort every call to the model asks for: the sessions it
+    # drives and the factory's judging and writing.
     hosted: dict | None = None
+
+    @property
+    def reasoning_effort(self):
+        return (self.hosted or {}).get("reasoning_effort")
 
     @property
     def port(self):
@@ -188,7 +197,7 @@ class Factory:
             key = os.environ.get(model.hosted["key_env"], "")
             if not key:
                 raise ConfigError("model %s: set %s to call %s" % (model.id, model.hosted["key_env"], model.hosted["provider"]))
-            return [Chat(model.hosted["base_url"], model.hosted["model"], api_key=key, hosted=True)]
+            return [Chat(model.hosted["base_url"], model.hosted["model"], api_key=key, hosted=True, reasoning_effort=model.reasoning_effort)]
         return [Chat(self.base_url(model, port), model.id) for port in model.ports()]
 
 
@@ -270,6 +279,8 @@ def load():
             raise ConfigError("model %s: give exactly one of serve (a local server) or hosted (a provider endpoint)" % raw.get("id"))
         if hosted and (not all(hosted.get(k) for k in ("provider", "base_url", "model", "key_env")) or replicas.get(raw["id"])):
             raise ConfigError("model %s: hosted needs provider, base_url, model, and key_env, and takes no replicas" % raw.get("id"))
+        if hosted and hosted.get("reasoning_effort") not in (None, *REASONING_EFFORTS):
+            raise ConfigError("model %s: hosted.reasoning_effort is one of %s" % (raw.get("id"), ", ".join(REASONING_EFFORTS)))
         out.models.append(Model(id=raw["id"], hf=raw["hf"], revision=raw["revision"], family=raw["family"],
                                 license=raw["license"], roles=tuple(raw["roles"]), serve=serve,
                                 replicas=tuple(replicas.get(raw["id"]) or ()), hosted=hosted))

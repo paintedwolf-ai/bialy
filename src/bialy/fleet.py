@@ -177,9 +177,10 @@ def sidecar_files(factory, decide_env, lane):
             # A hosted generator: the sidecar reads the key from the container's environment.
             chosen[m.id] = factory.provider_id(m)
             wire_model[m.id] = m.hosted["model"]
+            entry = "{id: %s, reasoning_effort: %s}" % (m.hosted["model"], m.reasoning_effort) if m.reasoning_effort else "{id: %s}" % m.hosted["model"]
             providers += ["  - id: %s" % chosen[m.id], "    kind: %s" % m.hosted["provider"],
                           "    base_url: %s" % m.hosted["base_url"], "    api_key_env: %s" % m.hosted["key_env"],
-                          "    models: [{id: %s}]" % m.hosted["model"]]
+                          "    models: [%s]" % entry]
             continue
         ports = m.ports()
         port = ports[lane % len(ports)]
