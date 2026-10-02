@@ -59,11 +59,9 @@ def raise_decision_deadlines(config_dir, engine_dir, deadline_ms):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-# What the sidecar needs from its engine root to offer the tools it advertises. A run
-# without them still produces rows, from sessions whose git, browser, and scanner tools
-# fail, so the image refuses to build instead. The scanner alone can be declined
-# explicitly, for a platform the checkout pins no Opengrep release for; the sidecar
-# then reports the scanner unavailable, which its scan tools surface as such.
+# What the sidecar needs to offer the tools it advertises; without them sessions still
+# produce rows, from failing tools, so the image refuses to build. Only the scanner can
+# be declined, and the sidecar then reports it unavailable.
 ENGINE_PAYLOAD = ("schemas", "gitengine/bin/git", "browser/chrome-headless-shell")
 SCANNER_PAYLOAD = ("opengrep/opengrep", "opengrep/provenance.json", "opengrep/source-lock.json")
 

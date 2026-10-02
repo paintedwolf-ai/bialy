@@ -1,8 +1,7 @@
 """Skill-ranking requests: rows that teach the rank head which skill a request needs.
 
 Sessions label few skills: a turn reads at most one, and the common skills
-(verifying a change, reading history) crowd out the specialised ones, so the
-head ranks generic skills first even when a specialised one fits. A writer
+(verifying a change, reading history) crowd out the specialised ones. A writer
 model drafts requests for every skill in families of four kinds:
 
   clear     the skill's procedure is plainly what the request needs

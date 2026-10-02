@@ -21,22 +21,19 @@ class Chat:
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=600, max_retries=8)
         self.model = model_id
         self.hosted = hosted
-        # A hosted model's configured effort (models.yaml hosted.reasoning_effort), sent on every call.
         self.reasoning_effort = reasoning_effort
 
     def complete(self, system, user, temperature=0.0, seed=None, max_tokens=8192, thinking=True, schema=None):
-        """The reply text, with reasoning kept out: the servers run a reasoning parser, so
-        `content` is the answer alone. `thinking=False` asks the chat template to skip the
-        reasoning phase where the model supports it; a provider takes the lowest reasoning
-        effort instead, since some hosted models only answer after reasoning. A hosted model
-        with a configured effort gets that effort on every call."""
+        """The reply text without reasoning: the servers run a reasoning parser, so `content`
+        is the answer alone. A configured reasoning effort applies to every call; otherwise
+        `thinking=False` skips the reasoning phase locally and asks a provider for low
+        effort, since some hosted models only answer after reasoning."""
         extra = {"seed": seed} if seed is not None else {}
         if self.reasoning_effort:
             extra["extra_body"] = {"reasoning_effort": self.reasoning_effort}
         elif not thinking:
             extra["extra_body"] = {"reasoning_effort": "low"} if self.hosted else {"chat_template_kwargs": {"enable_thinking": False}}
         if schema is not None:
-            # Constrained decoding: the server only emits JSON matching the schema.
             extra["response_format"] = {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema, "strict": True}}
         reply = self.client.chat.completions.create(
             model=self.model, temperature=temperature, top_p=1.0, max_tokens=max_tokens,

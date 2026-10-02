@@ -584,9 +584,7 @@ def stage_evaluate(run):
 
 def sample_rows(rows, out, limit, seed):
     """The rows a replay measures: all of them, or `limit` drawn with `seed`, kept in file
-    order. The host engine replays one row at a time on the CPU, close to a minute a row,
-    so a full pass measures heads on a seeded sample of each split rather than all of it.
-    Returns the file to replay and how many rows the split holds."""
+    order. Returns the file to replay and how many rows the split holds."""
     lines = [line for line in Path(rows).read_text(encoding="utf-8").splitlines() if line.strip()]
     if not limit or len(lines) <= limit:
         return rows, len(lines)
@@ -668,7 +666,7 @@ def estimated_spend(run, totals):
     for model in run.factory.models:
         price = (model.hosted or {}).get("price_per_million")
         key = (model.hosted or {}).get("model", model.id)
-        t = totals.get(key) or totals.get(model.id)
+        t = totals.get(key)
         if price and t:
             priced = True
             spend += t["prompt_tokens"] / 1e6 * float(price.get("input", 0)) + t["completion_tokens"] / 1e6 * float(price.get("output", 0))
@@ -781,10 +779,6 @@ def execute(run, start=None, until=None, funcs=None, redo=()):
     if until and until != "report":
         stage_report(run, publish=False)
     return run.load_state()
-
-
-def finished(run):
-    return run.load_state()["stages"].get("report", {}).get("status") == "done"
 
 
 def settings_for(factory, overrides):

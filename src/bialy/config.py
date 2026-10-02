@@ -144,12 +144,6 @@ class Factory:
                 return m
         raise ConfigError("unknown model %r" % model_id)
 
-    def repo(self, name):
-        for r in self.repos:
-            if r.name == name:
-                return r
-        raise ConfigError("unknown repository %r" % name)
-
     def workspaces(self):
         """Every workspace a task can run in: the repositories, then the stacks."""
         return [*self.repos, *self.stacks]
@@ -245,9 +239,9 @@ def run_settings(raw):
     for key, value in (raw or {}).items():
         if key not in settings:
             raise ConfigError("run.%s is not a setting" % key)
-        if key == "engine_on" and isinstance(value, bool):
-            settings[key]["enabled"] = value
-        elif isinstance(settings[key], dict):
+        if isinstance(settings[key], dict):
+            if value is not None and not isinstance(value, dict):
+                raise ConfigError("run.%s is a section of settings, not a single value" % key)
             for k, v in (value or {}).items():
                 if k not in settings[key]:
                     raise ConfigError("run.%s.%s is not a setting" % (key, k))
