@@ -139,8 +139,11 @@ status to `run.json` there; a failed stage stops the run with its error in
 - `evaluate` replays validation and holdout rows through the host engine
   loading the trained heads, and `release_heads` puts the results on the card.
 - With `--push`, `report` commits the release anchors on `release/<version>`,
-  pushes it, opens a pull request with `gh`, and uploads both releases to the
-  Hub. Without it, the report lists the commands.
+  tags that commit `dataset-<version>` and `heads-<version>`, pushes the branch
+  and tags, opens a pull request with `gh`, and uploads both releases to the
+  Hub. Without it, the report lists the commands. `docs/releases.md` explains
+  how a release, its tag, its Hub revisions, and the Painted Wolf Code versions
+  that ship it pin each other, and lists every release.
 - `run.spend_ceiling_usd` stops the run between stages once priced hosted
   models (`hosted.price_per_million`) have used it. Calls the runners' own
   sidecars make while driving are not metered here; the provider's dashboard is

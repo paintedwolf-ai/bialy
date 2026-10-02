@@ -24,8 +24,18 @@ def test_anchors_commit_on_a_release_branch_with_sign_off(tmp_path, monkeypatch)
     assert result["branch"] == "release/v9" and len(result["commit"]) == 40
     log = git("log", "-1", "--format=%B").stdout
     assert "release: record v9 anchors" in log and "Signed-off-by:" in log
-    assert publishing.commit_anchors("v9", ["dataset"])["unchanged"]
-    assert publishing.push_and_pull_request("v9", "body")["skipped"] == "no origin remote"
+    # The anchoring commit is tagged <kind>-<version>, and publishing again keeps the tag.
+    assert result["tags"] == ["dataset-v9"]
+    assert git("rev-parse", "dataset-v9^{commit}").stdout.strip() == result["commit"]
+    again = publishing.commit_anchors("v9", ["dataset"])
+    assert again["unchanged"] and again["tags"] == ["dataset-v9"]
+    assert publishing.push_and_pull_request("v9", "body", again["tags"])["skipped"] == "no origin remote"
+    # A released version's tag never moves to other code.
+    (repo / "README.md").write_text("y")
+    git("commit", "-q", "-am", "later")
+    import pytest
+    with pytest.raises(RuntimeError, match="never re-tagged"):
+        publishing.tag_release("v9", ["dataset"], git("rev-parse", "HEAD").stdout.strip())
 
 
 def test_outside_a_checkout_publishing_says_so(tmp_path, monkeypatch):

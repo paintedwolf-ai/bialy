@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from . import anchor, audit, config, hub, repos
-from .provenance import file_sha256
+from .provenance import factory_source, file_sha256
 
 CARD = """---
 license: apache-2.0
@@ -54,7 +54,7 @@ request needed. No row comes from a person's private session.
 - Greenfield stacks: {stacks}
 - Held out (repositories and stacks): {holdout}
 - Row schema: `pw-decide-row/1`, shipped as `row.schema.json`; the corpus the rows are read with, as `corpus.json`
-- Made by: {code_repo} {code_ref}; sessions ran on Painted Wolf Code at commit {engine_commit}
+- Made by: {code_repo} {code_ref} at commit {factory_commit} (tag `dataset-{version}`); sessions ran on Painted Wolf Code at commit {engine_commit}
 - Second-judge agreement (quadratic-weighted kappa): {kappa}
 
 ## Splits
@@ -145,7 +145,7 @@ def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreem
                 if line.strip():
                     fh.write(line + "\n")
     provenance = {
-        "version": version, "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "version": version, "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "factory": factory_source(),
         "models": [{"id": m.id, "hf": m.hf, "revision": m.revision, "license": m.license, "roles": list(m.roles)} for m in factory.models],
         "repositories": [{"name": r.name, "url": r.url, "commit": r.commit, "license": r.spdx, "split": r.split} for r in factory.repos],
         "stacks": [{"name": s.name, "language": s.language, "brief": s.brief, "split": s.split} for s in factory.stacks],
@@ -159,7 +159,7 @@ def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreem
     provenance["recipe"] = recipe([json.loads(Path(p).read_text(encoding="utf-8")) for p in stages])
     (out_dir / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
     engine = next((run["engine"] for run in provenance["recipe"]["sessions"]), {})
-    card = CARD.format(version=version, code_repo=config.hub().get("code_repo", ""), code_ref=code_ref,
+    card = CARD.format(version=version, code_repo=config.hub().get("code_repo", ""), code_ref=code_ref, factory_commit=provenance["factory"]["git_commit"],
                        engine_commit=engine.get("lycaon_commit"), models=", ".join("%s (%s)" % (m.hf, m.license) for m in factory.models),
                        repos=", ".join(r.name for r in factory.repos if r.split == "train"),
                        stacks=", ".join(s.name for s in factory.stacks if s.split == "train"),

@@ -12,7 +12,7 @@ import struct
 from pathlib import Path
 
 from . import anchor, config, hub
-from .provenance import file_sha256
+from .provenance import factory_source, file_sha256
 
 NOTICE = """Bialy decision heads
 Copyright 2026 Painted Wolf LLC
@@ -56,7 +56,7 @@ and `unit-rank` on its session rows, labeled by what open-weights models did
 in coding-agent sessions and scored by an open-weights judge; `code-rank` on its
 code-rank pairs, requests open-weights models wrote for code units in the same
 repositories. Trained and replayed with Painted Wolf Code at commit
-{engine_commit}; packaged with {code_repo}.
+{engine_commit}; packaged with {code_repo} at commit {factory_commit} (tag `heads-{version}`).
 
 ## Heads
 
@@ -138,12 +138,14 @@ def build(heads_dir, version, dataset_version, engine_commit, evals, baselines, 
     heads_dir, out_dir = Path(heads_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = config.hub()
+    # The Bialy commit packaging the release; publishing tags it heads-<version> (docs/releases.md).
+    factory = factory_source()
     heads = []
     for path in sorted(heads_dir.glob("*.safetensors")):
         shutil.copy2(path, out_dir / path.name)
         heads.append({"file": path.name, "sha256": file_sha256(path), "metadata": head_header(path)})
     card = CARD.format(version=version, dataset_repo=settings["dataset_repo"], dataset_version=dataset_version, code_repo=settings["code_repo"],
-                       engine_commit=engine_commit,
+                       engine_commit=engine_commit, factory_commit=factory["git_commit"],
                        heads="\n".join("- `%s`: %s, over %s, sha256 `%s`" % (h["file"], h["metadata"].get("label"), h["metadata"].get("backbone"),
                                                                             h["sha256"]) for h in heads),
                        results=results_table(evals, baselines, baseline_label), rerank=rerank_table(rerank))
@@ -158,7 +160,7 @@ def build(heads_dir, version, dataset_version, engine_commit, evals, baselines, 
         shutil.copy2(path, out_dir / "eval" / ("%s.baseline.json" % name))
     for name, path in rerank.items():
         shutil.copy2(path, out_dir / "eval" / ("rerank-%s.json" % name))
-    provenance = {"version": version, "dataset_version": dataset_version, "engine_commit": engine_commit, "heads": heads,
+    provenance = {"version": version, "dataset_version": dataset_version, "engine_commit": engine_commit, "factory": factory, "heads": heads,
                   "evals": sorted(evals), "baseline": {"label": baseline_label, "sets": sorted(baselines)}, "rerank": sorted(rerank)}
     (out_dir / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
     hub.seal(out_dir)
