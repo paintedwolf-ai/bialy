@@ -4,6 +4,7 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+# The lib* and fonts-* packages are what the browser tool's headless Chrome needs.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ca-certificates curl git build-essential pkg-config libssl-dev file procps less unzip zip xz-utils jq ripgrep sqlite3 \
       python3 python3-venv python3-pip python3-dev \
@@ -15,9 +16,7 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       fonts-liberation fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
-# Toolchain downloads are pinned by digest (go.dev/dl's published sha256; rustup's
-# per-release rustup-init.sha256; nodejs.org's SHASUMS256.txt), so the image never runs
-# a script it has not checked.
+# Toolchain downloads are pinned by their publishers' sha256 digests.
 ARG GO_VERSION=1.26.6
 ARG GO_SHA256=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
 RUN curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
@@ -28,8 +27,7 @@ ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
 RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
     && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c - && chmod +x /tmp/rustup-init \
     && /tmp/rustup-init -y --profile minimal --no-modify-path && rm /tmp/rustup-init && chmod -R a+rwX /opt/cargo /opt/rustup
-# Node.js is the current LTS rather than the distribution's package: project
-# scaffolders a new project starts from (create-vite, among others) refuse older majors.
+# Node.js LTS from nodejs.org: project scaffolders refuse the distribution's older major.
 ARG NODE_VERSION=24.21.0
 ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 RUN curl -fsSLo /tmp/node.txz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
@@ -53,8 +51,6 @@ COPY bin/ /opt/bialy/bin/
 COPY --chmod=755 run-shard.sh setup-repo.sh /opt/bialy/
 COPY unattended.yaml /opt/bialy/
 COPY workflows/ /opt/bialy/workflows/
-# The browser tool's headless Chrome needs the libraries and fonts above; the overlay
-# holds staged configuration, such as an engine-on pass's decision deadlines. The
-# scanner, when the payload carries one, is named by run-shard.sh.
+# The overlay holds staged configuration, such as an engine-on pass's decision deadlines.
 ENV LYCAON_ENGINE_ROOT=/opt/bialy/engine LYCAON_CONFIG_ROOT=/opt/bialy/engine/overlay
 ENTRYPOINT ["/opt/bialy/run-shard.sh"]

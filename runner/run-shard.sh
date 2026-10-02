@@ -21,8 +21,7 @@ case "$WORKSPACE_KIND" in
     git -C "$project" checkout -q "$COMMIT"
     ;;
   stack)
-    # Greenfield: an empty directory with git initialised and nothing else, as a
-    # developer starting a new project has.
+    # Greenfield: an empty directory with git initialised and nothing else.
     mkdir -p "$project"
     git -C "$project" init -q -b main
     ;;
@@ -50,8 +49,7 @@ set -a
 # shellcheck disable=SC1091
 . "$out/sidecar.env"
 set +a
-# A Linux Opengrep build, which only development binaries accept; without it the
-# sidecar reports the scanner unavailable.
+# A Linux Opengrep build, which only development binaries accept.
 if [ -x /opt/bialy/engine/opengrep/opengrep ]; then
   export LYCAON_OPENGREP_CANDIDATE=/opt/bialy/engine/opengrep
 fi

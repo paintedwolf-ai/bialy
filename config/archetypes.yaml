@@ -10,13 +10,13 @@
 # directory. `per_workspace` is how many tasks each workspace of that kind
 # gets, before deduplication.
 #
-# A repository request may only name files the repository has, which keeps
-# the generator from inventing code to talk about. `new_files: true` lets an
-# archetype's requests also name files to create, as long as each would sit
-# in a directory the repository has. Every file a stack request names is new.
+# A repository request may only name files the repository has, so the writer
+# cannot invent code to discuss. `new_files: true` lets an archetype's requests
+# also name files to create, as long as each would sit in a directory the
+# repository has. Every file a stack request names is new.
 #
-# Prompt diversity, not session count, is what a head learns from, so every
-# archetype asks for varied phrasing, length, and specificity.
+# Heads learn from prompt diversity, not session count, so every brief asks for
+# varied phrasing, length, and specificity.
 #
 # `workflows` gives the share of an archetype's tasks that start a project
 # workflow with the request (runner/workflows/). implement-dispatch plans the
@@ -26,8 +26,7 @@
 # investigated to a repo researcher, and changes to an implementer.
 #
 # `prompt_timeout` bounds each prompt of a task; a task that starts a workflow
-# gets the workflow budget, since its coordinator waits on worker legs. The
-# budgets follow what pass 1 measured (docs/running.md).
+# gets the workflow budget, since its coordinator waits on worker legs.
 defaults:
   prompt_timeout: 60m
   workflow_prompt_timeout: 180m
