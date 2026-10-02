@@ -59,6 +59,16 @@ tools a leg works with, and only 35 tools were judged needed beyond it in 340
 worker training rows. Tool metrics on worker legs rest on a handful of
 positives; read them with their support.
 
+A worker leg's decision state is its own assignment, never the user's request:
+the host reads it from the worker's job record, so a workflow leg's state is
+the leg prompt its coordinator wrote and a `task()` worker's is its charter's
+goal. Pass 1's rows predate this; they read the rendered worker prompt, whose
+operating preamble filled the 900-character budget before the goal. In the
+pass-3 pilot the 59 worker rows held one-sentence goals (median 225
+characters, longest 535) under the 1,600-character budget, with no preamble.
+The done-when criteria stay out of the state: 9 of those 59 rows needed any
+loadable tool, and the goal already says what the leg does.
+
 ## Fleet sizing
 
 - A runner costs about 2 CPUs of setup and tool work and one bridge address;
@@ -334,9 +344,6 @@ factory records and judges during generation:
   positives and its retention swings on a handful of turns (`native-recall-tool`:
   16 positives on holdout). A judged 0..4 relevance per unit, like the skill
   cards, would give every unit a label independent of call frequency.
-- Give worker legs their structured goal. The host cuts a worker's state to 900
-  characters and the task-mode preamble fills it, so the leg's goal rarely
-  reaches the head; pass the leg's goal and done-when fields as state.
 - Train the tool-event text. The tool-triggered skill read ranks the request
   plus the tool's name and description; no rows record which skill a session
   read after its first loadable tool call. Export that pair from receipts and
