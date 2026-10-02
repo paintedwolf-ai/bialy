@@ -28,8 +28,6 @@ import re
 import subprocess
 from pathlib import Path
 
-from .llm import Chat
-
 LANGUAGES = ["en", "en", "en", "de", "es", "fr", "pt", "ja", "zh", "ko"]
 REGISTERS = [
     "a short question a developer asks a coding assistant",
@@ -116,41 +114,59 @@ def unit_prompt(unit, lang, register):
 
 
 def model_pair(chat, unit, lang, register, seed):
-    """One generated pair, or None when the request names the unit."""
+    """One generated pair, marked when its request names the unit, or None for an empty reply."""
     reply = chat.json(SYSTEM, unit_prompt(unit, lang, register), temperature=0.8, seed=seed, thinking=False,
                       max_tokens=400, schema=REPLY_SCHEMA)
     task, query = str(reply.get("task", "")).strip(), str(reply.get("query", "")).strip()
-    if not task or mentions_identifier(task, unit):
+    if not task:
         return None
-    return pair(unit, task, query, lang, "model:" + chat.model)
+    return dict(pair(unit, task, query, lang, "model:" + chat.model), names_unit=mentions_identifier(task, unit))
 
 
-def endpoints(factory):
-    """Every server of every generator, so requests spread over replicas."""
-    return [Chat(factory.base_url(m, port), m.id) for m in factory.generators() for port in m.ports()]
+def endpoints(factory, writer=None):
+    """Every endpoint of the writer, or of every generator, so requests spread over replicas."""
+    models = [writer] if writer else factory.generators()
+    return [chat for m in models for chat in factory.chats(m)]
 
 
-def model_pairs(factory, units, count, seed=7, workers=64):
-    """Up to `count` generated pairs from a seeded sample of `units`, spread over every
-    generator server; each unit's language, register, and generator are drawn from the seed."""
+def model_pairs(factory, units, count, seed=7, workers=64, writer=None):
+    """`count` generated pairs whose requests do not name their unit, from a seeded order
+    of `units`, and every pair along the way whose request does.
+
+    Each unit's language, register, and generator come from the seed. Training reads only
+    requests that describe a unit without naming it, since text matching already ranks a
+    named one first; the prompt does not steer wording, so named replies are kept apart
+    rather than prevented. Units are drawn in waves until `count` unnamed pairs exist or
+    the units run out; the unnamed pairs are the first `count` in unit order, and the
+    named ones are those drawn up to the last of them, or all of them when the units ran
+    out first."""
     rng = random.Random(seed)
     sample = [u for u in units if u.get("code")]
     rng.shuffle(sample)
-    chats = endpoints(factory)
+    chats = endpoints(factory, writer)
     jobs = [(u, rng.choice(LANGUAGES), rng.choice(REGISTERS), rng.randrange(1 << 30), chats[i % len(chats)])
-            for i, u in enumerate(sample[:count])]
-    out = []
+            for i, u in enumerate(sample)]
+    kept, cursor = {}, 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(model_pair, chat, u, lang, reg, s) for u, lang, reg, s, chat in jobs]
-        for fut in futures:
-            try:
-                row = fut.result()
-            except Exception as exc:  # a malformed reply loses one pair, not the repository
-                print("pair failed: %s" % exc, flush=True)
-                continue
-            if row:
-                out.append(row)
-    return out
+        while cursor < len(jobs):
+            short = count - sum(not r["names_unit"] for r in kept.values())
+            wave = range(cursor, min(len(jobs), cursor + max(2 * short, workers)))
+            futures = {i: pool.submit(model_pair, jobs[i][4], *jobs[i][:4]) for i in wave}
+            for i, fut in futures.items():
+                try:
+                    row = fut.result()
+                except Exception as exc:  # a malformed reply loses one pair, not the repository
+                    print("pair failed: %s" % exc, flush=True)
+                    continue
+                if row:
+                    kept[i] = row
+            cursor = wave.stop
+            if sum(not r["names_unit"] for r in kept.values()) >= count:
+                break
+    ordered = [kept[i] for i in sorted(kept)]
+    unnamed = [r for r in ordered if not r["names_unit"]][:count]
+    last = ordered.index(unnamed[-1]) if len(unnamed) == count else len(ordered) - 1
+    return unnamed, [r for r in ordered[:last + 1] if r["names_unit"]]
 
 
 def harvest(factory, decide_rerank, out_dir):
@@ -166,7 +182,7 @@ def harvest(factory, decide_rerank, out_dir):
     return counts
 
 
-def pairs(factory, units_dir, out_dir, per_repo, seed=7):
+def pairs(factory, units_dir, out_dir, per_repo, seed=7, writer=None):
     """Doc and generated pairs for every repository; held-out repositories get the same
     sources so they can measure both."""
     units_dir, out_dir = Path(units_dir), Path(out_dir)
@@ -174,10 +190,12 @@ def pairs(factory, units_dir, out_dir, per_repo, seed=7):
     for repo in factory.repos:
         units = read_jsonl(units_dir / (repo.name + ".jsonl"))
         docs = doc_pairs(units)
-        generated = model_pairs(factory, units, per_repo, seed=hash_seed(seed, repo.name))
+        generated, named = model_pairs(factory, units, per_repo, seed=hash_seed(seed, repo.name), writer=writer)
         write_jsonl(out_dir / ("docs-%s.jsonl" % repo.name), docs)
         write_jsonl(out_dir / ("model-%s.jsonl" % repo.name), generated)
-        counts[repo.name] = {"docs": len(docs), "model": len(generated), "split": repo.split}
+        # Requests that name their unit: realistic, and for measuring the blend, not training.
+        write_jsonl(out_dir / ("model-named-%s.jsonl" % repo.name), named)
+        counts[repo.name] = {"docs": len(docs), "model": len(generated), "model_named": len(named), "split": repo.split}
         print(repo.name, counts[repo.name], flush=True)
     return counts
 

@@ -1,9 +1,9 @@
-"""Split judged rows into train, validation, and held-out repositories.
+"""Split judged rows into train, validation, and held-out workspaces.
 
-Every row of a held-out repository is held out. The rest split by prompt
-group (near-duplicate prompts share one), so validation measures requests the
-head never trained on, and a prompt driven under two models, or its worker
-legs, never lands on both sides.
+Every row of a held-out workspace (a repository, or a greenfield stack) is held
+out. The rest split by prompt group (near-duplicate prompts share one), so
+validation measures requests the head never trained on, and a prompt driven
+under two models, or its worker legs, never lands on both sides.
 """
 
 import hashlib
@@ -19,8 +19,8 @@ def side(group, seed, val_fraction):
 def split(factory, rows_paths, out_dir):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    holdout = {r.name for r in factory.repos if r.split == "holdout"}
-    known = {r.name for r in factory.repos}
+    holdout = factory.holdout()
+    known = {w.name for w in factory.workspaces()}
     files = {name: open(out_dir / ("%s.jsonl" % name), "w", encoding="utf-8") for name in ("train", "val", "holdout")}
     counts = {name: 0 for name in files}
     groups = {name: set() for name in files}
@@ -31,13 +31,13 @@ def split(factory, rows_paths, out_dir):
                     continue
                 row = json.loads(line)
                 meta = row.get("meta") or {}
-                repo, group = meta.get("repo"), meta.get("prompt_group")
-                if not repo or not group:
+                workspace, group = meta.get("workspace"), meta.get("prompt_group")
+                if not workspace or not group:
                     # Grouping by anything else would split near-duplicates apart.
-                    raise ValueError("row %s has no task repository and prompt group; collect it again" % row.get("receipt"))
-                if repo not in known:
-                    raise ValueError("row from unknown repository %r" % repo)
-                name = "holdout" if repo in holdout else side(group, factory.split["seed"], factory.split["val_fraction"])
+                    raise ValueError("row %s has no task workspace and prompt group; collect it again" % row.get("receipt"))
+                if workspace not in known:
+                    raise ValueError("row from unknown workspace %r" % workspace)
+                name = "holdout" if workspace in holdout else side(group, factory.split["seed"], factory.split["val_fraction"])
                 files[name].write(line if line.endswith("\n") else line + "\n")
                 counts[name] += 1
                 groups[name].add(group)

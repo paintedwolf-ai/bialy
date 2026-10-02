@@ -11,19 +11,29 @@ from .usage import record_usage
 FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
+def account_failure(exc):
+    """Account and authentication refusals (no credit, a revoked key) cannot improve by retrying."""
+    return getattr(exc, "status_code", None) in {401, 402, 403, 412}
+
+
 class Chat:
-    def __init__(self, base_url, model_id, api_key="unused", hosted=False):
+    def __init__(self, base_url, model_id, api_key="unused", hosted=False, reasoning_effort=None):
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=600, max_retries=8)
         self.model = model_id
         self.hosted = hosted
+        # A hosted model's configured effort (models.yaml hosted.reasoning_effort), sent on every call.
+        self.reasoning_effort = reasoning_effort
 
     def complete(self, system, user, temperature=0.0, seed=None, max_tokens=8192, thinking=True, schema=None):
         """The reply text, with reasoning kept out: the servers run a reasoning parser, so
         `content` is the answer alone. `thinking=False` asks the chat template to skip the
         reasoning phase where the model supports it; a provider takes the lowest reasoning
-        effort instead, since some hosted models only answer after reasoning."""
+        effort instead, since some hosted models only answer after reasoning. A hosted model
+        with a configured effort gets that effort on every call."""
         extra = {"seed": seed} if seed is not None else {}
-        if not thinking:
+        if self.reasoning_effort:
+            extra["extra_body"] = {"reasoning_effort": self.reasoning_effort}
+        elif not thinking:
             extra["extra_body"] = {"reasoning_effort": "low"} if self.hosted else {"chat_template_kwargs": {"enable_thinking": False}}
         if schema is not None:
             # Constrained decoding: the server only emits JSON matching the schema.

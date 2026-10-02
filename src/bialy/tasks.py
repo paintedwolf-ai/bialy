@@ -1,11 +1,16 @@
 """Write the requests generated sessions answer.
 
-For every repository and archetype, a generator model reads facts about the
-repository (its files, README, and recent history) and writes requests a
-developer could make. Requests that name files the repository does not have
-are dropped, near-duplicates share a prompt group so a split never puts them
-on both sides, and each task is assigned the model that will drive its
-session, the workflow it starts, if any, and follow-ups.
+Every task runs in a workspace. For a repository, a generator model reads facts
+about it (its files, README, and recent history) and writes requests a
+developer could make there; requests that name files the repository does not
+have are dropped, unless the archetype asks for new files and each would sit in
+a directory the repository has. For a stack, the generator gets the toolchain
+and a drawn project idea and scale, and writes requests that start a project in
+an empty directory.
+
+Near-duplicates share a prompt group so a split never puts them on both sides,
+and each task is assigned the model that will drive its session, the workflow
+it starts, if any, and follow-ups.
 """
 
 import concurrent.futures
@@ -19,15 +24,30 @@ from pathlib import Path
 import yaml
 
 from .config import ROOT, ConfigError
-from .llm import Chat
 
 WORKFLOW_ROOT = ROOT / "runner" / "workflows"
 
-SYSTEM = """You write realistic requests that developers type to an AI coding assistant working in their repository.
+STYLE = """You write realistic requests that developers type to an AI coding assistant.
 Write each request the way a busy engineer would: some terse, some detailed, some with pasted error output, some polite, some blunt.
 Never tell the assistant which tool or command to use to do the work unless a developer naturally would ("run the tests", "check git blame").
-Refer only to files, functions, and types that appear in the facts you are given.
-Reply with one JSON object only: {"tasks": [{"prompt": "...", "follow_ups": ["..."]}]}. follow_ups is a list of zero to two later messages in the same conversation."""
+When reporting bugs, test failures, or asking for fixes, describe the observed symptom, error message, or failing test behavior rather than revealing the exact root-cause file and line number."""
+REPLY = """Reply with one JSON object only: {"tasks": [{"prompt": "...", "follow_ups": ["..."]}]}. follow_ups is a list of zero to two later messages in the same conversation."""
+# What the request may refer to depends on where its session starts.
+WORKSPACE_RULES = {
+    ("repository", False): """The assistant is working in the developer's repository, described by the facts you are given.
+When asking for new code or edits, developers often ask to follow existing patterns in the codebase or check official documentation for library conventions.
+Refer only to files, functions, and types that appear in the facts you are given. Do not invent non-existent file paths.""",
+    ("repository", True): """The assistant is working in the developer's repository, described by the facts you are given.
+When asking for new code or edits, developers often ask to follow existing patterns in the codebase or check official documentation for library conventions.
+Refer to existing files, functions, and types only as they appear in the facts. A file the request asks to create may have any name, in a directory the facts show.""",
+    ("stack", True): """The developer is starting in an empty directory: no code exists yet. Requests may name the framework, libraries, files, and features they want, or describe only the outcome and leave those choices to the assistant.
+Developers starting something new often ask the assistant to check official documentation for how a library or tool is meant to be used.""",
+}
+
+
+def system_prompt(workspace, archetype):
+    return "\n".join((STYLE, WORKSPACE_RULES[(workspace.kind, archetype.new_files)], REPLY))
+
 
 REPLY_SCHEMA = {
     "type": "object", "required": ["tasks"], "additionalProperties": False,
@@ -59,13 +79,25 @@ def repo_facts(path, rng):
     return "Files (a sample of %d):\n%s\n\nREADME (start):\n%s\n\nRecent commits:\n%s" % (len(files), "\n".join(sample), readme, log)
 
 
-def mentioned_paths_exist(prompt, files):
-    """Every path-like token names a file the repository has (by full path or basename)."""
+def stack_facts(stack, domain, scale):
+    """What a greenfield request starts from: the toolchain, an idea, and a size."""
+    return "Workspace: an empty directory; nothing has been created yet.\nStack: %s - %s.\nProject idea: %s.\nScale: %s." % (
+        stack.name, stack.brief, domain, scale)
+
+
+def mentioned_paths_exist(prompt, files, new_files=False):
+    """Every path-like token names a file the repository has (by full path or basename),
+    or, with `new_files`, a file to create at the top level or in a directory it has."""
     names = set(files) | {f.rsplit("/", 1)[-1] for f in files}
+    dirs = {f.rsplit("/", 1)[0] for f in files if "/" in f}
+    dirs |= {d.rsplit("/", i)[0] for d in list(dirs) for i in range(1, d.count("/") + 1)}
     for token in PATHLIKE.findall(prompt):
         token = token.strip("./")
-        if token not in names and not any(f.endswith("/" + token) for f in files):
-            return False
+        if token in names or any(f.endswith("/" + token) for f in files):
+            continue
+        if new_files and ("/" not in token or token.rsplit("/", 1)[0] in dirs):
+            continue
+        return False
     return True
 
 
@@ -105,21 +137,17 @@ def group_prompts(prompts, threshold=0.6, bands=16, rows_per_band=4):
     return [find(i) for i in range(len(prompts))]
 
 
-def provider_id(model_id):
-    """The provider instance a runner's sidecar declares for a served model."""
-    return "vllm-" + model_id.replace(".", "-")
-
-
 def clean(text):
     """Model text as valid UTF-8: a lone surrogate from a broken token becomes "?"."""
     return text.encode("utf-8", "replace").decode("utf-8").strip()
 
 
-def generate_batch(chat, facts, archetype, count, language, seed):
+def generate_batch(chat, workspace, facts, archetype, count, language, seed):
     lang = ("Write every request and follow-up in %s." % LANGUAGE_NAMES[language]) if language else "Write in English."
     user = "%s\n\nWrite %d different requests of this kind:\n%s\n%s" % (facts, count, archetype.brief, lang)
     # Writing requests needs variety, not deliberation: sample hot, skip the reasoning phase.
-    value = chat.json(SYSTEM, user, temperature=0.9, seed=seed, thinking=False, max_tokens=4096, schema=REPLY_SCHEMA)
+    value = chat.json(system_prompt(workspace, archetype), user, temperature=0.9, seed=seed, thinking=False, max_tokens=4096,
+                      schema=REPLY_SCHEMA)
     tasks = value.get("tasks") if isinstance(value, dict) else value
     out = []
     for t in tasks or []:
@@ -130,55 +158,63 @@ def generate_batch(chat, facts, archetype, count, language, seed):
 
 
 def generate(factory, repos_dir, out_dir, seed=7, workers=48):
-    """Write tasks/<repo>.jsonl for every configured repository. Each generated batch is
-    appended to raw/<repo>.jsonl as it completes, so an interrupted run resumes where it
-    stopped and the final files are rebuilt from every batch."""
+    """Write tasks/<workspace>.jsonl for every configured workspace. Each generated batch
+    is appended to raw/<workspace>.jsonl as it completes, so an interrupted run resumes
+    where it stopped and the final files are rebuilt from every batch."""
     out_dir = Path(out_dir)
     raw_dir = out_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     generators = factory.generators()
-    chats = {m.id: Chat(factory.base_url(m), m.id) for m in generators}
+    chats = {m.id: factory.chats(m)[0] for m in generators}
     done = set()
     for path in raw_dir.glob("*.jsonl"):
         for line in path.read_text(encoding="utf-8").splitlines():
             done.add(json.loads(line)["job"])
     jobs = []
-    for repo in factory.repos:
-        rng = random.Random("%s:%s" % (seed, repo.name))
-        facts = repo_facts(Path(repos_dir) / repo.name, rng)
-        for arch in factory.archetypes:
-            remaining, n = arch.per_repo, 0
+    for workspace in factory.workspaces():
+        rng = random.Random("%s:%s" % (seed, workspace.name))
+        facts = repo_facts(Path(repos_dir) / workspace.name, rng) if workspace.kind == "repository" else None
+        for arch in factory.archetypes_for(workspace):
+            remaining, n = arch.per_workspace, 0
             while remaining > 0:
                 count = min(6, remaining)
                 other = rng.random() < factory.languages["other_rate"]
                 language = rng.choice(factory.languages["choices"]) if other else None
                 author = generators[(n + len(jobs)) % len(generators)].id
-                key = "%s/%s/%d" % (repo.name, arch.id, n)
+                key = "%s/%s/%d" % (workspace.name, arch.id, n)
                 job_seed = rng.randrange(1 << 30)
+                # A stack's batches each draw their own idea and scale, so its tasks spread over many projects.
+                drawn = {"domain": rng.choice(factory.seeds["domains"]), "scale": rng.choice(factory.seeds["scales"])} \
+                    if workspace.kind == "stack" else None
                 if key not in done:
-                    jobs.append((key, repo, arch, facts, count, language, author, job_seed))
+                    jobs.append((key, workspace, arch, facts or stack_facts(workspace, **drawn), count, language, author, job_seed, drawn))
                 remaining -= count
                 n += 1
     print("%d batches to write, %d already written" % (len(jobs), len(done)), flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(generate_batch, chats[j[6]], j[3], j[2], j[4], j[5], j[7]): j for j in jobs}
+        futures = {pool.submit(generate_batch, chats[j[6]], j[1], j[3], j[2], j[4], j[5], j[7]): j for j in jobs}
         for fut in concurrent.futures.as_completed(futures):
-            key, repo, arch, _, _, language, author, _ = futures[fut]
+            key, workspace, arch, _, _, language, author, _, drawn = futures[fut]
             try:
                 batch = fut.result()
             except Exception as exc:  # a malformed reply loses one batch, not the run
                 print("batch %s failed: %s" % (key, exc), flush=True)
                 continue
-            with open(raw_dir / (repo.name + ".jsonl"), "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"job": key, "archetype": arch.id, "lang": language or "en", "author": author, "tasks": batch}, ensure_ascii=False) + "\n")
+            entry = {"job": key, "archetype": arch.id, "lang": language or "en", "author": author, "tasks": batch}
+            if drawn:
+                entry["seed"] = drawn
+            with open(raw_dir / (workspace.name + ".jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     counts = {}
-    for repo in factory.repos:
+    for workspace in factory.workspaces():
         raw = []
-        path = raw_dir / (repo.name + ".jsonl")
+        path = raw_dir / (workspace.name + ".jsonl")
         for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else []):
             entry = json.loads(line)
-            raw += [{**t, "archetype": entry["archetype"], "lang": entry["lang"], "author": entry["author"]} for t in entry["tasks"]]
-        counts[repo.name] = finalize(factory, repo, raw, repo_files(Path(repos_dir) / repo.name), out_dir / (repo.name + ".jsonl"), seed)
+            raw += [{**t, "archetype": entry["archetype"], "lang": entry["lang"], "author": entry["author"], "seed": entry.get("seed")}
+                    for t in entry["tasks"]]
+        files = repo_files(Path(repos_dir) / workspace.name) if workspace.kind == "repository" else []
+        counts[workspace.name] = finalize(factory, workspace, raw, files, out_dir / (workspace.name + ".jsonl"), seed)
     return counts
 
 
@@ -200,22 +236,27 @@ def workflow_versions(factory):
     return versions
 
 
-def finalize(factory, repo, raw, files, out_path, seed):
-    """Validate, group, and assign one repository's tasks, then write them."""
+def finalize(factory, workspace, raw, files, out_path, seed):
+    """Validate, group, and assign one workspace's tasks, then write them. `files` lists a
+    repository's files; a stack's workspace starts empty."""
     versions = workflow_versions(factory)
-    rng = random.Random("%s:assign:%s" % (seed, repo.name))
-    def usable(text):
-        return 12 <= len(text) <= 2400 and mentioned_paths_exist(text, files)
+    rng = random.Random("%s:assign:%s" % (seed, workspace.name))
+    archetypes = {a.id: a for a in factory.archetypes}
+
+    def usable(text, arch):
+        if not 12 <= len(text) <= 2400:
+            return False
+        return workspace.kind == "stack" or mentioned_paths_exist(text, files, arch.new_files)
 
     # Follow-ups pass the same gate as the request; a task keeps only those that do.
-    kept = [dict(t, follow_ups=[f for f in t["follow_ups"] if usable(f)]) for t in raw if usable(t["prompt"])]
+    kept = [dict(t, follow_ups=[f for f in t["follow_ups"] if usable(f, archetypes[t["archetype"]])])
+            for t in raw if usable(t["prompt"], archetypes[t["archetype"]])]
     groups = group_prompts([t["prompt"] for t in kept])
     generators = [m.id for m in factory.generators()]
-    archetypes = {a.id: a for a in factory.archetypes}
     seen_groups = set()
     tasks = []
     for t, g in zip(kept, groups, strict=True):
-        group_key = "%s:%s" % (repo.name, hashlib.sha1(kept[g]["prompt"].encode()).hexdigest()[:12])
+        group_key = "%s:%s" % (workspace.name, hashlib.sha1(kept[g]["prompt"].encode()).hexdigest()[:12])
         if group_key in seen_groups:
             continue  # a near-duplicate adds no diversity
         seen_groups.add(group_key)
@@ -223,14 +264,15 @@ def finalize(factory, repo, raw, files, out_path, seed):
         names = sorted(arch.workflows)
         pick = rng.choices([None, *names], [1 - sum(arch.workflows.values()), *(arch.workflows[n] for n in names)])[0]
         follow = t["follow_ups"] if rng.random() < arch.follow_up_rate else []
-        tid = hashlib.sha1(("%s\n%s" % (repo.name, t["prompt"])).encode()).hexdigest()[:16]
+        tid = hashlib.sha1(("%s\n%s" % (workspace.name, t["prompt"])).encode()).hexdigest()[:16]
         model = rng.choice(generators)
-        task = {
-            "id": tid, "prompt": t["prompt"], "follow_ups": [{"prompt": f} for f in follow],
-            "provider_id": provider_id(model), "model": model,
-            "meta": {"task_id": tid, "repo": repo.name, "split": repo.split, "archetype": arch.id, "prompt_group": group_key,
-                     "lang": t["lang"], "author_model": t["author"], "workflow": pick},
-        }
+        meta = {"task_id": tid, "workspace": workspace.name, "workspace_kind": workspace.kind, "split": workspace.split,
+                "archetype": arch.id, "prompt_group": group_key, "lang": t["lang"], "author_model": t["author"], "workflow": pick,
+                "prompt_timeout": arch.timeout(pick)}
+        if t.get("seed"):
+            meta["seed"] = t["seed"]
+        task = {"id": tid, "prompt": t["prompt"], "follow_ups": [{"prompt": f} for f in follow],
+                "provider_id": factory.provider_id(factory.model(model)), "model": model, "meta": meta}
         if pick:
             task["workflow"] = pick
             task["workflow_version"] = versions[pick]
@@ -259,7 +301,7 @@ def rebase(factory, src_dir, out_dir, skip_ids):
             if t["id"] in skip_ids:
                 continue
             t["model"] = mapping[t["model"]]
-            t["provider_id"] = provider_id(t["model"])
+            t["provider_id"] = factory.provider_id(factory.model(t["model"]))
             kept.append(json.dumps(t, ensure_ascii=False))
         (out_dir / path.name).write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
         counts[path.stem] = len(kept)

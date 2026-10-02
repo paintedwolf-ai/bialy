@@ -3,9 +3,9 @@
   bialy repos fetch|verify
   bialy serve start|stop|status
   bialy tasks --out DIR [--seed N]
-  bialy fleet image --lycaon-bin DIR --engine DIR [--tag NAME --decide-deadline-ms N --decisions FILE]
+  bialy fleet image --lycaon-bin DIR --engine DIR [--tag NAME --decide-deadline-ms N --config-dir DIR]
   bialy fleet warm [--image TAG]
-  bialy fleet plan --run NAME --tasks DIR [--pilot DIR] [--repo NAME ...] [--image TAG --lycaon-bin DIR]
+  bialy fleet plan --run NAME --tasks DIR [--pilot DIR] [--workspace NAME ...] [--image TAG --lycaon-bin DIR]
   bialy fleet run --run NAME [--runners N] [--pilot DIR --image NAME]
   bialy fleet replan --run NAME --tasks DIR [--pilot DIR]
   bialy fleet reap --run NAME
@@ -26,6 +26,9 @@
   bialy audit dataset --release DIR [--unanchored] [--rejudge N --endpoint URL --model ID]
   bialy audit heads --release DIR --dataset DIR --lycaon CHECKOUT --engine LAUNCHER
   bialy check
+  bialy run --run NAME [--until STAGE] [--from STAGE] [--redo STAGE ...] [--dry-run] [--push] [--rebuild-image]
+            [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
+  bialy run-status --run NAME
 
 Runs live under <root>/runs/<name>; the root and everything else come from config/.
 """
@@ -38,16 +41,7 @@ import time
 from pathlib import Path
 
 from . import audit, coderank, config, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
-
-PILOT_MOUNT = "/opt/decide"
-
-
-def pilot_env(pilot):
-    """The sidecar's decision engine for a run: off, or the pilot heads in pilot/."""
-    if not pilot:
-        return {"LYCAON_DECIDE_DISABLED": "1"}
-    return {"LYCAON_DECIDE_BINARY": PILOT_MOUNT + "/bialy", "LYCAON_DECIDE_MODEL_DIR": PILOT_MOUNT + "/model",
-            "LYCAON_DECIDE_HEADS": ",".join("%s=%s/heads/%s.safetensors" % (h, PILOT_MOUNT, h) for h in ("turn-load", "unit-rank", "code-rank"))}
+from . import run as runmod
 
 
 def main(argv=None):
@@ -66,7 +60,7 @@ def main(argv=None):
     p.add_argument("--out", help="salvage: task directory for the tasks still to drive")
     p.add_argument("--run")
     p.add_argument("--tasks")
-    p.add_argument("--repo", action="append")
+    p.add_argument("--workspace", action="append", help="plan: only these repositories or stacks (repeatable)")
     p.add_argument("--runners", type=int)
     p.add_argument("--pilot", help="directory with bialy, model/, and heads/ for an engine-on pass")
     p.add_argument("--lycaon-bin")
@@ -74,7 +68,7 @@ def main(argv=None):
     p.add_argument("--tag", help="image tag (default: the configured runner image)")
     p.add_argument("--image", help="runner image for this run")
     p.add_argument("--decide-deadline-ms", type=int, help="raise every turn decision's deadline in the staged catalog")
-    p.add_argument("--decisions", help="the binaries' commit's lycaon/config/.../host/decisions.yaml, for --decide-deadline-ms")
+    p.add_argument("--config-dir", help="the binaries' commit's lycaon/config tree, for --decide-deadline-ms")
     p = sub.add_parser("coderank")
     p.add_argument("action", choices=("harvest", "pairs", "dumps"))
     p.add_argument("--decide-rerank", help="the decide-rerank binary, built from the engine commit the runners carry")
@@ -103,7 +97,7 @@ def main(argv=None):
     p.add_argument("--per-family", type=int, default=5)
     p.add_argument("--eval-fraction", type=float, default=0.2)
     p.add_argument("--skill", action="append", default=[], help="only these skills (a pilot)")
-    p.add_argument("--repo", action="append", default=[], help="only these repositories")
+    p.add_argument("--workspace", action="append", default=[], help="only these repositories or stacks")
     p.add_argument("--split", help="put every row in this split instead of dividing train and eval")
     p.add_argument("--offered-from", help="a rows file whose first coordinator turn's candidates every row offers, so its tools can be judged")
     p.add_argument("--seed", type=int, default=7)
@@ -160,13 +154,52 @@ def main(argv=None):
     p.add_argument("--model", help="the pinned judge the endpoint serves, as rows name it")
     p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
     sub.add_parser("check", help="validate the configuration and pins, offline")
+    p = sub.add_parser("run", help="drive a whole pass on this machine, resumable; uploads only with --push")
+    p.add_argument("--run", required=True)
+    p.add_argument("--until", choices=runmod.STAGES, help="stop after this stage")
+    p.add_argument("--from", dest="start", choices=runmod.STAGES, help="rerun from this stage, discarding later results")
+    p.add_argument("--redo", action="append", choices=runmod.STAGES, default=[], help="rerun this stage alone, keeping the others (repeatable)")
+    p.add_argument("--dry-run", action="store_true", help="print the stages this invocation would run")
+    p.add_argument("--push", action="store_true", help="publish the dataset and heads at the end")
+    p.add_argument("--rebuild-image", action="store_true")
+    p.add_argument("--task-cap", type=int, help="at most this many tasks per archetype per workspace")
+    p.add_argument("--workspace", action="append", help="only these repositories or stacks (repeatable)")
+    p.add_argument("--runners", type=int)
+    p.add_argument("--epochs", type=int, help="cap every recipe's epochs, for a short check of the training stages")
+    p.add_argument("--no-engine-on", action="store_true", help="skip the second pass that drives with the pilot heads")
+    p = sub.add_parser("run-status")
+    p.add_argument("--run", required=True)
     args = ap.parse_args(argv)
     factory = config.load()
     runs = factory.root / "runs"
 
+    if args.cmd in ("run", "run-status"):
+        overrides = {} if args.cmd == "run-status" else {"task_cap": args.task_cap, "workspaces": args.workspace, "runners": args.runners,
+                                                          "train.epochs": args.epochs, "engine_on.enabled": False if args.no_engine_on else None}
+        run = runmod.Run(factory=factory, name=args.run, settings=runmod.settings_for(factory, overrides),
+                         push=getattr(args, "push", False), rebuild_image=getattr(args, "rebuild_image", False),
+                         until=getattr(args, "until", None))
+        if args.cmd == "run-status":
+            state = run.load_state()
+            for name in runmod.STAGES:
+                s = state["stages"].get(name)
+                print("%-14s %s" % (name, "%s at %s (%ss)%s" % (s["status"], s["at"], s.get("seconds", "?"), "  " + s["error"] if s.get("error") else "") if s else "pending"))
+            return 0
+        if args.dry_run:
+            for name, action in runmod.plan(run, args.start, args.until, args.redo):
+                print("%-14s %s" % (name, action))
+            return 0
+        try:
+            state = runmod.execute(run, args.start, args.until, redo=args.redo)
+        except runmod.RunError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        report = state["stages"].get("report", {}).get("outputs", {}).get("report")
+        print("run %s finished%s" % (args.run, "; report at " + report if report else ""))
+        return 0
     if args.cmd == "check":
-        print("%d models, %d repositories (%d held out), %d archetypes; hub %s, %s" % (
-            len(factory.models), len(factory.repos), sum(r.split == "holdout" for r in factory.repos), len(factory.archetypes),
+        print("%d models, %d repositories and %d stacks (%d held out), %d archetypes; hub %s, %s" % (
+            len(factory.models), len(factory.repos), len(factory.stacks), len(factory.holdout()), len(factory.archetypes),
             config.hub()["dataset_repo"], config.hub()["model_repo"]))
         return 0
     if args.cmd == "release-heads":
@@ -247,22 +280,22 @@ def main(argv=None):
             return 1 if failed else 0
         if args.action == "image":
             fleet.ensure_network(factory)
-            if args.decide_deadline_ms and not args.decisions:
-                ap.error("--decide-deadline-ms needs --decisions")
-            fleet.build_image(factory, args.lycaon_bin, args.engine, args.tag, args.decide_deadline_ms, args.decisions)
+            if args.decide_deadline_ms and not args.config_dir:
+                ap.error("--decide-deadline-ms needs --config-dir")
+            fleet.build_image(factory, args.lycaon_bin, args.engine, args.tag, args.decide_deadline_ms, args.config_dir)
             return 0
         run_dir = runs / args.run
         if args.action == "plan":
             run_dir.mkdir(parents=True, exist_ok=True)
-            planned = fleet.plan_shards(factory, args.tasks, run_dir, pilot_env(args.pilot), args.repo)
+            planned = fleet.plan_shards(factory, args.tasks, run_dir, fleet.pilot_env(args.pilot), args.workspace)
             tasks_record = os.path.join(args.tasks, "provenance.json")
             provenance.record(factory, run_dir / "provenance.json", "fleet", bin_dir=args.lycaon_bin, tasks=str(args.tasks), pilot=args.pilot,
-                              decide_env=pilot_env(args.pilot), image=provenance.image(args.image or factory.fleet["image"]),
+                              decide_env=fleet.pilot_env(args.pilot), image=provenance.image(args.image or factory.fleet["image"]),
                               tasks_provenance=json.load(open(tasks_record)) if os.path.exists(tasks_record) else None)
             print("%d shards planned" % planned)
             return 0
         if args.action == "replan":
-            removed, planned = fleet.replan(factory, args.tasks, run_dir, pilot_env(args.pilot))
+            removed, planned = fleet.replan(factory, args.tasks, run_dir, fleet.pilot_env(args.pilot))
             record = run_dir / "provenance.json"
             doc = json.loads(record.read_text()) if record.exists() else {}
             doc.setdefault("serving_changes", []).append({"replanned_shards": planned, "serving": provenance.serving(factory),
@@ -272,8 +305,12 @@ def main(argv=None):
             return 0
         if args.action == "run":
             fleet.ensure_network(factory)
-            mounts = [(args.pilot, PILOT_MOUNT)] if args.pilot else []
-            done, failed = fleet.run(factory, run_dir, args.runners, mounts, args.image)
+            mounts = [(args.pilot, fleet.PILOT_MOUNT)] if args.pilot else []
+            try:
+                done, failed = fleet.run(factory, run_dir, args.runners, mounts, args.image)
+            except fleet.AccountRefused as exc:
+                print("fleet stopped: %s" % exc, file=sys.stderr)
+                return 1
             print("shards done=%d failed=%d" % (done, failed))
             return 0 if not failed else 1
         if args.action == "salvage":
@@ -293,11 +330,11 @@ def main(argv=None):
             corpus = json.load(fh)
         families = {k: int(v) for k, v in (kv.split("=") for kv in args.families.split(","))}
         report = skillreq.write(factory, corpus, args.out, args.writer, families, args.none_families, args.per_family, seed=args.seed,
-                                eval_fraction=args.eval_fraction, only=tuple(args.skill), workers=args.workers, repos=tuple(args.repo),
+                                eval_fraction=args.eval_fraction, only=tuple(args.skill), workers=args.workers, workspaces=tuple(args.workspace),
                                 split=args.split, offered=skillreq.offered_from(args.offered_from) if args.offered_from else None)
         report["provenance"] = provenance.record(factory, args.out + ".provenance.json", "skillreq", uses_engine=False, writer=args.writer,
                                                  families=families, none_families=args.none_families, per_family=args.per_family,
-                                                 seed=args.seed, corpus_revision=corpus["catalog_revision"], repos=args.repo, split=args.split)["at"]
+                                                 seed=args.seed, corpus_revision=corpus["catalog_revision"], workspaces=args.workspace, split=args.split)["at"]
         print(json.dumps(report))
         return 0
     if args.cmd == "judge":

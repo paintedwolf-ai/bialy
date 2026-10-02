@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ca-certificates curl git build-essential pkg-config libssl-dev file procps less unzip zip xz-utils jq ripgrep sqlite3 \
       python3 python3-venv python3-pip python3-dev \
-      nodejs npm ruby-full ruby-bundler \
+      ruby-full ruby-bundler \
       php-cli php-xml php-mbstring php-curl composer \
       openjdk-21-jdk-headless maven \
       libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
@@ -16,7 +16,8 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Toolchain downloads are pinned by digest (go.dev/dl's published sha256; rustup's
-# per-release rustup-init.sha256), so the image never runs a script it has not checked.
+# per-release rustup-init.sha256; nodejs.org's SHASUMS256.txt), so the image never runs
+# a script it has not checked.
 ARG GO_VERSION=1.26.6
 ARG GO_SHA256=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
 RUN curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
@@ -27,6 +28,13 @@ ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
 RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
     && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c - && chmod +x /tmp/rustup-init \
     && /tmp/rustup-init -y --profile minimal --no-modify-path && rm /tmp/rustup-init && chmod -R a+rwX /opt/cargo /opt/rustup
+# Node.js is the current LTS rather than the distribution's package: project
+# scaffolders a new project starts from (create-vite, among others) refuse older majors.
+ARG NODE_VERSION=24.21.0
+ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+RUN curl -fsSLo /tmp/node.txz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    && echo "${NODE_SHA256}  /tmp/node.txz" | sha256sum -c - && tar -C /usr/local --strip-components=1 -xJf /tmp/node.txz \
+    && rm /tmp/node.txz
 RUN npm install -g corepack && corepack enable
 
 # Toolchains, and every package manager's cache under /cache. The sidecar resolves the
@@ -37,14 +45,16 @@ ENV PATH=/work/.venv/bin:/opt/cargo/bin:/usr/local/go/bin:/root/go/bin:/usr/loca
     CARGO_HOME=/cache/cargo CARGO_TARGET_DIR=/work/.target BUNDLE_PATH=/cache/bundle COMPOSER_CACHE_DIR=/cache/composer \
     GRADLE_USER_HOME=/cache/gradle COREPACK_HOME=/cache/corepack MAVEN_OPTS=-Dmaven.repo.local=/cache/m2
 
+# Seed clones are mounted from the host, whose owner is not the container's root.
+RUN git config --system --add safe.directory '*'
+
 COPY engine/ /opt/bialy/engine/
 COPY bin/ /opt/bialy/bin/
 COPY --chmod=755 run-shard.sh setup-repo.sh /opt/bialy/
 COPY unattended.yaml /opt/bialy/
 COPY workflows/ /opt/bialy/workflows/
 # The browser tool's headless Chrome needs the libraries and fonts above; the overlay
-# holds staged configuration, such as an engine-on pass's decision deadlines; the
-# scanner is a Linux Opengrep build, which only development binaries accept.
-ENV LYCAON_ENGINE_ROOT=/opt/bialy/engine LYCAON_CONFIG_ROOT=/opt/bialy/engine/overlay \
-    LYCAON_OPENGREP_CANDIDATE=/opt/bialy/engine/opengrep
+# holds staged configuration, such as an engine-on pass's decision deadlines. The
+# scanner, when the payload carries one, is named by run-shard.sh.
+ENV LYCAON_ENGINE_ROOT=/opt/bialy/engine LYCAON_CONFIG_ROOT=/opt/bialy/engine/overlay
 ENTRYPOINT ["/opt/bialy/run-shard.sh"]

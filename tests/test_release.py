@@ -72,7 +72,7 @@ def test_audit_catches_a_training_repository_in_the_test_split(factory, split_di
     shutil.copy(split_dir / "val.jsonl", split_dir / "holdout.jsonl")
     (split_dir / "val.jsonl").write_text("")
     out = build_release(factory, split_dir, corpus_file, tmp_path)
-    with pytest.raises(audit.AuditError, match="training repositories"):
+    with pytest.raises(audit.AuditError, match="training workspaces"):
         audit.dataset(out)
 
 
@@ -163,3 +163,13 @@ def test_heads_release_ships_its_evidence(tmp_path):
     provenance = json.loads((out / "PROVENANCE.json").read_text())
     assert provenance["engine_commit"] == "abc123" and provenance["heads"][0]["metadata"]["seed"] == "11"
     assert "eval/holdout.json" in hub.check("heads", out)
+
+
+def test_a_release_names_its_stacks_and_anchors_every_held_out_workspace(factory, split_dir, corpus_file, tmp_path, anchors):
+    out = build_release(factory, split_dir, corpus_file, tmp_path)
+    provenance = json.loads((out / "PROVENANCE.json").read_text())
+    assert [s["name"] for s in provenance["stacks"]] == [s.name for s in factory.stacks]
+    assert json.loads((anchors / "dataset-v0.json").read_text())["holdout"] == sorted(factory.holdout())
+    card = (out / "README.md").read_text()
+    assert "- Greenfield stacks: web-static, react-vite" in card and "java-maven" in card.split("- Held out")[1]
+    assert not (out / "licenses" / "react-vite").exists()

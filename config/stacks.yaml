@@ -1,0 +1,104 @@
+# Greenfield stacks: the toolchains new projects are started on. A stack's
+# sessions start in an empty directory with git initialised and nothing else,
+# so they show what the assistant reaches for when there is no code to read:
+# scaffolding, documentation lookups, package installs, writing many new
+# files, and running what it built.
+#
+# A stack is a workspace like a repository: its tasks carry its name, and a
+# held-out stack never contributes a training row, so the held-out stacks
+# measure transfer to a toolchain the heads never saw built from scratch.
+# Every toolchain here is in the runner image (runner/Dockerfile).
+#
+# `warm` runs once per stack in an empty directory before any session, with
+# the same package caches the runners read, so the packages new projects on
+# that stack commonly install are already cached. It shapes speed, never what
+# a session may install.
+stacks:
+  - name: web-static
+    language: javascript
+    split: train
+    brief: plain HTML, CSS, and JavaScript opened in a browser, with no build step
+  - name: react-vite
+    language: typescript
+    split: train
+    brief: React with TypeScript, built and served with Vite
+    warm: npm create vite@latest app -- --template react-ts && cd app && npm install && npm install -D vitest @testing-library/react
+  - name: node-api
+    language: javascript
+    split: train
+    brief: a Node.js HTTP service or command-line tool managed with npm
+    warm: npm init -y && npm install express fastify commander zod && npm install -D vitest
+  - name: python-cli
+    language: python
+    split: train
+    brief: a Python command-line tool in a virtual environment, tested with pytest
+    warm: python3 -m venv .venv && .venv/bin/pip install click typer rich requests pytest
+  - name: python-web
+    language: python
+    split: train
+    brief: a Python web service or API, such as FastAPI or Flask
+    warm: python3 -m venv .venv && .venv/bin/pip install fastapi uvicorn flask sqlalchemy pydantic httpx pytest
+  - name: python-data
+    language: python
+    split: train
+    brief: Python scripts that load, clean, analyse, and chart data from files such as CSV or JSON
+    warm: python3 -m venv .venv && .venv/bin/pip install pandas numpy matplotlib pytest
+  - name: go-service
+    language: go
+    split: train
+    brief: a Go program, command-line tool, or HTTP service using Go modules
+    warm: go mod init example.com/app && go get github.com/spf13/cobra github.com/go-chi/chi/v5 github.com/stretchr/testify
+  - name: rust-cli
+    language: rust
+    split: train
+    brief: a Rust command-line tool built with cargo
+    warm: cargo init --name app && cargo add clap --features derive && cargo add serde --features derive && cargo add serde_json anyhow && cargo fetch
+  # Held out: a frontend framework, a language, and a build tool the training stacks lack.
+  - name: vue-vite
+    language: typescript
+    split: holdout
+    brief: Vue 3 with TypeScript, built and served with Vite
+    warm: npm create vite@latest app -- --template vue-ts && cd app && npm install
+  - name: ruby-app
+    language: ruby
+    split: holdout
+    brief: a Ruby script, command-line tool, or Sinatra web app managed with Bundler
+    warm: bundle init && bundle add sinatra rackup puma rspec
+  - name: java-maven
+    language: java
+    split: holdout
+    brief: a Java application or command-line tool built with Maven
+    warm: mvn -q archetype:generate -DgroupId=example -DartifactId=app -DarchetypeArtifactId=maven-archetype-quickstart -DinteractiveMode=false && cd app && mvn -q -DskipTests package
+
+# What a greenfield request is about. Each batch of requests draws one idea and
+# one scale, so a stack's tasks spread over many kinds of project; the writer is
+# free to interpret the idea.
+domains:
+  - a browser game such as snake, tetris, breakout, minesweeper, or a memory card game
+  - a to-do list or habit tracker
+  - a personal budget or expense tracker
+  - a markdown notes app or a markdown-to-HTML converter
+  - a URL shortener
+  - a weather viewer that calls a public weather API
+  - a dashboard that charts data from a CSV file or an API
+  - a web scraper that collects listings or headlines into a file
+  - a REST API for a small domain such as books, recipes, or events, with storage
+  - a chat or Discord-style bot
+  - a command-line tool that renames, deduplicates, or organises files
+  - a log file analyser that summarises errors and traffic
+  - a unit converter or calculator
+  - a quiz or flashcard app
+  - a static personal website or portfolio with a contact form
+  - an inventory or library catalogue with search
+  - a pomodoro or countdown timer
+  - an image gallery or thumbnail generator
+  - a password generator or strength checker
+  - a data pipeline that cleans and merges two datasets
+  - a JSON or YAML validator and formatter
+  - a simple key-value store or cache with an HTTP interface
+  - a webhook receiver that forwards events
+  - a text-adventure or turn-based game in the terminal
+scales:
+  - a single-file toy that should work in a few minutes
+  - a small app of a handful of files
+  - a modest project with several modules, tests, and a README

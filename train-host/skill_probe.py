@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--roster', help='JSON list of loaded skill names')
     parser.add_argument('--head-file', action='append', required=True)
     args = parser.parse_args()
-    sys.path.insert(0, str(Path(args.trainer) / 'scripts/decide'))
+    sys.path.insert(0, str(Path(args.trainer) / 'scripts/bialy'))
     from replay_eval import Engine
     corpus = json.loads(Path(args.corpus).read_text())
     names = set(json.loads(Path(args.roster).read_text())) if args.roster else None

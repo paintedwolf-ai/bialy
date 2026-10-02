@@ -64,7 +64,7 @@ def main():
     ap.add_argument('--tolerance', type=float, default=.01)
     ap.add_argument('--limit', type=int, default=12)
     args = ap.parse_args()
-    sys.path.insert(0, str(Path(args.trainer) / 'scripts/decide'))
+    sys.path.insert(0, str(Path(args.trainer) / 'scripts/bialy'))
     from corpus import Corpus
     from replay_eval import Engine
 

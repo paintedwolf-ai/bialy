@@ -9,7 +9,8 @@ fleet:
   cpus: 2                          # per runner
   memory: 8g                       # per runner (a cap, not a reservation)
   pids: 2048                       # per runner
-  tasks_per_shard: 8               # tasks one runner drives, one after another, in one project
+  tasks_per_shard: 8               # most tasks one runner drives, one after another, in one project
+  shard_minutes: 480               # a shard holds only as many tasks as fit, at their prompt budget
   prompt_timeout: 60m              # per prompt; a turn that finishes slowly under load is still a label
   image: bialy-runner
 split:
@@ -17,3 +18,34 @@ split:
   seed: 7
 judge:
   second_judge_fraction: 0.10      # rows the other family also judges, for agreement
+
+# `bialy run`: one pass on this machine, resumable. Paths resolve against the
+# repository. The generators named here must be hosted or served on this host;
+# the judge is chosen from another family, and the writer writes skill requests
+# and code-rank pairs.
+run:
+  lycaon_checkout: ../paintedwolf-code   # built into the runner binaries, engine, and trainer the run uses
+  generators: [glm-5.3-flash]      # hosted generators; with several, tasks alternate between them
+  judges: []                       # judges to use; empty keeps every judge in models.yaml
+  runners: 4                       # concurrent runner containers on this machine
+  spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
+  scanner: pinned                  # the checkout's pinned Opengrep for linux/amd64; candidate takes a local build; none runs without one
+  scanner_candidate: null          # for candidate: the downstream repository's artifact directory (opengrep, provenance.json, source-lock.json)
+  engine_on:
+    enabled: true                  # a second pass with the pilot heads deciding
+    deadline_ms: 60000             # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long
+  skillreq:
+    writer: null                   # the first usable writer in models.yaml
+    families: {clear: 2, nearmiss: 1, multi: 1}   # request families per skill and kind
+    none_families: 24
+    per_family: 6
+  coderank:
+    per_repo: 40                   # written request pairs per repository
+  evaluate:
+    rows: 500                      # validation and held-out rows each replayed through the host engine; 0 replays every row
+  train:
+    recipes: [B5, B7G, E4, code-rank]   # turn-load, guide-load, unit-rank, code-rank
+    device: auto                   # cuda (including ROCm builds of torch), mps, or cpu
+    max_hours: 24                  # for all recipes of one training stage together
+    torch_index: null              # a torch wheel index; detected from the accelerator when null
+    epochs: null                   # cap for short checks; null keeps each recipe's own

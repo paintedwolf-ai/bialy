@@ -2,16 +2,17 @@
 
 The open dataset factory for Bialy, the tuned local decision
 engine in Painted Wolf Code. It
-writes realistic developer requests for pinned public repositories, drives
+writes realistic developer requests, both for work in pinned public
+repositories and for new projects started from an empty directory, drives
 them through sandboxed Painted Wolf Code sidecars with open-weights models,
 exports every turn decision as a training row, has an open-weights judge
 score skill and tool cards, and splits the result into train, validation, and
-held-out repositories. Factory-authored material is Apache-2.0; repository
+held-out workspaces. Factory-authored material is Apache-2.0; repository
 excerpts retain their upstream licenses. No proprietary model touches a label
 and no private session contributes a row.
 
 Training, calibration, and replay live beside the engine in the Painted Wolf
-Code repository (`scripts/decide/`), because a head must be encoded exactly
+Code repository (`scripts/bialy/`), because a head must be encoded exactly
 as the engine encodes it. This repository hands them rows in their format,
 `pw-decide-row/1`. Existing row, head, and release-anchor format identifiers
 remain unchanged so archived data and checksum-pinned weights stay readable.
@@ -28,27 +29,32 @@ The native runtime in Painted Wolf Code derives from
 
 ## How a dataset is made
 
-1. **Pins.** `config/models.yaml` names the open-weights models, each pinned
-   by revision and recorded as reviewed for training use; `config/repos.yaml`
-   names the repositories, each pinned by commit, permissively licensed, and
-   marked `train` or `holdout`.
+1. **Pins and workspaces.** `config/models.yaml` names the open-weights
+   models, each pinned by revision and recorded as reviewed for training use.
+   Every task runs in a workspace, `train` or `holdout`: `config/repos.yaml`
+   names the repositories, each pinned by commit and permissively licensed,
+   and `config/stacks.yaml` names the greenfield stacks, toolchains whose
+   sessions start in an empty directory to build something new.
 2. **Serve.** `bialy serve start` runs one vLLM server per model on the
    GPU host, bound to a private Docker bridge. A model can have replicas on
    another host, reached through an SSH tunnel whose key can forward to that
    one server and nothing else.
-3. **Tasks.** `bialy tasks` has the generator models read facts about each
-   repository and write requests for each archetype (`config/archetypes.yaml`),
-   in several languages, some starting a workflow that plans worker legs.
-   Requests naming files the repository lacks are dropped; near-duplicates
-   share a prompt group. Workflow tasks carry both `workflow` and
+3. **Tasks.** `bialy tasks` has the generator models write requests for
+   each archetype (`config/archetypes.yaml`), in several languages, some
+   starting a workflow that plans worker legs. For a repository they read
+   facts about it, and requests naming files it lacks are dropped unless the
+   archetype asks for new files in directories it has; for a stack they get
+   the toolchain and a drawn project idea and scale, and write requests that
+   start a project. Near-duplicates share a prompt group. Workflow tasks carry both `workflow` and
    `workflow_version`, taken from the exact manifest under `runner/workflows/`
    that the runner image installs. This pins replay to the same workflow
    definition; rebasing tasks changes their driving models and preserves that
    identity. Rebuild task files from their raw batches when adopting a new
    workflow version.
 4. **Runners.** `bialy fleet run` drives the tasks through runner
-   containers: a fresh checkout at the pinned commit with its dependencies
-   installed, one sidecar with approval prompts off, and
+   containers: the task's workspace (a fresh checkout at the pinned commit
+   with its dependencies installed, or an empty directory with git
+   initialised), one sidecar with approval prompts off, and
    `lycaon-debug decide generate` driving each task in its own session. A
    runner can reach the model servers and the public web on ports 80 and 443,
    nothing else: private ranges and the cloud metadata service are dropped,
@@ -63,8 +69,8 @@ The native runtime in Painted Wolf Code derives from
    repository with the engine's own parsers, pairs each with requests (the
    unit's leading comment, and requests the generator models write), and
    builds the candidate sets the code-rank trainer reads.
-7. **Split and release.** `bialy split` holds out whole repositories and
-   splits the rest by prompt group; `bialy release` writes the splits, the
+7. **Split and release.** `bialy split` holds out whole workspaces, both
+   repositories and stacks, and splits the rest by prompt group; `bialy release` writes the splits, the
    code-rank pairs, a dataset card, provenance, and checksums. Nothing uploads.
 
 A release lists every task its sessions were driven with (`tasks.jsonl`,
@@ -80,6 +86,75 @@ of any head and every loadable tool a turn uses arrives through a
 the rank head ranks in production.
 
 ## Running it
+
+### One command
+
+`bialy run` drives a whole pass on one machine and can be left alone: it
+builds what it runs on, resumes where it stopped, uploads nothing unless asked,
+and ends with a report. It needs Docker, a provider key for the hosted models
+in `config/models.yaml`, `uv`, and a Painted Wolf Code checkout at the commit
+to build; Go and Rust toolchains are used when present and otherwise run in
+pinned images. Settings live in `factory.yaml`'s `run` section; the flags
+override them for one run.
+
+```bash
+export FIREWORKS_API_KEY=…
+bialy run --run pass3 --dry-run            # the stages this invocation would run
+bialy run --run pass3                      # build → tasks → drive → judge → pilot heads → drive again → release → heads → report
+bialy run --run pass3 --until tasks --task-cap 2 --workspace cobra --workspace react-vite   # a small check of the generation stages
+bialy run --run pass3 --task-cap 1 --workspace cobra --runners 1 --epochs 1                 # the whole chain, small
+bialy run-status --run pass3
+bialy run --run pass3 --from judge         # rerun from a stage after a fix, discarding later results
+bialy run --run pass3 --redo image --rebuild-image   # rerun one stage, keeping the rest
+bialy run --run pass3 --push               # the same pass, publishing at the end
+```
+
+Stages, in order: `check`, `repos`, `build`, `image`, `corpus`, `tasks`,
+`skillreq`, `warm`, `plan`, `drive`, `collect`, `judge`, `judge_skillreq`,
+`split_pilot`, `train_pilot`, `engine`, `pilot`, `plan_on`, `drive_on`,
+`collect_on`, `judge_on`, `split`, `coderank`, `release`, `train`, `evaluate`,
+`release_heads`, `report`. Each writes under `<root>/runs/<name>/` and its
+status to `run.json` there; a failed stage stops the run with its error in
+`REPORT.md`, and the next invocation starts from it.
+
+- `build` cross-compiles `lycaon`, `lycaon-debug`, and `decide-rerank` for the
+  runners and assembles the engine payload (schemas, the pinned git, the
+  headless browser, Opengrep) from the checkout; `engine` builds the decision
+  engine for this host with cargo. The checkout pins Opengrep releases per
+  platform; until it pins a Linux one, `run.scanner: candidate` with
+  `run.scanner_candidate` pointing at a linux/amd64 artifact directory from the
+  downstream Opengrep repository's `engine/build.py` carries that build, and
+  `run.scanner: none` runs without a scanner, which the sidecar then reports
+  unavailable.
+- The first pass drives with the engine off. `train_pilot` trains the recipes
+  on its rows, `pilot` packs them with a linux engine and the checkpoint, and
+  the `_on` stages drive the same tasks with those heads deciding. Turn
+  `run.engine_on` off (or pass `--no-engine-on`) for a single pass.
+- `skillreq` writes requests for every skill and `coderank` harvests units and
+  writes request pairs, both through the writer model, so the unit-rank and
+  code-rank recipes have their data; `train` runs every recipe in
+  `run.train.recipes` under `run.train.max_hours` on this machine's
+  accelerator (ROCm, CUDA, Apple silicon, or CPU, with the torch index chosen
+  from what it finds).
+- `evaluate` replays validation and holdout rows through the host engine
+  loading the trained heads, and `release_heads` puts the results on the card.
+- With `--push`, `report` commits the release anchors on `release/<version>`,
+  tags that commit `dataset-<version>` and `heads-<version>`, pushes the branch
+  and tags, opens a pull request with `gh`, and uploads both releases to the
+  Hub. Without it, the report lists the commands. `docs/releases.md` explains
+  how a release, its tag, its Hub revisions, and the Painted Wolf Code versions
+  that ship it pin each other, and lists every release.
+- `run.spend_ceiling_usd` stops the run between stages once priced hosted
+  models (`hosted.price_per_million`) have used it. Calls the runners' own
+  sidecars make while driving are not metered here; the provider's dashboard is
+  the record for that part.
+
+The fleet stages mount cache overlays and set bridge firewall rules, so
+`bialy run` runs as root from the `warm` stage on; `check` says so when it is
+not. To leave a pass running through logouts, sleep, and reboots, install
+`deploy/bialy-run.service` (instructions in the file).
+
+### By hand
 
 On the GPU host (Ubuntu with NVIDIA drivers, Docker, and the CUDA toolkit
 that vLLM's kernels compile against):
@@ -105,7 +180,7 @@ bialy split --out split/ pass1.judged.jsonl
 bialy coderank harvest --decide-rerank bin/decide-rerank --out coderank/units
 bialy coderank pairs --units coderank/units --out coderank/pairs
 bialy coderank dumps --decide-rerank bin/decide-rerank --units coderank/units --pairs coderank/pairs --out coderank/dumps
-bialy release --split split/ --version v1 --code-ref v1 --out dist/v1 --schema <lycaon>/scripts/decide/row.schema.json \
+bialy release --split split/ --version v1 --code-ref v1 --out dist/v1 --schema <lycaon>/scripts/bialy/row.schema.json \
   --corpus corpus.json --agreement pass1.judged.jsonl.agreement.jsonl --driven runs/pass1/tasks-driven.jsonl \
   --coderank coderank/pairs --stage tasks/provenance.json --stage runs/pass1/provenance.json \
   --stage pass1.judged.jsonl.provenance.json --stage coderank/pairs/provenance.json --stage coderank/dumps/provenance.json

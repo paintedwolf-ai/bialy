@@ -23,7 +23,7 @@ def row(repo, group, n, host="coordinator", judge_model="glm-5.3-flash", **label
         "offered": {"floor": ["read"], "loadable": ["edit", "command"], "guides": []},
         "state": {"host": host, "user": "request %d" % n, "surface": "implement_investigate"},
         "labels": base, "judge": {"model": judge_model},
-        "meta": {"repo": repo, "prompt_group": group, "task_id": "t%d" % n},
+        "meta": {"workspace": repo, "prompt_group": group, "task_id": "t%d" % n},
     }
 
 

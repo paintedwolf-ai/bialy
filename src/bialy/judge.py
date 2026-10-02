@@ -21,6 +21,8 @@ import random
 import threading
 from pathlib import Path
 
+from .llm import account_failure
+
 SYSTEM = """You judge which skills and tools a coding assistant will need to carry out a developer's request.
 For each numbered candidate you are given its description. Score relevance from 0 to 4: 0 the request will never need it, 1 unlikely, 2 possible, 3 likely, 4 certain.
 A skill is a procedure the assistant reads before working; score it by whether following it would carry out this request, not by shared words.
@@ -75,11 +77,6 @@ def score_cards(chat, task, cards, seed, system=SYSTEM, available=()):
 UNITS = ("skills", "tools", "requests")
 
 
-def account_failure(exc):
-    """Account and authentication refusals cannot improve by retrying rows."""
-    return getattr(exc, "status_code", None) in {401, 402, 403, 412}
-
-
 def attempt(score, tries=3):
     """A judge call, tried again after a failure: most failures (rate limits, a malformed
     verdict) pass on a second try."""
@@ -125,7 +122,7 @@ def judge_row(chats, row, skill_cards, tool_cards, judge_model, units=UNITS, len
                       lambda v, request=request: request.__setitem__("scores", v), lambda request=request: request.__setitem__("scores", None))
     earlier = (row.get("judge") or {}).get("units", []) if set(units) != set(UNITS) else []
     judged = sorted(set(earlier) | set(units), key=UNITS.index)
-    reasoning = "low reasoning effort" if chat.hosted else "no reasoning"
+    reasoning = "%s reasoning effort" % (chat.reasoning_effort or "low") if chat.hosted else "no reasoning"
     row["judge"] = {"model": judge_model, "units": judged, "decoding": "greedy, seeded order, schema-constrained, %s" % reasoning}
     if missed:
         row["judge"]["missed"] = missed

@@ -1,7 +1,7 @@
 # Training host
 
 Scripts that train and evaluate the decision heads on a rented GPU host. They
-run the Painted Wolf Code trainer (`scripts/decide/` at a recorded commit)
+run the Painted Wolf Code trainer (`scripts/bialy/` at a recorded commit)
 over rows this repository produces; everything they read is an input you can
 name and hash.
 
@@ -16,7 +16,7 @@ name and hash.
 
 The trainers lock their output head for the life of the run, write it
 atomically, and train at the backbone checkpoint's full context; a head
-records the encoding it trained with, and `scripts/decide/parity_probe.py`
+records the encoding it trained with, and `scripts/bialy/parity_probe.py`
 refuses a head whose encoding differs from what the engine serves.
 
 ## Release workflow
@@ -148,7 +148,7 @@ the audit are recorded in `decisions.yaml` beside the numbers, never silently.
    held-out repositories, with `--split accept --offered-from judged/holdout.jsonl`,
    and judged on `--unit skills --unit tools`.
 
-2. **Host.** `setup.sh` with a tar of `scripts/decide` and `scripts/artifact_paths.py`
+2. **Host.** `setup.sh` with a tar of `scripts/bialy` and `scripts/artifact_paths.py`
    and `lycaon/config/packs/painted-wolf` from the Painted Wolf Code commit,
    and a data directory holding `corpus.json`, `original/`, `judged/`, and
    `skillreq/`. Replay reads the committed tool-schema and guide files to

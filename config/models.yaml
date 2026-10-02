@@ -4,9 +4,16 @@
 # (outputs_trainable). The configuration refuses any other model.
 #
 # A row is judged by a model from another family than the one that drove its
-# session, so no judge grades its own family's behaviour. The judges run on a
-# provider (hosted) rather than on the factory's GPUs; the key comes from the
-# environment variable hosted.key_env.
+# session, so no judge grades its own family's behaviour. GLM-5.3-Flash drives
+# the sessions and writes requests; DeepSeek-V4.1-Flash, of another family,
+# judges them, and GLM scores a sample again as the second judge that measures
+# agreement. DeepSeek does not drive: in the pass-3 pilot it reasoned for about
+# 2,700 output tokens a call against GLM's 225, several times GLM's cost per
+# session. It judges with reasoning off, which cut its verdicts from about 2,200
+# output tokens to 410 without losing agreement (docs/running.md). GLM-5.3-Flash
+# is thinking-only: the provider refuses reasoning_effort none for it. They run on a provider (hosted); the key comes from the
+# environment variable hosted.key_env, and price_per_million (list prices,
+# uncached input) lets a run total what its metered stages spent.
 models:
   - id: qwen3.6-35b-a3b
     hf: Qwen/Qwen3.6-35B-A3B-FP8
@@ -39,14 +46,67 @@ models:
     license: MIT
     outputs_trainable: true
     reviewed: "2026-09-28: MIT license, no terms on outputs"
-    roles: [judge, writer]
-    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p3-flash, key_env: FIREWORKS_API_KEY}
-  - id: inkling
-    hf: thinkingmachines/Inkling
-    revision: 828496eeae4c243ff1a22f7f28ff83694f2f7bc9
-    family: inkling
-    license: Apache-2.0
+    roles: [generator, judge, writer]
+    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p3-flash, key_env: FIREWORKS_API_KEY,
+             price_per_million: {input: 0.15, output: 0.50}}
+  - id: deepseek-v4.1-flash
+    hf: deepseek-ai/DeepSeek-V4.1-Flash
+    revision: 2cba9e42aa026125f3ed06c6d98c1db82f7ca027
+    family: deepseek
+    license: MIT
     outputs_trainable: true
-    reviewed: "2026-09-28: Apache-2.0 model card; no terms on outputs"
-    roles: [judge, writer]
-    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/inkling, key_env: FIREWORKS_API_KEY}
+    reviewed: "2026-10-01: MIT license on the model card; no terms on outputs (Chris Beckman)"
+    roles: [judge]
+    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4p1-flash, key_env: FIREWORKS_API_KEY,
+             price_per_million: {input: 0.30, output: 1.20}, reasoning_effort: none}
+
+# Larger hosted candidates for the next pass, on the same provider. Each is pinned
+# and licensed as its model card states; a person reads the license, fills in
+# `reviewed`, and moves the entry above before the configuration accepts it.
+# Custom licenses (GLM-5.3, Kimi-K3, MiniMax-M3, Qwen3.8) need that reading most.
+#
+#  - id: deepseek-v4-pro
+#    hf: deepseek-ai/DeepSeek-V4-Pro
+#    revision: b5968e9190ef611bbf34a7229255be88a0e937c1
+#    family: deepseek
+#    license: MIT
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge, writer]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4-pro, key_env: FIREWORKS_API_KEY}
+#  - id: glm-5.2
+#    hf: zai-org/GLM-5.2
+#    revision: cf457fa734ab149ffef225f80893eb38c6ff5cdc
+#    family: glm
+#    license: MIT
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge, writer]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p2, key_env: FIREWORKS_API_KEY}
+#  - id: gpt-oss-120b
+#    hf: openai/gpt-oss-120b
+#    revision: b5c939de8f754692c1647ca79fbf85e8c1e70f8a
+#    family: openai
+#    license: Apache-2.0
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [judge]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/gpt-oss-120b, key_env: FIREWORKS_API_KEY}
+#  - id: glm-5.3
+#    hf: zai-org/GLM-5.3
+#    revision: aca966e4e02791568aa6a4ced368624b3d897f42
+#    family: glm
+#    license: LicenseRef-GLM-5.3     # custom; read it before use
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge, writer]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/glm-5p3, key_env: FIREWORKS_API_KEY}
+#  - id: kimi-k3
+#    hf: moonshotai/Kimi-K3
+#    revision: f831ab66814297da540d832a5235f8e904f29d06
+#    family: kimi
+#    license: LicenseRef-Kimi-K3     # custom; read it before use
+#    outputs_trainable: true
+#    reviewed: ""
+#    roles: [generator, judge]
+#    hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/kimi-k3, key_env: FIREWORKS_API_KEY}

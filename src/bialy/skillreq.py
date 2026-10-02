@@ -26,7 +26,7 @@ from pathlib import Path
 from .coderank import LANGUAGES, REGISTERS
 from .tasks import LANGUAGE_NAMES, clean
 
-SYSTEM = """You write realistic requests that developers type to an AI coding assistant working in their repository.
+SYSTEM = """You write realistic requests that developers type to an AI coding assistant working in their project.
 Write the way working engineers do: some terse, some detailed, some with pasted output, some polite, some blunt.
 Never name a skill, procedure, or tool, and never quote the descriptions you are given; describe the work itself.
 Reply with one JSON object only: {"requests": ["...", ...]}."""
@@ -73,26 +73,28 @@ def family_id(seed, skill, kind, n):
     return hashlib.sha256(("%s:%s:%s:%d" % (seed, skill, kind, n)).encode()).hexdigest()[:16]
 
 
-def row(request, fam, i, writer, repo, lang, revision, meta, offered=None):
+def row(request, fam, i, writer, workspace, lang, revision, meta, offered=None):
     """A pw-decide-row/1 row the judge and the rank trainer read: one coordinator turn with
     the request as its only state, and no behaviour. `offered` carries a real turn's
     candidates when the row's tools are to be judged too."""
     session = "skillreq-" + fam
     return {
         "schema": "pw-decide-row/1", "receipt": i, "session": session, "root_session": session, "opening_message_id": "%s-%d" % (fam, i),
-        "host": "coordinator", "surface": "implement_investigate", "catalog_revision": revision, "project": repo.name, "model": writer,
+        "host": "coordinator", "surface": "implement_investigate", "catalog_revision": revision, "project": workspace.name, "model": writer,
         "partial": False, "lang": lang, "engine": {"state": "abstained", "reason": "generated request", "preloaded": [], "omitted": []},
         "offered": offered or {"floor": [], "loadable": [], "guides": []},
         "state": {"host": "coordinator", "user": request, "surface": "implement_investigate", "posture": "build", "root_count": 1, "workers_in_flight": 0},
         "labels": {"tools": [], "requests": [], "requested_names": [], "requested_groups": [], "skills": [], "kind": None, "guides": {}},
-        "meta": dict(meta, source="skillreq", family=fam, repo=repo.name),
+        "meta": dict(meta, source="skillreq", family=fam, workspace=workspace.name, workspace_kind=workspace.kind),
     }
 
 
-def plan(factory, skills, families, none_families, seed, only=(), repos=()):
-    """Every family to write: (skill, kind, other skill, family index, repo, language, register)."""
+def plan(factory, skills, families, none_families, seed, only=(), workspaces=()):
+    """Every family to write: (skill, kind, other skill, family index, workspace, language, register).
+    A family is set in a repository or in a new project on a stack, so skills that matter
+    when starting something new get requests in that setting too."""
     rng = random.Random("%s:plan" % seed)
-    pool = [r for r in factory.repos if not repos or r.name in repos]
+    pool = [w for w in factory.workspaces() if not workspaces or w.name in workspaces]
     names = sorted(skills)
     out = []
     for name in names:
@@ -108,26 +110,26 @@ def plan(factory, skills, families, none_families, seed, only=(), repos=()):
 
 
 def write(factory, corpus, out_path, writer, families, none_families, per_family, seed=7, eval_fraction=0.2, only=(), workers=16,
-          repos=(), split=None, offered=None):
+          workspaces=(), split=None, offered=None):
     """Write the families to `out_path` as rows, each with meta.split train or eval, or all
     with `split` (an acceptance set written after the selection rules were fixed)."""
     skills = {s["name"]: s for s in corpus["skills"]}
     model = next(m for m in factory.models if m.id == writer)
     chat = factory.chats(model)[0]
-    jobs = plan(factory, skills, families, none_families, seed, only, repos)
+    jobs = plan(factory, skills, families, none_families, seed, only, workspaces)
 
     def work(job):
-        name, kind, other, n, repo, lang, register = job
+        name, kind, other, n, workspace, lang, register = job
         fam = family_id(seed, name or "none", kind, n)
         language = "Write in %s." % LANGUAGE_NAMES[lang] if lang != "en" else "Write in English."
-        user = "The developer works in %s (%s). Style: %s.\n%s\n%s" % (
-            repo.name, repo.language, register, brief(kind, skills.get(name), skills.get(other), per_family), language)
+        user = "The developer works in %s. Style: %s.\n%s\n%s" % (
+            workspace.describe(), register, brief(kind, skills.get(name), skills.get(other), per_family), language)
         value = chat.json(SYSTEM, user, temperature=0.9, seed=int(fam[:8], 16), thinking=False, max_tokens=4096, schema=REPLY_SCHEMA)
         requests = [clean(r) for r in (value.get("requests") or []) if isinstance(r, str) and 12 <= len(r.strip()) <= 1500]
         requests = [r for r in requests if not any(names_skill(r, n) for n in skills)]
         chosen = split or ("eval" if int(fam[8:12], 16) / 0xFFFF < eval_fraction else "train")
         meta = {"skill": name or None, "other": other or None, "kind": kind, "split": chosen, "writer": writer}
-        return [row(r, fam, i, writer, repo, lang, corpus["catalog_revision"], meta, offered) for i, r in enumerate(requests)]
+        return [row(r, fam, i, writer, workspace, lang, corpus["catalog_revision"], meta, offered) for i, r in enumerate(requests)]
 
     rows, failures = [], 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
