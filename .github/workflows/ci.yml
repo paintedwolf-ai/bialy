@@ -1,5 +1,5 @@
 # Everything a change can be checked with cheaply. Generation, judging, and
-# training need GPUs and hours; they run on a GPU host by hand, never here.
+# training run on a GPU host, not here.
 name: CI
 
 on:

@@ -60,8 +60,7 @@ def score_cards(chat, task, cards, seed, system=SYSTEM, available=()):
     numbers = {str(i + 1): {"type": "integer", "minimum": 0, "maximum": 4} for i in range(len(names))}
     schema = {"type": "object", "required": ["scores"], "additionalProperties": False,
               "properties": {"scores": {"type": "object", "required": list(numbers), "additionalProperties": False, "properties": numbers}}}
-    # The verdict is decoded straight into the schema, without a reasoning phase: scoring
-    # sixty cards after reasoning can exhaust the output budget before any score appears.
+    # No reasoning phase: on a long candidate list it can exhaust the output budget before any score.
     value = chat.json(system, user, temperature=0.0, seed=seed, schema=schema, thinking=False)
     raw = value.get("scores", value) if isinstance(value, dict) else {}
     out = {}
@@ -175,7 +174,6 @@ def run(factory, corpus, rows_in, rows_out, workers=48, second=None, units=UNITS
                     done[entry["key"]] = entry
     manifest["attempts"] += 1
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    failures = 0
     stop = threading.Event()
     fatal_error = None
 
@@ -270,13 +268,10 @@ def merged_second(earlier, now, units):
     the second judge missed in them, stay as an earlier pass left them."""
     if not earlier or set(units) == set(UNITS) or earlier.get("model") != now["model"]:
         return now
-    keep = {"skills": ("skills",), "tools": ("tools",), "requests": ("requests",)}
     out = dict(now)
     for unit in UNITS:
-        if unit not in units:
-            for key in keep[unit]:
-                if key in earlier:
-                    out[key] = earlier[key]
+        if unit not in units and unit in earlier:
+            out[unit] = earlier[unit]
     kept_missed = [m for m in earlier.get("missed", []) if (m if not m.startswith("need") else "requests") not in units]
     out["missed"] = kept_missed + now.get("missed", [])
     return out

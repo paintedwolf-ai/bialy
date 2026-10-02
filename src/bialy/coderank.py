@@ -133,13 +133,10 @@ def model_pairs(factory, units, count, seed=7, workers=64, writer=None):
     """`count` generated pairs whose requests do not name their unit, from a seeded order
     of `units`, and every pair along the way whose request does.
 
-    Each unit's language, register, and generator come from the seed. Training reads only
-    requests that describe a unit without naming it, since text matching already ranks a
-    named one first; the prompt does not steer wording, so named replies are kept apart
-    rather than prevented. Units are drawn in waves until `count` unnamed pairs exist or
-    the units run out; the unnamed pairs are the first `count` in unit order, and the
-    named ones are those drawn up to the last of them, or all of them when the units ran
-    out first."""
+    Each unit's language, register, and generator come from the seed. The prompt cannot
+    stop a reply from naming its unit, so named replies are kept apart rather than
+    prevented. Units are drawn in waves until `count` unnamed pairs exist or the units
+    run out; the named pairs returned are those drawn up to the last unnamed one kept."""
     rng = random.Random(seed)
     sample = [u for u in units if u.get("code")]
     rng.shuffle(sample)

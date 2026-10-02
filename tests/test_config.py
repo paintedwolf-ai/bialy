@@ -29,7 +29,7 @@ def test_unknown_names_are_refused(factory):
     with pytest.raises(config.ConfigError):
         factory.model("nope")
     with pytest.raises(config.ConfigError):
-        factory.repo("nope")
+        factory.workspace("nope")
 
 
 def test_hub_names_come_from_the_environment(monkeypatch):

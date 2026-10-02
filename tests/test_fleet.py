@@ -33,7 +33,7 @@ def test_plan_writes_self_contained_shards(factory, tmp_path):
     task = json.loads((first / "tasks.jsonl").read_text().splitlines()[0])
     assert task["provider_id"] in (first / "providers.local.yaml").read_text()
     assert json.loads((first / "workspace.json").read_text()) == {
-        "workspace": "flask", "kind": "repository", "commit": factory.repo("flask").commit, "prompt_timeout": "60m"}
+        "workspace": "flask", "kind": "repository", "commit": factory.workspace("flask").commit, "prompt_timeout": "60m"}
 
 
 def test_replan_rewrites_every_shard_without_rows(factory, tmp_path, monkeypatch):

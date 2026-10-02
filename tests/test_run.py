@@ -26,8 +26,12 @@ def stub_funcs(record, fail_at=None, skip=()):
     return {name: make(name) for name in runmod.STAGES}
 
 
+def reported(run):
+    return run.load_state()["stages"].get("report", {}).get("status") == "done"
+
+
 def test_run_settings_defaults_and_unknown_keys():
-    settings = config.run_settings({"task_cap": 2, "train": {"device": "cpu"}, "engine_on": False})
+    settings = config.run_settings({"task_cap": 2, "train": {"device": "cpu"}, "engine_on": {"enabled": False}})
     assert settings["task_cap"] == 2 and settings["train"]["device"] == "cpu"
     assert settings["train"]["recipes"] == ["B5", "B7G", "E4", "code-rank"]
     assert settings["engine_on"] == {"enabled": False, "deadline_ms": 60000}
@@ -68,7 +72,7 @@ def test_execute_records_every_stage_and_resumes(factory, tmp_path):
     assert record == list(runmod.STAGES)
     assert all(state["stages"][name]["status"] == "done" for name in runmod.STAGES)
     assert json.loads(run.state_path.read_text())["stages"]["tasks"]["outputs"] == {"did": "tasks"}
-    assert runmod.finished(run)
+    assert reported(run)
     record.clear()
     runmod.execute(run, funcs=stub_funcs(record))
     assert record == []
@@ -84,7 +88,7 @@ def test_execute_stops_at_a_failure_and_after_until(factory, tmp_path):
     state = run.load_state()
     assert state["stages"]["judge"]["status"] == "failed" and "split" not in state["stages"]
     assert "boom" in run.path("REPORT.md").read_text()
-    assert not runmod.finished(run)
+    assert not reported(run)
     record.clear()
     runmod.execute(run, until="split_pilot", funcs=stub_funcs(record))
     assert record == ["judge", "judge_skillreq", "split_pilot"]
@@ -97,7 +101,7 @@ def test_redo_reruns_one_stage_and_keeps_the_rest(factory, tmp_path):
     runmod.execute(run, funcs=stub_funcs(record))
     record.clear()
     runmod.execute(run, funcs=stub_funcs(record), redo=["image"])
-    assert record == ["image"] and runmod.finished(run)
+    assert record == ["image"] and reported(run)
 
 
 def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):
@@ -262,3 +266,8 @@ def test_code_rank_sites_are_evaluated_side_by_side(factory, tmp_path, monkeypat
     reports = runmod.rerank_evals(run, {"code-rank": "head"})
     assert sorted(reports) == sorted("%s-%s" % (s, r) for s in runmod.coderank.SITES for r in ("zod", "sinatra"))
     assert peak[0] == runmod.RERANK_WORKERS
+
+
+def test_a_section_setting_takes_its_keys():
+    with pytest.raises(config.ConfigError, match="run.engine_on is a section"):
+        config.run_settings({"engine_on": False})

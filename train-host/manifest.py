@@ -1,8 +1,8 @@
 """Write or verify a SHA256 manifest of regular files without following symlinks.
 
 Usage: manifest.py write ROOT MANIFEST | manifest.py verify ROOT MANIFEST
-Manifest paths are relative to ROOT; the manifest itself is excluded. Store
-credentials outside ROOT. Verification rejects missing, changed, and extra files.
+Manifest paths are relative to ROOT; the manifest itself is excluded.
+Verification rejects missing, changed, and extra files.
 """
 import argparse
 import hashlib

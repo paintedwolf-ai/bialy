@@ -6,7 +6,6 @@ Go builds run with the host's Go when it has one, otherwise inside a pinned Go
 image with the checkout mounted at its own path, so the same commands and
 relative paths hold either way. The runner platform is linux/amd64.
 """
-import hashlib
 import json
 import os
 import platform
@@ -19,6 +18,8 @@ import urllib.request
 from pathlib import Path
 
 import yaml
+
+from .provenance import file_sha256
 
 GO_IMAGE = "golang:1.26"
 RUNNER_GOOS, RUNNER_GOARCH, RUNNER_TRIPLE = "linux", "amd64", "x86_64-unknown-linux-gnu"
@@ -82,14 +83,6 @@ def binaries(checkout, out_dir, cache_root, goos=RUNNER_GOOS, goarch=RUNNER_GOAR
     return build
 
 
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def gitengine(checkout, out_dir, platform_key="linux-amd64"):
     """The pinned git toolchain the sidecar runs, fetched and digest-checked from the pin."""
     pin = yaml.safe_load((Path(checkout) / "lycaon/config/gitengine/pin.yaml").read_text(encoding="utf-8"))
@@ -101,7 +94,7 @@ def gitengine(checkout, out_dir, platform_key="linux-amd64"):
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "git.tar.gz"
         urllib.request.urlretrieve(url, archive)
-        digest = sha256(archive)
+        digest = file_sha256(archive)
         if digest != entry["sha256"]:
             raise BuildError("gitengine archive digest %s is not the pinned %s" % (digest, entry["sha256"]))
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -291,7 +284,7 @@ def model_dir(snapshot, out_dir):
 
 def pilot(engine_bin, model, heads_dir, out_dir):
     """What an engine-on runner mounts at /opt/decide: the linux engine, the installed
-    checkpoint, and the heads the first pass trained."""
+    checkpoint, and the pilot heads."""
     out_dir = Path(out_dir)
     shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True)

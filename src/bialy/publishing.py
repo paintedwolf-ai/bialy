@@ -85,10 +85,6 @@ def push_and_pull_request(version, body, tags=()):
     return {"branch": branch, "pull_request": result.stdout.strip()}
 
 
-def publish(kind, release_dir, version, push):
-    return hub.publish(kind, release_dir, version, None, push)
-
-
 def finish(version, releases, push):
     """Anchors committed and pushed, releases uploaded; a dry run only lists the plan."""
     out = {"anchors": commit_anchors(version, list(releases)) if push else {"skipped": "not pushing"}}
@@ -97,5 +93,5 @@ def finish(version, releases, push):
             version, "\n".join("- %s: %s" % (k, v) for k, v in sorted(releases.items())), config.hub()["dataset_repo"], config.hub()["model_repo"])
         out["pull_request"] = push_and_pull_request(version, body, out["anchors"].get("tags", ()))
     for kind, release_dir in sorted(releases.items()):
-        out[kind] = publish(kind, release_dir, version, push)
+        out[kind] = hub.publish(kind, release_dir, version, push=push)
     return out
