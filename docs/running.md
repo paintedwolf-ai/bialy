@@ -138,21 +138,6 @@ rows:
 Devices diverge slightly epoch to epoch, so small differences are noise until
 repeated. Code-rank does not precompute: about 13 minutes an epoch on an H100.
 
-## Open items
-
-- Judge guide relevance 0..4 per unit, instead of deriving it from tool calls.
-- Export tool-event pairs (the skill read after a session's first loadable
-  call) and judge them.
-- Record floor calls on rows, so relabelling need not reconstruct them.
-- Drop the kind family from rows and the trainer; nothing reads it.
-- Train a web-rank head before enabling the `web_pages` site.
-- Raise tool-preload recall (B5: 0.82 precision at 0.29 recall).
-- Add judged `request_tools` needs that name files, extensions, and places.
-- Record which listed tools a turn later requested, so a head can shorten the
-  loadable-tool listing (18K of a 38K system prompt).
-- Broaden skill ranking with permissively licensed external skills, with
-  per-skill provenance, deduplication, and whole collections held out.
-
 ## Shutting down a GPU host
 
 Power-off erases `/scratch`, where a pass writes everything, so archive and
