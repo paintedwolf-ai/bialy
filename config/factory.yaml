@@ -41,6 +41,8 @@ run:
     per_family: 6
   coderank:
     per_repo: 40                   # written request pairs per repository
+  evaluate:
+    rows: 500                      # validation and held-out rows each replayed through the host engine; 0 replays every row
   train:
     recipes: [B5, B7G, E4, code-rank]   # turn-load, guide-load, unit-rank, code-rank
     device: auto                   # cuda (including ROCm builds of torch), mps, or cpu

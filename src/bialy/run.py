@@ -11,10 +11,12 @@ off and trains pilot heads on what the judges labelled. The second drives the
 same tasks again with those heads deciding, so the release also holds rows from
 turns the engine shaped, then trains the final heads over both.
 """
+import concurrent.futures
 import dataclasses
 import json
 import os
 import platform
+import random
 import shutil
 import subprocess
 import sys
@@ -563,19 +565,37 @@ def stage_evaluate(run):
     if not trained:
         return {"skipped": "no heads were trained"}
     launcher = build.launcher(run.path("build", "host-engine", "bialy"), model_dir(run), trained, run.path("build", "launcher.sh"))
+    limit = int(run.setting("evaluate", {}).get("rows") or 0)
     evals = {}
     for name in ("val", "holdout"):
-        rows = run.path("split", "%s.jsonl" % name)
         out = run.path("eval", "%s.json" % name)
         out.parent.mkdir(parents=True, exist_ok=True)
+        rows, total = sample_rows(run.path("split", "%s.jsonl" % name), run.path("eval", "%s.sample.jsonl" % name), limit,
+                                  "%s:evaluate:%s" % (run.setting("seed", 7), name))
         args = [sys.executable, "scripts/bialy/replay_eval.py", "--corpus", str(run.path("corpus.json")), "--examples", str(rows),
                 "--engine", str(launcher), "--tool-truth", "consensus", "--json", str(out)]
         result = subprocess.run(args, cwd=str(run.checkout), capture_output=True, text=True, env=training.environment(run.factory.root, run.setting("train", {})))
         if result.returncode != 0:
             raise RunError("replay on %s failed: %s" % (name, result.stderr.strip()[-400:]))
-        evals[name] = str(out)
+        evals[name] = {"report": str(out), "rows": min(total, limit) if limit else total, "of": total}
     rerank = rerank_evals(run, trained) if "code-rank" in trained else {}
     return {"evals": evals, "launcher": str(launcher), "rerank": rerank}
+
+
+def sample_rows(rows, out, limit, seed):
+    """The rows a replay measures: all of them, or `limit` drawn with `seed`, kept in file
+    order. The host engine replays one row at a time on the CPU, close to a minute a row,
+    so a full pass measures heads on a seeded sample of each split rather than all of it.
+    Returns the file to replay and how many rows the split holds."""
+    lines = [line for line in Path(rows).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not limit or len(lines) <= limit:
+        return rows, len(lines)
+    keep = sorted(random.Random(seed).sample(range(len(lines)), limit))
+    Path(out).write_text("".join(lines[i] + "\n" for i in keep), encoding="utf-8")
+    return out, len(lines)
+
+
+RERANK_WORKERS = 4
 
 
 def rerank_evals(run, trained):
@@ -584,20 +604,27 @@ def rerank_evals(run, trained):
     env = dict(os.environ, LYCAON_DECIDE_BINARY=str(run.path("build", "host-engine", "bialy")), LYCAON_DECIDE_MODEL_DIR=str(model_dir(run)),
                LYCAON_DECIDE_HEADS="code-rank=" + trained["code-rank"], HF_HUB_OFFLINE="1")
     binary = str(run.host_bin_dir / "decide-rerank")
-    reports = {}
+    jobs = []
     for repo in scaled_factory(run).repos:
         units = run.path("coderank", "units", repo.name + ".jsonl")
         pairs = run.path("coderank", "pairs", "docs-%s.jsonl" % repo.name)
         if repo.split != "holdout" or not units.exists() or not pairs.exists():
             continue
-        for site in coderank.SITES:
-            out = run.path("eval", "rerank-%s-%s.json" % (site, repo.name))
-            result = subprocess.run([binary, "eval", "--site", site, "--repo", str(run.factory.root / "repos" / repo.name), "--name", repo.name,
-                                     "--units", str(units), "--pairs", str(pairs), "--json", str(out)], env=env, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RunError("decide-rerank eval %s on %s failed: %s" % (site, repo.name, (result.stderr or result.stdout).strip()[-300:]))
-            reports["%s-%s" % (site, repo.name)] = str(out)
-    return reports
+        jobs += [(site, repo, units, pairs) for site in coderank.SITES]
+
+    def evaluate(job):
+        site, repo, units, pairs = job
+        out = run.path("eval", "rerank-%s-%s.json" % (site, repo.name))
+        result = subprocess.run([binary, "eval", "--site", site, "--repo", str(run.factory.root / "repos" / repo.name), "--name", repo.name,
+                                 "--units", str(units), "--pairs", str(pairs), "--json", str(out)], env=env, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RunError("decide-rerank eval %s on %s failed: %s" % (site, repo.name, (result.stderr or result.stdout).strip()[-300:]))
+        return "%s-%s" % (site, repo.name), str(out)
+
+    # Each evaluation runs its own engine on a few CPU threads, so the sites of the
+    # held-out repositories run side by side rather than one after another.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=RERANK_WORKERS) as pool:
+        return dict(pool.map(evaluate, jobs))
 
 
 def stage_release_heads(run):

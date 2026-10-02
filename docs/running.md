@@ -309,6 +309,12 @@ What a small run on an AMD desktop established, and what it did not:
   refusing.
 - Driving spend is not metered by the orchestrator: sessions call the
   provider from inside their containers. Generation, writing, and judging are.
+- Evaluation replays rows through the host engine one at a time on the CPU,
+  about 51 seconds a row in the pass-3 pilot, and each code-rank site took
+  about half an hour on a held-out repository. A full pass would spend days
+  replaying every validation and held-out row, so the evaluate stage replays a
+  seeded sample of each split (`run.evaluate.rows`, 500 by default; 0 replays
+  every row) and evaluates the code-rank sites side by side.
 - The scanner is the one payload part the checkout cannot yet supply for
   Linux: its downstream Opengrep repository releases macOS builds and pins one
   artifact per platform. The desktop run set `run.scanner: none`, so its

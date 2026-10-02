@@ -232,6 +232,7 @@ RUN_DEFAULTS = {
     "engine_on": {"enabled": True, "deadline_ms": 60000},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
     "coderank": {"per_repo": 40},
+    "evaluate": {"rows": 500},
     "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
 }

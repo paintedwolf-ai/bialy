@@ -220,3 +220,45 @@ def test_a_stale_judge_manifest_is_cleared_and_a_matching_one_resumes(factory, t
     Path(str(out) + ".partial.jsonl").write_text("resume")
     runmod.judge_rows(run, rows, out)
     assert seen["partial_exists"] is True
+
+
+def test_evaluation_replays_a_seeded_sample_in_file_order(tmp_path):
+    rows = tmp_path / "holdout.jsonl"
+    rows.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(50)))
+    out = tmp_path / "holdout.sample.jsonl"
+    picked, total = runmod.sample_rows(rows, out, 10, "7:evaluate:holdout")
+    kept = [json.loads(line)["n"] for line in out.read_text().splitlines()]
+    assert picked == out and total == 50 and len(kept) == 10 and kept == sorted(kept)
+    assert runmod.sample_rows(rows, tmp_path / "again.jsonl", 10, "7:evaluate:holdout")[0].read_text() == out.read_text()
+    # A split no larger than the sample, or no limit, replays as it is.
+    assert runmod.sample_rows(rows, tmp_path / "x.jsonl", 50, "s") == (rows, 50)
+    assert runmod.sample_rows(rows, tmp_path / "x.jsonl", 0, "s") == (rows, 50)
+
+
+def test_code_rank_sites_are_evaluated_side_by_side(factory, tmp_path, monkeypatch):
+    import threading
+
+    run = make_run(factory, tmp_path, workspaces=["zod", "sinatra"])
+    for repo in ("zod", "sinatra"):
+        for kind, name in (("units", repo + ".jsonl"), ("pairs", "docs-%s.jsonl" % repo)):
+            path = run.path("coderank", kind, name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n")
+    running, peak, lock = [0], [0], threading.Lock()
+    release = threading.Barrier(runmod.RERANK_WORKERS, timeout=5)
+
+    def eval_site(args, **kw):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        release.wait()
+        with lock:
+            running[0] -= 1
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    import subprocess
+    monkeypatch.setattr(runmod, "model_dir", lambda run: tmp_path / "model")
+    monkeypatch.setattr(runmod.subprocess, "run", eval_site)
+    reports = runmod.rerank_evals(run, {"code-rank": "head"})
+    assert sorted(reports) == sorted("%s-%s" % (s, r) for s in runmod.coderank.SITES for r in ("zod", "sinatra"))
+    assert peak[0] == runmod.RERANK_WORKERS
