@@ -162,6 +162,15 @@ Next time, also judge guides (a turn's guide labels still follow its calls),
 and give worker legs judged tool labels only if a trial shows judges agree
 on briefs; on a sample they agreed on none.
 
+A judge's reasoning is mostly cost. The verdict is decoded straight into the
+reply schema, and in the pass-3 pilots DeepSeek-V4.1-Flash judging the same
+requests with reasoning off instead of low wrote 411 output tokens a verdict
+instead of 2,222 ($0.0018 against $0.0040) and finished the stage three times
+sooner. Its scores matched its low-effort scores exactly on 90% of about 5,800
+cards and on the likely-or-certain side on 99% (weighted kappa 0.80 to 0.83),
+and its agreement with GLM-5.3-Flash as second judge rose from 0.82 to 0.85.
+It now judges with `reasoning_effort: none`.
+
 A snapshot of a live run reads finished shards and the live stores of running
 ones (`fleet salvage`); a shard that finishes between the two reads appears in
 both, so keep one copy of each (root session, session, receipt). Judging only

@@ -9,7 +9,9 @@
 # judges them, and GLM scores a sample again as the second judge that measures
 # agreement. DeepSeek does not drive: in the pass-3 pilot it reasoned for about
 # 2,700 output tokens a call against GLM's 225, several times GLM's cost per
-# session. They run on a provider (hosted); the key comes from the
+# session. It judges with reasoning off, which cut its verdicts from about 2,200
+# output tokens to 410 without losing agreement (docs/running.md). GLM-5.3-Flash
+# is thinking-only: the provider refuses reasoning_effort none for it. They run on a provider (hosted); the key comes from the
 # environment variable hosted.key_env, and price_per_million (list prices,
 # uncached input) lets a run total what its metered stages spent.
 models:
@@ -56,7 +58,7 @@ models:
     reviewed: "2026-10-01: MIT license on the model card; no terms on outputs (Chris Beckman)"
     roles: [judge]
     hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4p1-flash, key_env: FIREWORKS_API_KEY,
-             price_per_million: {input: 0.30, output: 1.20}}
+             price_per_million: {input: 0.30, output: 1.20}, reasoning_effort: none}
 
 # Larger hosted candidates for the next pass, on the same provider. Each is pinned
 # and licensed as its model card states; a person reads the license, fills in
