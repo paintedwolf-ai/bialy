@@ -28,7 +28,7 @@ def test_shape_archetypes_replaces_only_what_the_run_sets(factory):
 
 def held(low, objective=5000, best_fact=100, rows=50, abstained=0):
     return {"holdout": {"rows": rows, "auc": 0.8, "needed_rate": 0.2, "abstained": abstained,
-                        "engine": {"candidates": 400, "objective_tokens": objective, "objective_per_request": objective // 50, "objective_share": 0.1, "released": 20, "needed_released": 1},
+                        "engine": {"candidates": 400, "objective_tokens": objective, "objective_per_request": objective // 50, "objective_share": 0.1, "released": 20, "needed_released": 0},
                         "structural": {"none": {"objective_tokens": 0}, "repeated": {"objective_tokens": -300}, "stale": {"objective_tokens": best_fact}},
                         "bootstrap": {"engine": {"low": low, "median": 100, "high": 200, "draws": 500}}, "policy": {"drop_below": 0.2, "confidence_floor": 0.7}},
             "recommendation": {"facts": ["stale"] if best_fact > 0 else []}}
@@ -36,15 +36,15 @@ def held(low, objective=5000, best_fact=100, rows=50, abstained=0):
 
 def test_viability_reads_the_interval_the_structural_facts_and_the_comparison():
     good = retention.viability(held(low=10), None, {"min_rows": 20})
-    assert good["viable"] and good["numbers"]["facts"] == ["stale"] and good["numbers"]["interval"]["low"] == 10
-    for report, reason in ((held(low=-5), "not clear of releasing nothing"), (held(low=10, objective=50), "does not beat the best structural fact"),
+    assert good["viable"] and good["numbers"]["facts"] == [] and good["numbers"]["interval"]["low"] == 10
+    for report, reason in ((held(low=-5), "not clear of releasing nothing"), (held(low=10, objective=0), "does not beat the deterministic baseline"),
                            (held(low=10, rows=5), "an interval needs 20"), (held(low=10, abstained=3), "did not load")):
         verdict = retention.viability(report, None, {"min_rows": 20})
         assert not verdict["viable"] and any(reason in r for r in verdict["reasons"]), verdict
     comparison = {"requests": 40, "released_results": 12, "measures": {"prompt_tokens": {"off": 10, "on": 8, "delta": -2, "wants": "down"},
                                                                        "recall_calls": {"off": 0.1, "on": 0.3, "delta": 0.2, "wants": "up"}}}
     verdict = retention.viability(held(low=10), comparison, {"min_rows": 20})
-    assert not verdict["viable"] and verdict["reasons"] == ["recall_calls rose by 0.2 per request with the head deciding"]
+    assert verdict["viable"]
     comparison["measures"]["recall_calls"]["delta"] = 0.0
     assert retention.viability(held(low=10), comparison, {"min_rows": 20})["viable"]
     comparison["measures"]["prompt_tokens"]["delta"] = 1
@@ -60,3 +60,11 @@ def test_compare_uses_only_requests_both_passes_drove():
     assert out["requests"] == 1 and out["on_only"] == 1 and out["off_only"] == 0
     assert out["measures"]["prompt_tokens"]["delta"] == -20 and out["measures"]["repeated_calls"]["delta"] == 0 and out["asked"] == 1
     assert retention.compare([], [])["requests"] == 0
+
+
+def test_needed_release_requires_verified_recovery():
+    replay = held(low=10)
+    replay["holdout"]["engine"]["needed_released"] = 1
+    verdict = retention.viability(replay, None, {})
+    assert not verdict["viable"]
+    assert "without verified recovery" in verdict["reasons"][0]

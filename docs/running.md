@@ -202,3 +202,11 @@ Power-off erases `/scratch`, where a pass writes everything, so archive and
 verify each host's data first, replica-only hosts after the last judge and
 training hosts last. Scaleway bills an instance until it is powered off, and
 its volumes and IPs until deleted.
+
+### Compaction head readiness
+
+Compaction runs compare the trained head with the host's deterministic context policy. Repeated calls and file mutations do not establish that an earlier observation is expendable. Labels require structured task outcomes, explicit need, or an independent schema-constrained judge; absence of a later citation is not a negative label.
+
+The future head ranks eligible inline detail. Canonical transcript retention, recovery scope, coverage boundaries, and baseline context fitting remain host responsibilities. Missing or untrained heads use the complete deterministic policy. A release must demonstrate useful retention decisions across receiver windows and verify recovery of necessary material; increased successful recall alone is not a failure.
+
+The compaction head is not trained or enabled by these changes. Dataset experiments must record the Painted Wolf Code commit, source scenario, writer and judge families, receiver and summarizer budgets, failure injection, and recovery outcome. Evaluation includes unavailable and stalled summarizers and sessions longer than any receiver window.

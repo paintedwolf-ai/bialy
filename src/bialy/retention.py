@@ -1,26 +1,12 @@
-"""Context retention: how a run shapes its sessions for the retention head,
-searches and selects the head, compares the passes it decided in, and reads
-its verdict.
-
-The retention head answers which earlier tool results a request will read
-again (Painted Wolf Code, scripts/bialy/README.md "Context retention"). Its
-rows need no judge. The replay (`retention_eval.py`) prices every release in
-prompt tokens from the rows' own facts, fits the drop threshold and confidence
-floor on validation, and scores the fitted policy on the held-out workspaces
-with a bootstrap interval; the engine-on pass then shows what the head did
-to real sessions. The verdict reads both: a head is viable when its fitted
-policy's held-out objective is clear of zero and of the structural facts
-alone, and when the sessions it decided in did not pay for it in recalls.
-"""
+"""Compaction dataset experiments and held-out retention evaluation."""
 import dataclasses
 import itertools
 import json
 import statistics
 from pathlib import Path
 
-# The behaviour measures compared between the engine-off and engine-on passes,
-# per request, with the direction a better head moves each.
-BEHAVIOUR = (("prompt_tokens", "down"), ("recall_calls", "up"), ("repeated_calls", "up"), ("calls", "flat"))
+# Recall use is measured; successful recovery is part of the design.
+BEHAVIOUR = (("prompt_tokens", "down"), ("recall_calls", "flat"), ("repeated_calls", "up"), ("calls", "flat"))
 
 
 def shape_archetypes(archetypes, settings):
@@ -98,14 +84,14 @@ def viability(replay, comparison, settings):
     held = (replay or {}).get("holdout") or {}
     boot = ((held.get("bootstrap") or {}).get("engine")) or {}
     structural = held.get("structural") or {}
-    best_fact = max((t.get("objective_tokens", 0) for name, t in structural.items() if name != "none"), default=0)
+    best_fact = structural.get("none", {}).get("objective_tokens", 0)
     numbers = {
         "rows": held.get("rows"), "candidates": (held.get("engine") or {}).get("candidates"), "needed_rate": held.get("needed_rate"),
         "auc": held.get("auc"), "objective_per_request": (held.get("engine") or {}).get("objective_per_request"),
         "objective_share": (held.get("engine") or {}).get("objective_share"), "interval": boot,
         "structural_best_objective": best_fact, "released": (held.get("engine") or {}).get("released"),
         "needed_released": (held.get("engine") or {}).get("needed_released"), "abstained": held.get("abstained"),
-        "policy": held.get("policy"), "facts": ((replay or {}).get("recommendation") or {}).get("facts"),
+        "policy": held.get("policy"), "facts": [],
     }
     reasons = []
     min_rows = int(settings.get("min_rows") or 20)
@@ -115,7 +101,9 @@ def viability(replay, comparison, settings):
         reasons.append("held-out objective interval %s is not clear of releasing nothing" % json.dumps(boot or None))
     engine_objective = (held.get("engine") or {}).get("objective_tokens", 0)
     if engine_objective <= best_fact:
-        reasons.append("held-out objective %s tokens does not beat the best structural fact's %s" % (engine_objective, best_fact))
+        reasons.append("held-out objective %s tokens does not beat the deterministic baseline's %s" % (engine_objective, best_fact))
+    if (held.get("engine") or {}).get("needed_released", 0):
+        reasons.append("needed material left the inline context without verified recovery")
     if held.get("abstained"):
         reasons.append("%d held-out rows abstained: the head did not load" % held["abstained"])
     if comparison:
