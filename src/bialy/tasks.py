@@ -31,7 +31,7 @@ STYLE = """You write realistic requests that developers type to an AI coding ass
 Write each request the way a busy engineer would: some terse, some detailed, some with pasted error output, some polite, some blunt.
 Never tell the assistant which tool or command to use to do the work unless a developer naturally would ("run the tests", "check git blame").
 When reporting bugs, test failures, or asking for fixes, describe the observed symptom, error message, or failing test behavior rather than revealing the exact root-cause file and line number."""
-REPLY = """Reply with one JSON object only: {"tasks": [{"prompt": "...", "follow_ups": ["..."]}]}. follow_ups is a list of zero to two later messages in the same conversation."""
+REPLY = """Reply with one JSON object only: {"tasks": [{"prompt": "...", "follow_ups": ["..."]}]}. follow_ups is a list of zero to %d later messages in the same conversation, each continuing the work the earlier ones left: a change to make once the first is done, a question about what was found, a problem the result shows."""
 # What the request may refer to depends on where its session starts.
 WORKSPACE_RULES = {
     ("repository", False): """The assistant is working in the developer's repository, described by the facts you are given.
@@ -46,15 +46,16 @@ Developers starting something new often ask the assistant to check official docu
 
 
 def system_prompt(workspace, archetype):
-    return "\n".join((STYLE, WORKSPACE_RULES[(workspace.kind, archetype.new_files)], REPLY))
+    return "\n".join((STYLE, WORKSPACE_RULES[(workspace.kind, archetype.new_files)], REPLY % archetype.max_follow_ups))
 
 
-REPLY_SCHEMA = {
-    "type": "object", "required": ["tasks"], "additionalProperties": False,
-    "properties": {"tasks": {"type": "array", "items": {
-        "type": "object", "required": ["prompt", "follow_ups"], "additionalProperties": False,
-        "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": 2}}}}},
-}
+def reply_schema(max_follow_ups):
+    return {
+        "type": "object", "required": ["tasks"], "additionalProperties": False,
+        "properties": {"tasks": {"type": "array", "items": {
+            "type": "object", "required": ["prompt", "follow_ups"], "additionalProperties": False,
+            "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": max_follow_ups}}}}},
+    }
 
 PATHLIKE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:py|go|js|ts|tsx|rs|rb|java|kt|php|md|toml|yaml|yml|json|lock|cfg|ini|txt))(?![\w/])")
 LANGUAGE_NAMES = {"es": "Spanish", "de": "German", "fr": "French", "pt": "Portuguese", "ja": "Japanese", "zh": "Chinese", "ko": "Korean", "it": "Italian"}
@@ -147,12 +148,12 @@ def generate_batch(chat, workspace, facts, archetype, count, language, seed):
     user = "%s\n\nWrite %d different requests of this kind:\n%s\n%s" % (facts, count, archetype.brief, lang)
     # Writing requests needs variety, not deliberation: sample hot, skip the reasoning phase.
     value = chat.json(system_prompt(workspace, archetype), user, temperature=0.9, seed=seed, thinking=False, max_tokens=4096,
-                      schema=REPLY_SCHEMA)
+                      schema=reply_schema(archetype.max_follow_ups))
     tasks = value.get("tasks") if isinstance(value, dict) else value
     out = []
     for t in tasks or []:
         if isinstance(t, dict) and isinstance(t.get("prompt"), str):
-            follow = [clean(f) for f in t.get("follow_ups") or [] if isinstance(f, str) and f.strip()][:2]
+            follow = [clean(f) for f in t.get("follow_ups") or [] if isinstance(f, str) and f.strip()][: archetype.max_follow_ups]
             out.append({"prompt": clean(t["prompt"]), "follow_ups": follow})
     return out
 

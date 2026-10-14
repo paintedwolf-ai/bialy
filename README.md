@@ -59,7 +59,12 @@ The native runtime in Painted Wolf Code derives from
    runner can reach the model servers and the public web on ports 80 and 443,
    nothing else: private ranges and the cloud metadata service are dropped,
    and it holds no credential. Each runner exports its sessions' rows with
-   `lycaon-debug decide export` and keeps its store for later re-export.
+   `lycaon-debug decide export`, and beside them the context retention rows
+   (`pw-retention-row/1`: which earlier tool results each request offered to
+   drop and which the session read again) and the request rows
+   (`pw-request-row/1`: what each request cost in calls and tokens, so two
+   passes over the same tasks compare), and keeps its store for later
+   re-export.
 5. **Judge.** `bialy judge` scores every skill card against each turn and
    every offered tool card against each `request_tools` need, 0..4, with a
    model of another family than the one that drove the session, greedy
@@ -71,7 +76,8 @@ The native runtime in Painted Wolf Code derives from
    builds the candidate sets the code-rank trainer reads.
 7. **Split and release.** `bialy split` holds out whole workspaces, both
    repositories and stacks, and splits the rest by prompt group; `bialy release` writes the splits, the
-   code-rank pairs, a dataset card, provenance, and checksums. Nothing uploads.
+   code-rank pairs, the retention rows split the same way, a dataset card,
+   provenance, and checksums. Nothing uploads.
 
 A release lists every task its sessions were driven with (`tasks.jsonl`,
 with each task's outcome), so a pass stopped early, restarted, or salvaged

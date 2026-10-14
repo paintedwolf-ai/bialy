@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,7 @@ def reported(run):
 def test_run_settings_defaults_and_unknown_keys():
     settings = config.run_settings({"task_cap": 2, "train": {"device": "cpu"}, "engine_on": {"enabled": False}})
     assert settings["task_cap"] == 2 and settings["train"]["device"] == "cpu"
-    assert settings["train"]["recipes"] == ["B5", "B7G", "E4", "code-rank"]
+    assert settings["train"]["recipes"] == ["B5", "B7G", "E4", "code-rank", "R1"]
     assert settings["engine_on"] == {"enabled": False, "deadline_ms": 60000}
     assert config.run_settings({"engine_on": {"deadline_ms": 5}})["engine_on"] == {"enabled": True, "deadline_ms": 5}
     assert settings["lycaon_checkout"].startswith("/")
@@ -102,6 +103,94 @@ def test_redo_reruns_one_stage_and_keeps_the_rest(factory, tmp_path):
     record.clear()
     runmod.execute(run, funcs=stub_funcs(record), redo=["image"])
     assert record == ["image"] and reported(run)
+
+
+def test_a_retention_only_run_needs_no_judge_or_writer(factory, tmp_path):
+    run = make_run(factory, tmp_path, train={"recipes": ["R1"]}, judge={"enabled": False})
+    assert runmod.stage_skillreq(run)["skipped"] and runmod.stage_judge_skillreq(run)["skipped"]
+    rows = run.path("fleet-off", "rows.jsonl")
+    rows.parent.mkdir(parents=True)
+    rows.write_text('{"receipt": 1}\n')
+    out = runmod.stage_judge(run)
+    assert out["skipped"] and run.path("judged-off.jsonl").read_text() == '{"receipt": 1}\n'
+    assert runmod.judged_files(run) == [run.path("judged-off.jsonl")]
+    # Follow-up overrides reach every archetype of the scaled factory.
+    pilot = make_run(factory, tmp_path, retention={"follow_up_rate": 1.0, "follow_ups": 4})
+    shaped = runmod.scaled_factory(pilot).archetypes
+    assert {a.follow_up_rate for a in shaped} == {1.0} and {a.max_follow_ups for a in shaped} == {4}
+    assert {a.follow_up_rate for a in runmod.scaled_factory(run).archetypes} == {a.follow_up_rate for a in factory.archetypes}
+
+
+def replay_report(objective, released=5, needed=0, low=50):
+    """A retention_eval.py --fit --holdout report as the selection reads it."""
+    tally = {"candidates": 500, "released": released, "needed_released": needed, "objective_tokens": objective,
+             "objective_per_request": objective // 50, "objective_share": 0.2}
+    return {"overall": {"rows": 60, "auc": 0.8, "needed_rate": 0.2, "abstained": 0, "engine": tally, "structural": {"none": dict(tally, objective_tokens=0)}},
+            "fitted": {"drop_below": 0.2, "confidence_floor": 0.7, "tally": tally},
+            "holdout": {"rows": 50, "auc": 0.78, "needed_rate": 0.19, "abstained": 0, "engine": tally, "policy": {"drop_below": 0.2, "confidence_floor": 0.7},
+                        "structural": {"none": dict(tally, objective_tokens=0), "repeated": dict(tally, objective_tokens=-400), "stale": dict(tally, objective_tokens=100)},
+                        "bootstrap": {"engine": {"low": low, "median": 200, "high": 400, "draws": 500}}},
+            "recommendation": {"facts": [], "fragment": "retention:\n  drop_below: 0.2\n  confidence_floor: 0.7\n"}}
+
+
+def test_evaluate_selects_the_searched_retention_head_and_reads_the_verdict(factory, tmp_path, monkeypatch):
+    run = make_run(factory, tmp_path, train={"recipes": ["R1"]})
+    search = run.path("heads", "search")
+    search.mkdir(parents=True)
+    for name in ("lr0.001-pw6-needed", "lr0.0005-pw6-needed"):
+        (search / ("retention-%s.safetensors" % name)).write_bytes(name.encode())
+    monkeypatch.setattr(runmod, "model_dir", lambda run: tmp_path)
+    monkeypatch.setattr(runmod.build, "launcher", lambda engine, model, heads, out, device=None: Path(out))
+    for split in ("val", "holdout"):
+        rows = run.path("split", "retention", "%s.jsonl" % split)
+        rows.parent.mkdir(parents=True, exist_ok=True)
+        rows.write_text(json.dumps({"schema": "pw-retention-row/1", "partial": False}) + "\n")
+    objectives = {"lr0.001-pw6-needed": 9000, "lr0.0005-pw6-needed": 12000}
+    calls = []
+
+    def fake_run(args, cwd=None, capture_output=None, text=None, env=None):
+        calls.append(args)
+        name = Path(args[args.index("--json") + 1]).stem
+        Path(args[args.index("--json") + 1]).write_text(json.dumps(replay_report(objectives[name])))
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(runmod.subprocess, "run", fake_run)
+    out = runmod.stage_evaluate(run)
+    assert len(calls) == 2 and all("--fit" in a and "--holdout" in a for a in calls)
+    retained = out["retention"]
+    assert retained["chosen"] == "lr0.0005-pw6-needed" and run.path("heads", "retention.safetensors").read_bytes() == b"lr0.0005-pw6-needed"
+    assert retained["fitted"] == {"drop_below": 0.2, "confidence_floor": 0.7} and retained["facts"] == []
+    assert retained["viability"]["viable"] and retained["viability"]["reasons"] == []
+    selection = json.loads(Path(retained["selection"]).read_text())
+    assert selection["chosen"] == "lr0.0005-pw6-needed" and set(selection["search"]) == set(objectives)
+    assert "drop_below: 0.2" in Path(retained["fragment"]).read_text()
+    # The turn replay has no heads to score, and the report carries the section.
+    assert out["evals"]["skipped"]
+    state = run.load_state()
+    state["stages"]["evaluate"] = {"status": "done", "at": "now", "outputs": out}
+    run.save_state(state)
+    text = Path(runmod.stage_report(run, publish=False)["report"]).read_text()
+    assert "## Retention head" in text and "**Viable.**" in text and "| Search point |" in text and "lr0.001-pw6-needed" in text
+
+
+def test_compare_matches_requests_across_passes(factory, tmp_path):
+    run = make_run(factory, tmp_path)
+    off = run.path("fleet-off", "requests.jsonl")
+    on = run.path("fleet-on", "requests.jsonl")
+    off.parent.mkdir(parents=True)
+    on.parent.mkdir(parents=True)
+
+    def row(task, index, tokens, recalls, dropped):
+        return {"schema": "pw-request-row/1", "host": "coordinator", "surface": "implement_investigate", "partial": False, "request_index": index,
+                "calls": 4, "prompt_tokens": tokens, "recall_calls": recalls, "repeated_calls": 0, "meta": {"task_id": task},
+                "retention": {"recorded": True, "asked": dropped is not None, "watermark": False, "tokens": 1, "candidates": 3, "dropped": dropped or 0}}
+    off.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 10000, 0, None), row("t1", 1, 20000, 0, None), row("t2", 0, 5000, 0, None))))
+    on.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 9000, 0, 1), row("t1", 1, 15000, 1, 2), row("t3", 0, 1, 0, 0))))
+    out = runmod.stage_compare(run)
+    c = out["comparison"]
+    assert c["requests"] == 2 and c["off_only"] == 1 and c["on_only"] == 1 and c["released_results"] == 3 and c["released_requests"] == 2
+    assert c["measures"]["prompt_tokens"] == {"off": 15000.0, "on": 12000.0, "delta": -3000.0, "delta_median": -3000, "wants": "down"}
+    assert c["measures"]["recall_calls"]["delta"] == 0.5
+    assert runmod.stage_compare(make_run(factory, tmp_path / "other", engine_on={"enabled": False, "deadline_ms": 1}))["skipped"]
 
 
 def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):

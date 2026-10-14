@@ -78,6 +78,8 @@ head.
 
 {rerank}
 
+{retention}
+
 ## Check it yourself
 
 Each row of the table comes from a replay report shipped in `eval/`.
@@ -133,11 +135,37 @@ def rerank_table(reports):
     return "\n".join(lines)
 
 
-def build(heads_dir, version, dataset_version, engine_commit, evals, baselines, baseline_label, rerank, out_dir):
-    """The heads, their card, and the reports behind every number on it."""
+def retention_section(report_path, verdict):
+    """The card's retention section: the verdict, the fitted policy, and the held-out
+    numbers the choice rests on, from the chosen head's replay report."""
+    if not report_path:
+        return "No retention head is in this release."
+    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    held = report.get("holdout") or report.get("overall") or {}
+    engine = held.get("engine") or {}
+    fitted = report.get("fitted") or {}
+    lines = ["## Retention", "",
+             "`retention` answers which earlier tool results a request will read again; the host releases the rest behind recall pointers.",
+             "Its policy was fitted on validation rows by the objective in `scripts/bialy/retention_eval.py` (prompt tokens a release saves "
+             "over the request's remaining calls, less the recall round trip a wrong release costs) and scored on held-out workspaces.", "",
+             "- Verdict: **%s**%s" % ("viable" if (verdict or {}).get("viable") else "not viable",
+                                      "" if not (verdict or {}).get("reasons") else "; " + "; ".join(verdict["reasons"])),
+             "- Fitted policy: drop_below %s, confidence_floor %s" % (fitted.get("drop_below"), fitted.get("confidence_floor")),
+             "- Held-out: %s rows, %s candidates, AUC %s, objective %s tokens per request, interval %s" % (
+                 held.get("rows"), engine.get("candidates"), held.get("auc"), engine.get("objective_per_request"),
+                 json.dumps(((held.get("bootstrap") or {}).get("engine")) or None)),
+             "- Structural facts recommended to release on their own: %s" % json.dumps(((report.get("recommendation") or {}).get("facts")) or [])]
+    return "\n".join(lines)
+
+
+def build(heads_dir, version, dataset_version, engine_commit, evals, baselines, baseline_label, rerank, out_dir, notes=None, retention=None, verdict=None):
+    """The heads, their card, and the reports behind every number on it. `notes` are
+    further JSON reports copied into eval/ as they are (the retention selection and the
+    pass comparison); `retention` is the chosen retention head's replay report."""
     heads_dir, out_dir = Path(heads_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = config.hub()
+    notes = notes or {}
     # The Bialy commit packaging the release; publishing tags it heads-<version> (docs/releases.md).
     factory = factory_source()
     heads = []
@@ -148,7 +176,8 @@ def build(heads_dir, version, dataset_version, engine_commit, evals, baselines, 
                        engine_commit=engine_commit, factory_commit=factory["git_commit"],
                        heads="\n".join("- `%s`: %s, over %s, sha256 `%s`" % (h["file"], h["metadata"].get("label"), h["metadata"].get("backbone"),
                                                                             h["sha256"]) for h in heads),
-                       results=results_table(evals, baselines, baseline_label), rerank=rerank_table(rerank))
+                       results=results_table(evals, baselines, baseline_label), rerank=rerank_table(rerank),
+                       retention=retention_section(retention, verdict))
     (out_dir / "README.md").write_text(card, encoding="utf-8")
     (out_dir / "NOTICE").write_text(NOTICE, encoding="utf-8")
     shutil.copy2(Path(__file__).resolve().parents[2] / "LICENSE", out_dir / "LICENSE")
@@ -160,8 +189,11 @@ def build(heads_dir, version, dataset_version, engine_commit, evals, baselines, 
         shutil.copy2(path, out_dir / "eval" / ("%s.baseline.json" % name))
     for name, path in rerank.items():
         shutil.copy2(path, out_dir / "eval" / ("rerank-%s.json" % name))
+    for name, path in notes.items():
+        shutil.copy2(path, out_dir / "eval" / ("%s.json" % name))
     provenance = {"version": version, "dataset_version": dataset_version, "engine_commit": engine_commit, "factory": factory, "heads": heads,
-                  "evals": sorted(evals), "baseline": {"label": baseline_label, "sets": sorted(baselines)}, "rerank": sorted(rerank)}
+                  "evals": sorted(evals), "baseline": {"label": baseline_label, "sets": sorted(baselines)}, "rerank": sorted(rerank),
+                  "notes": sorted(notes), "retention": verdict}
     (out_dir / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
     hub.seal(out_dir)
     anchor.record("heads", version, out_dir)

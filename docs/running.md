@@ -123,6 +123,64 @@ real ambiguity between tools that do the same job.
 - Checkpoints are chosen by tool plus guide validation loss, so selection
   mostly follows guides. More worker rows of the right kinds, not heavier
   ones, is the worker fix.
+- Retention rows need no judge: a result is needed when the session read it
+  again, by its own later tool calls and citations. The runner sets
+  `LYCAON_RETENTION_RECORD=all` so every request records candidates, not only
+  those past the compaction watermark; filter on `watermark` to measure the
+  policy the host actually runs. Hindsight labels are observational, so check
+  `needed_rate` by driving model before trusting the R1 head: a model that
+  forgets gracefully re-reads little. R1 is skipped until both retention
+  splits hold rows.
+
+## Retention pilot
+
+A retention-only pass needs no judge and no writer, so the drivers' sidecar
+calls are the whole spend. It is unattended end to end, and nothing in its
+verdict is a number chosen by hand.
+
+```bash
+bialy run --run retention-pilot --recipes R1 --no-judge \
+  --follow-up-rate 1.0 --follow-ups 3 --task-cap 2 --runners 4 --spend-ceiling 40
+```
+
+- `--follow-up-rate 1.0` keeps every follow-up a task was written with and
+  `--follow-ups 3` lets the writer give each task up to three, so every task
+  yields several retention decisions and longer sessions reach the compaction
+  watermark; at the defaults most tasks yield none, since a decision needs a
+  prior turn to look back on.
+- `--no-judge` passes rows through unjudged; `--recipes R1` trains only the
+  retention head and skips the skill-request and code-rank stages. The turn
+  replay is skipped too, since it needs the turn-load and unit-rank heads.
+- The first pass trains the search grid (`run.retention.search`) on the
+  pilot split, replays every head on its validation rows with the policy
+  fitted there, and promotes the best fitted objective. The engine-on pass
+  drives the same tasks with that head deciding at every request
+  (`run.retention.engine_on_watermark_pct: 0`), and the `compare` stage
+  matches requests between the passes by task and position: prompt tokens,
+  recall calls, repeated calls, and calls per request.
+- The final training repeats the search over both passes' rows; `evaluate`
+  promotes the best head, scores it on the held-out workspaces with a
+  bootstrap interval, and writes `eval/retention/selection.json` and the
+  fitted `decisions-fragment.yaml`. The report's "Retention head" section
+  gives the verdict with every reason it fails: an interval not clear of
+  releasing nothing, an objective under the best structural fact alone, too
+  few held-out rows or matched requests, or a rise in recalls with the head
+  deciding.
+- A run that stops at a failed stage still writes the report; `bialy run`
+  with the same name resumes it. When the host or factory code changed under
+  a run, `bialy fleet reexport --run <name>/fleet-off --lycaon-debug <binary>`
+  rewrites every driven shard's rows from the store it kept, so the pass is
+  never driven twice; `train-host/retention_pilot.sh resume` rebuilds, does
+  that, and continues the run.
+- A prompt that times out is aborted with a two-minute bound; a session that
+  will not stop (a dev server the model left running) is recorded on its task
+  and the shard moves on, instead of holding the runner until the fleet's
+  overdue deadline.
+- Rows from stores the earlier pilots kept export the same way:
+  `lycaon-debug decide export --db <store.db> --retention rows.jsonl --requests requests.jsonl`
+  reconstructs candidates for receipts written before the host recorded
+  them (`reconstructed: true`), so label rates can be read before any paid
+  call.
 
 ## Training hardware
 

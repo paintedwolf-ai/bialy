@@ -1,4 +1,6 @@
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -61,7 +63,10 @@ def test_engine_on_pass_raises_only_turn_decision_deadlines(tmp_path):
     (config / "packs/painted-wolf/platform/host/decisions.yaml").write_text(
         "turn:\n  deadline_ms: 2500\nrerank:\n  summarize:\n    deadline_ms: 300\nrequest:\n  deadline_ms: 2500\n")
     (config / "packs/painted-wolf/skills.yaml").write_text("skills: []\n")
-    fleet.raise_decision_deadlines(config, tmp_path / "engine", 30000)
+    (config / "packs/painted-wolf/platform/host/compaction.yaml").write_text("enabled: true\nretention_watermark_pct: 40\nretention_min_tokens: 400\n")
+    fleet.stage_runner_config(config, tmp_path / "engine", 30000, retention_watermark_pct=0)
+    compaction = (tmp_path / "engine" / fleet.COMPACTION).read_text()
+    assert "retention_watermark_pct: 0\n" in compaction and "retention_min_tokens: 400" in compaction
     # The whole tree travels, since the config root replaces the embedded configuration.
     assert (tmp_path / "engine/overlay/config/packs/painted-wolf/skills.yaml").exists()
     text = (tmp_path / "engine" / fleet.DECISIONS).read_text()
@@ -76,11 +81,32 @@ def test_collect_joins_rows_to_their_task_and_lists_what_it_drove(tmp_path):
     (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s1", "receipt": 1}) + "\n")
     out, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
     row = json.loads(out.read_text())
-    assert stats == {"rows": 1, "shards": 1, "tasks": 1, "settled": 1}
+    assert stats == {"rows": 1, "retention_rows": 0, "request_rows": 0, "shards": 1, "tasks": 1, "settled": 1}
     assert row["meta"] == {"workspace": "flask", "task_status": "settled", "run": "run", "pass_name": "engine-off"}
     assert row["model"] == json.loads((tmp_path / "tasks" / "flask.jsonl").read_text().splitlines()[0])["model"]
     driven = json.loads((tmp_path / "run" / "tasks-driven.jsonl").read_text())
     assert driven["prompt"] == "p0" and driven["outcome"]["status"] == "settled" and driven["outcome"]["shard"] == "flask-000"
+
+
+def test_collect_gathers_retention_rows_beside_the_turn_rows(tmp_path):
+    write_tasks(tmp_path / "tasks", "flask", 2)
+    shards = tmp_path / "run" / "shards"
+    with_retention, without = shards / "flask-000", shards / "flask-001"
+    for shard, task, session in ((with_retention, "flask0", "s1"), (without, "flask1", "s2")):
+        shard.mkdir(parents=True)
+        (shard / "manifest.jsonl").write_text(json.dumps({"task_id": task, "root_session": session, "status": "settled"}) + "\n")
+        (shard / "rows.jsonl").write_text(json.dumps({"root_session": session, "receipt": 1}) + "\n")
+    (with_retention / "retention.jsonl").write_text(json.dumps({"schema": "pw-retention-row/1", "root_session": "s1", "receipt": 1}) + "\n")
+    (with_retention / "requests.jsonl").write_text(json.dumps({"schema": "pw-request-row/1", "root_session": "s1", "receipt": 1}) + "\n")
+    out, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
+    assert stats["rows"] == 2 and stats["retention_rows"] == 1 and stats["request_rows"] == 1 and stats["shards"] == 2
+    retention = [json.loads(line) for line in (tmp_path / "run" / "retention.jsonl").read_text().splitlines()]
+    assert len(retention) == 1 and retention[0]["meta"]["workspace"] == "flask" and retention[0]["model"] == "qwen3.6-35b-a3b"
+    requests = [json.loads(line) for line in (tmp_path / "run" / "requests.jsonl").read_text().splitlines()]
+    assert len(requests) == 1 and requests[0]["meta"]["workspace"] == "flask"
+    (with_retention / "retention.jsonl").write_text(json.dumps({"root_session": "s9", "receipt": 1}) + "\n")
+    with pytest.raises(ValueError, match="manifest does not list"):
+        fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
 
 
 def test_shards_are_cut_per_budget_sized_by_time_and_the_longest_start_first(factory, tmp_path):
@@ -287,6 +313,36 @@ def test_an_overdue_shard_keeps_its_finished_sessions_and_the_turns_it_cut_off(t
     assert manifest[1:] == [{"task_id": "t2", "root_session": "s2", "status": "overdue"},
                             {"task_id": "t3", "root_session": None, "status": "overdue"}]
     assert len((shard / "rows.jsonl").read_text().splitlines()) == 3 and not exported.exists()
+
+
+def test_reexport_rewrites_finished_shards_from_their_stores(tmp_path, monkeypatch):
+    shards = tmp_path / "run" / "shards"
+    done, undriven = shards / "flask-000", shards / "flask-001"
+    for shard in (done, undriven):
+        shard.mkdir(parents=True)
+        (shard / "store.db").write_bytes(b"db")
+    (done / "manifest.jsonl").write_text(json.dumps({"task_id": "t", "root_session": "s1", "status": "settled"}) + "\n")
+    (done / "rows.jsonl").write_text("old\n")
+    calls = []
+
+    def fake_run(args, capture_output=None, text=None):
+        calls.append(args)
+        for name in ("rows", "retention", "requests"):
+            Path(args[args.index("--%s" % ("out" if name == "rows" else name)) + 1]).write_text(name + "\n")
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(fleet.subprocess, "run", fake_run)
+    assert fleet.reexport(tmp_path / "run", "/bin/lycaon-debug") == ["flask-000"]
+    assert len(calls) == 1 and calls[0][:3] == ["/bin/lycaon-debug", "decide", "export"] and "--retention" in calls[0] and "--requests" in calls[0]
+    assert (done / "rows.jsonl").read_text() == "rows\n" and (done / "requests.jsonl").read_text() == "requests\n"
+    assert (done / "roots.txt").read_text() == "s1\n" and not (done / "rows.part").exists() and not (undriven / "rows.jsonl").exists()
+
+
+def test_an_overdue_shard_keeps_the_retention_rows_of_the_sessions_it_kept(tmp_path):
+    shard, exported = overdue_shard(tmp_path, ["s1", "s2", "s9"])
+    fleet.retention_file(exported).write_text("".join(json.dumps({"root_session": r, "receipt": n}) + "\n" for n, r in enumerate(["s1", "s9"])))
+    assert fleet.keep_overdue(shard, exported)
+    kept = [json.loads(line)["root_session"] for line in (shard / "retention.jsonl").read_text().splitlines()]
+    assert kept == ["s1"] and not fleet.retention_file(exported).exists()
 
 
 def test_sessions_no_task_can_claim_are_dropped(tmp_path):
