@@ -27,7 +27,7 @@ def test_shape_archetypes_replaces_only_what_the_run_sets(factory):
 
 
 def held(low, objective=5000, best_fact=100, rows=50, abstained=0):
-    return {"holdout": {"rows": rows, "auc": 0.8, "needed_rate": 0.2, "abstained": abstained,
+    return {"holdout": {"rows": rows, "verified_label_rows": rows, "auc": 0.8, "needed_rate": 0.2, "abstained": abstained,
                         "engine": {"candidates": 400, "objective_tokens": objective, "objective_per_request": objective // 50, "objective_share": 0.1, "released": 20, "needed_released": 0},
                         "structural": {"none": {"objective_tokens": 0}, "repeated": {"objective_tokens": -300}, "stale": {"objective_tokens": best_fact}},
                         "bootstrap": {"engine": {"low": low, "median": 100, "high": 200, "draws": 500}}, "policy": {"drop_below": 0.2, "confidence_floor": 0.7}},
@@ -68,3 +68,11 @@ def test_needed_release_requires_verified_recovery():
     verdict = retention.viability(replay, None, {})
     assert not verdict["viable"]
     assert "without verified recovery" in verdict["reasons"][0]
+
+
+def test_unverified_hindsight_cannot_qualify_a_head():
+    replay = held(low=10)
+    del replay["holdout"]["verified_label_rows"]
+    verdict = retention.viability(replay, None, {})
+    assert not verdict["viable"]
+    assert "verified task or judge provenance" in verdict["reasons"][0]

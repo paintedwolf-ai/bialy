@@ -123,20 +123,17 @@ real ambiguity between tools that do the same job.
 - Checkpoints are chosen by tool plus guide validation loss, so selection
   mostly follows guides. More worker rows of the right kinds, not heavier
   ones, is the worker fix.
-- Retention rows need no judge: a result is needed when the session read it
-  again, by its own later tool calls and citations. The runner sets
-  `LYCAON_RETENTION_RECORD=all` so every request records candidates, not only
-  those past the compaction watermark; filter on `watermark` to measure the
-  policy the host actually runs. Hindsight labels are observational, so check
-  `needed_rate` by driving model before trusting the R1 head: a model that
-  forgets gracefully re-reads little. R1 is skipped until both retention
-  splits hold rows.
+- Retention rows capture later use as positive observational evidence. Missing use
+  is not a negative label. R1 qualification requires verified task truth or an
+  independent judge for every held-out label; unverified hindsight cannot qualify
+  a head. The host records all candidates when `LYCAON_RETENTION_RECORD=all`.
 
 ## Retention pilot
 
-A retention-only pass needs no judge and no writer, so the drivers' sidecar
-calls are the whole spend. It is unattended end to end, and nothing in its
-verdict is a number chosen by hand.
+The pilot collects observations and replays experimental candidates. It does
+not qualify a compaction head until verified labels and recovery outcomes are
+available. The compaction head remains optional and is not part of the runtime
+baseline.
 
 ```bash
 bialy run --run retention-pilot --recipes R1 --no-judge \
@@ -148,7 +145,8 @@ bialy run --run retention-pilot --recipes R1 --no-judge \
   yields several retention decisions and longer sessions reach the compaction
   watermark; at the defaults most tasks yield none, since a decision needs a
   prior turn to look back on.
-- `--no-judge` passes rows through unjudged; `--recipes R1` trains only the
+- `--no-judge` retains unverified observational rows; its output cannot qualify
+  a head. `--recipes R1` trains only the
   retention head and skips the skill-request and code-rank stages. The turn
   replay is skipped too, since it needs the turn-load and unit-rank heads.
 - The first pass trains the search grid (`run.retention.search`) on the
@@ -163,9 +161,9 @@ bialy run --run retention-pilot --recipes R1 --no-judge \
   bootstrap interval, and writes `eval/retention/selection.json` and the
   fitted `decisions-fragment.yaml`. The report's "Retention head" section
   gives the verdict with every reason it fails: an interval not clear of
-  releasing nothing, an objective under the best structural fact alone, too
-  few held-out rows or matched requests, or a rise in recalls with the head
-  deciding.
+  the deterministic baseline, unverified labels, missing recovery, or too
+  few held-out rows or matched requests. Successful recall is measured as
+  part of the recovery path.
 - A run that stops at a failed stage still writes the report; `bialy run`
   with the same name resumes it. When the host or factory code changed under
   a run, `bialy fleet reexport --run <name>/fleet-off --lycaon-debug <binary>`

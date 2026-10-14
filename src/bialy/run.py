@@ -519,7 +519,7 @@ def judged_files(run):
 
 
 def retention_files(run):
-    """The retention rows each pass collected; no judge reads them, their labels are the sessions' own."""
+    """Observational retention rows collected by each pass."""
     return [p for p in (run.path("fleet-off", "retention.jsonl"), run.path("fleet-on", "retention.jsonl")) if training.has_rows(p)]
 
 

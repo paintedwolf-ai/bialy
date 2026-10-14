@@ -127,7 +127,7 @@ def replay_report(objective, released=5, needed=0, low=50):
              "objective_per_request": objective // 50, "objective_share": 0.2}
     return {"overall": {"rows": 60, "auc": 0.8, "needed_rate": 0.2, "abstained": 0, "engine": tally, "structural": {"none": dict(tally, objective_tokens=0)}},
             "fitted": {"drop_below": 0.2, "confidence_floor": 0.7, "tally": tally},
-            "holdout": {"rows": 50, "auc": 0.78, "needed_rate": 0.19, "abstained": 0, "engine": tally, "policy": {"drop_below": 0.2, "confidence_floor": 0.7},
+            "holdout": {"rows": 50, "verified_label_rows": 50, "auc": 0.78, "needed_rate": 0.19, "abstained": 0, "engine": tally, "policy": {"drop_below": 0.2, "confidence_floor": 0.7},
                         "structural": {"none": dict(tally, objective_tokens=0), "repeated": dict(tally, objective_tokens=-400), "stale": dict(tally, objective_tokens=100)},
                         "bootstrap": {"engine": {"low": low, "median": 200, "high": 400, "draws": 500}}},
             "recommendation": {"facts": [], "fragment": "retention:\n  drop_below: 0.2\n  confidence_floor: 0.7\n"}}

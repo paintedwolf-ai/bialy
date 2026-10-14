@@ -10,9 +10,7 @@ BEHAVIOUR = (("prompt_tokens", "down"), ("recall_calls", "flat"), ("repeated_cal
 
 
 def shape_archetypes(archetypes, settings):
-    """The archetypes under run.retention: every follow-up rate and follow-up cap
-    replaced when the run sets them, so a pass's tasks continue with the follow-ups
-    that make retention decisions."""
+    """Apply the requested follow-up rate and cap."""
     rate, cap = settings.get("follow_up_rate"), settings.get("follow_ups")
     out = []
     for a in archetypes:
@@ -26,8 +24,7 @@ def shape_archetypes(archetypes, settings):
 
 
 def search_grid(settings):
-    """One trainer argument list per point of run.retention.search, in a fixed order,
-    each with the label suffix that names it."""
+    """Return deterministic trainer arguments for each search point."""
     grid = settings.get("search") or {}
     axes = [("lr", grid.get("lr") or [5e-4]), ("pos_weight", grid.get("pos_weight") or [6.0]), ("truth", grid.get("truth") or ["needed"])]
     points = []
@@ -39,8 +36,7 @@ def search_grid(settings):
 
 
 def select(reports):
-    """The search point with the best fitted objective on validation: {name: report}
-    -> (name, objective). Ties go to the point whose fitted policy released less."""
+    """Select validation objective, preferring fewer releases on ties."""
     best = None
     for name, report in sorted(reports.items()):
         fitted = (report.get("fitted") or {}).get("tally") or {}
@@ -51,11 +47,7 @@ def select(reports):
 
 
 def compare(off_rows, on_rows):
-    """The engine-on pass against the engine-off pass over the requests both drove,
-    matched by task (meta.task_id) and position in the session: per-request means
-    of every behaviour measure, their deltas, and how often the head released
-    anything. Requests one pass lacks are left out, so a task that failed in one
-    pass does not tilt the comparison."""
+    """Compare matched complete requests and report unmatched coverage."""
     def key(r):
         return ((r.get("meta") or {}).get("task_id"), r["host"], r.get("surface"), r.get("request_index"))
     off = {key(r): r for r in off_rows if not r["partial"]}
@@ -78,14 +70,13 @@ def compare(off_rows, on_rows):
 
 
 def viability(replay, comparison, settings):
-    """The verdict: {viable, reasons, numbers}, from the held-out replay of the
-    selected head and the pass comparison when one ran. Every reason that fails is
-    named, so a reader sees the whole picture rather than the first miss."""
+    """Require held-out benefit, verified labels, and recovery evidence."""
     held = (replay or {}).get("holdout") or {}
     boot = ((held.get("bootstrap") or {}).get("engine")) or {}
     structural = held.get("structural") or {}
     best_fact = structural.get("none", {}).get("objective_tokens", 0)
     numbers = {
+        "verified_label_rows": held.get("verified_label_rows", 0),
         "rows": held.get("rows"), "candidates": (held.get("engine") or {}).get("candidates"), "needed_rate": held.get("needed_rate"),
         "auc": held.get("auc"), "objective_per_request": (held.get("engine") or {}).get("objective_per_request"),
         "objective_share": (held.get("engine") or {}).get("objective_share"), "interval": boot,
@@ -95,6 +86,8 @@ def viability(replay, comparison, settings):
     }
     reasons = []
     min_rows = int(settings.get("min_rows") or 20)
+    if numbers["verified_label_rows"] != numbers["rows"]:
+        reasons.append("held-out labels lack verified task or judge provenance")
     if (numbers["rows"] or 0) < min_rows:
         reasons.append("%s held-out rows replayed; an interval needs %d" % (numbers["rows"], min_rows))
     if not boot or boot.get("low", 0) <= 0:

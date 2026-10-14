@@ -145,7 +145,7 @@ def retention_section(report_path, verdict):
     engine = held.get("engine") or {}
     fitted = report.get("fitted") or {}
     lines = ["## Retention", "",
-             "`retention` answers which earlier tool results a request will read again; the host releases the rest behind recall pointers.",
+             "`retention` ranks eligible inline detail; canonical records and recovery remain host-owned.",
              "Its policy was fitted on validation rows by the objective in `scripts/bialy/retention_eval.py` (prompt tokens a release saves "
              "over the request's remaining calls, less the recall round trip a wrong release costs) and scored on held-out workspaces.", "",
              "- Verdict: **%s**%s" % ("viable" if (verdict or {}).get("viable") else "not viable",
@@ -154,7 +154,7 @@ def retention_section(report_path, verdict):
              "- Held-out: %s rows, %s candidates, AUC %s, objective %s tokens per request, interval %s" % (
                  held.get("rows"), engine.get("candidates"), held.get("auc"), engine.get("objective_per_request"),
                  json.dumps(((held.get("bootstrap") or {}).get("engine")) or None)),
-             "- Structural facts recommended to release on their own: %s" % json.dumps(((report.get("recommendation") or {}).get("facts")) or [])]
+             "- Verified held-out label rows: %s" % held.get("verified_label_rows", 0)]
     return "\n".join(lines)
 
 
