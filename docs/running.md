@@ -136,34 +136,26 @@ available. The compaction head remains optional and is not part of the runtime
 baseline.
 
 ```bash
-bialy run --run retention-pilot --recipes R1 --no-judge \
+bialy run --run retention-observations --recipes R1 --no-judge --until collect-off \
   --follow-up-rate 1.0 --follow-ups 3 --task-cap 2 --runners 4 --spend-ceiling 40
 ```
 
-- `--follow-up-rate 1.0` keeps every follow-up a task was written with and
-  `--follow-ups 3` lets the writer give each task up to three, so every task
-  yields several retention decisions and longer sessions reach the compaction
-  watermark; at the defaults most tasks yield none, since a decision needs a
-  prior turn to look back on.
-- `--no-judge` retains unverified observational rows; its output cannot qualify
-  a head. `--recipes R1` trains only the
-  retention head and skips the skill-request and code-rank stages. The turn
-  replay is skipped too, since it needs the turn-load and unit-rank heads.
-- The first pass trains the search grid (`run.retention.search`) on the
-  pilot split, replays every head on its validation rows with the policy
-  fitted there, and promotes the best fitted objective. The engine-on pass
-  drives the same tasks with that head deciding at every request
-  (`run.retention.engine_on_watermark_pct: 0`), and the `compare` stage
-  matches requests between the passes by task and position: prompt tokens,
-  recall calls, repeated calls, and calls per request.
-- The final training repeats the search over both passes' rows; `evaluate`
-  promotes the best head, scores it on the held-out workspaces with a
-  bootstrap interval, and writes `eval/retention/selection.json` and the
-  fitted `decisions-fragment.yaml`. The report's "Retention head" section
-  gives the verdict with every reason it fails: an interval not clear of
-  the deterministic baseline, unverified labels, missing recovery, or too
-  few held-out rows or matched requests. Successful recall is measured as
-  part of the recovery path.
+Follow-ups collect longer sessions and canonical recovery observations. Missing
+later use is unknown, and successful recall is part of the recovery path. This
+collection run does not train a head.
+
+R1 is an explicit experiment, excluded from the default recipes. Training needs
+verified positive and negative labels in both splits. Negative labels must have
+scenario or judge provenance; repetition and file mutation do not establish
+irrelevance. Unjudged observational rows cannot qualify a head.
+
+The search grid trains the optional retention head and evaluates it on separate
+validation and held-out workspaces. Replay reports a counterfactual token proxy,
+not provider savings, and emits no runtime policy or structural deletion rule.
+A deployed comparison must separately demonstrate provider-reported savings,
+task continuity, and successful recovery. The host's deterministic compaction
+remains complete without the head.
+
 - A run that stops at a failed stage still writes the report; `bialy run`
   with the same name resumes it. When the host or factory code changed under
   a run, `bialy fleet reexport --run <name>/fleet-off --lycaon-debug <binary>`

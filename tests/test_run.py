@@ -34,7 +34,7 @@ def reported(run):
 def test_run_settings_defaults_and_unknown_keys():
     settings = config.run_settings({"task_cap": 2, "train": {"device": "cpu"}, "engine_on": {"enabled": False}})
     assert settings["task_cap"] == 2 and settings["train"]["device"] == "cpu"
-    assert settings["train"]["recipes"] == ["B5", "B7G", "E4", "code-rank", "R1"]
+    assert settings["train"]["recipes"] == ["B5", "B7G", "E4", "code-rank"]
     assert settings["engine_on"] == {"enabled": False, "deadline_ms": 60000}
     assert config.run_settings({"engine_on": {"deadline_ms": 5}})["engine_on"] == {"enabled": True, "deadline_ms": 5}
     assert settings["lycaon_checkout"].startswith("/")
@@ -159,7 +159,8 @@ def test_evaluate_selects_the_searched_retention_head_and_reads_the_verdict(fact
     retained = out["retention"]
     assert retained["chosen"] == "lr0.0005-pw6-needed" and run.path("heads", "retention.safetensors").read_bytes() == b"lr0.0005-pw6-needed"
     assert retained["fitted"] == {"drop_below": 0.2, "confidence_floor": 0.7} and retained["facts"] == []
-    assert retained["viability"]["viable"] and retained["viability"]["reasons"] == []
+    assert not retained["viability"]["viable"]
+    assert "matched deployed comparison" in retained["viability"]["reasons"][0]
     selection = json.loads(Path(retained["selection"]).read_text())
     assert selection["chosen"] == "lr0.0005-pw6-needed" and set(selection["search"]) == set(objectives)
     assert "drop_below: 0.2" in Path(retained["fragment"]).read_text()
@@ -169,7 +170,7 @@ def test_evaluate_selects_the_searched_retention_head_and_reads_the_verdict(fact
     state["stages"]["evaluate"] = {"status": "done", "at": "now", "outputs": out}
     run.save_state(state)
     text = Path(runmod.stage_report(run, publish=False)["report"]).read_text()
-    assert "## Retention head" in text and "**Viable.**" in text and "| Search point |" in text and "lr0.001-pw6-needed" in text
+    assert "## Retention head" in text and "matched deployed comparison" in text and "| Search point |" in text and "lr0.001-pw6-needed" in text
 
 
 def test_compare_matches_requests_across_passes(factory, tmp_path):

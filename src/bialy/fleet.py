@@ -38,15 +38,8 @@ DECISIONS = Path("overlay/config/packs/painted-wolf/platform/host/decisions.yaml
 COMPACTION = Path("overlay/config/packs/painted-wolf/platform/host/compaction.yaml")
 
 
-def stage_runner_config(config_dir, engine_dir, deadline_ms=None, retention_watermark_pct=None):
-    """Stage `config_dir`, the lycaon/config tree of the commit the binaries were built
-    from, with the two policy values a pass changes.
-
-    A runner's CPU answers a turn in seconds, and past the deadline the engine abstains.
-    The deadline decides only whether an answer arrives, never what it is, so an
-    engine-on pass raises it. The retention watermark decides when the retention head
-    is asked; an engine-on pass lowers it so the comparison with the engine-off pass
-    sees the head's releases at every request, not only the long sessions'."""
+def stage_runner_config(config_dir, engine_dir, deadline_ms=None):
+    """Stage the pinned configuration and experiment decision deadlines."""
     overlay = Path(engine_dir) / "overlay" / "config"
     shutil.rmtree(overlay, ignore_errors=True)
     shutil.copytree(config_dir, overlay, symlinks=False)
@@ -59,13 +52,6 @@ def stage_runner_config(config_dir, engine_dir, deadline_ms=None, retention_wate
                 section = line[:-1]
             elif section in DECISION_SECTIONS and line.startswith("  deadline_ms:"):
                 lines[i] = "  deadline_ms: %d" % deadline_ms
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    if retention_watermark_pct is not None:
-        path = Path(engine_dir) / COMPACTION
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for i, line in enumerate(lines):
-            if line.startswith("retention_watermark_pct:"):
-                lines[i] = "retention_watermark_pct: %d" % int(retention_watermark_pct)
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -98,7 +84,7 @@ def check_engine(engine_dir, scanner=True):
         raise ValueError("engine payload %s lacks %s; see README (engine/)" % (engine_dir, ", ".join(missing)))
 
 
-def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, config_dir=None, scanner=True, retention_watermark_pct=None):
+def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, config_dir=None, scanner=True):
     """Assemble the build context from runner/, the pinned lycaon binaries, and the
     engine payload, then build the runner image."""
     check_engine(engine_dir, scanner)
@@ -110,8 +96,8 @@ def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, con
     for name in ("lycaon", "lycaon-debug"):
         shutil.copy2(Path(lycaon_bin) / name, ctx / "bin" / name)
     shutil.copytree(engine_dir, ctx / "engine", symlinks=False)
-    if deadline_ms or retention_watermark_pct is not None:
-        stage_runner_config(config_dir, ctx / "engine", deadline_ms or None, retention_watermark_pct)
+    if deadline_ms:
+        stage_runner_config(config_dir, ctx / "engine", deadline_ms)
     shutil.copy2(CONFIG / "unattended.yaml", ctx / "unattended.yaml")
     subprocess.run(["docker", "build", "-q", "-t", tag or factory.fleet["image"], str(ctx)], check=True)
 

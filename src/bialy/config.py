@@ -233,10 +233,10 @@ RUN_DEFAULTS = {
     "judge": {"enabled": True},
     # The retention head: how its sessions are shaped, how its head is searched, and how
     # its verdict is read (src/bialy/retention.py).
-    "retention": {"follow_up_rate": None, "follow_ups": None, "engine_on_watermark_pct": 0,
+    "retention": {"follow_up_rate": None, "follow_ups": None,
                   "search": {"lr": [2e-4, 5e-4, 1e-3], "pos_weight": [2.0, 6.0], "truth": ["needed", "later"]},
                   "bootstrap": 500, "min_rows": 20},
-    "train": {"recipes": ["B5", "B7G", "E4", "code-rank", "R1"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
+    "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
 }
 

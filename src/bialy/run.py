@@ -489,13 +489,11 @@ def stage_pilot(run):
     if retained:
         report["retention"] = {k: retained.get(k) for k in ("chosen", "fitted", "facts")}
     deadline = int(run.setting("engine_on", {}).get("deadline_ms") or 0)
-    watermark = run.setting("retention", {}).get("engine_on_watermark_pct")
     tag = run.image("on")
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
     if not present or run.rebuild_image:
-        fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, deadline, run.checkout / "lycaon/config", scanner=run.scanner,
-                          retention_watermark_pct=watermark)
-    return dict(report, pilot=str(run.path("build", "pilot")), image=tag, retention_watermark_pct=watermark)
+        fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, deadline, run.checkout / "lycaon/config", scanner=run.scanner)
+    return dict(report, pilot=str(run.path("build", "pilot")), image=tag)
 
 
 def stage_plan_on(run):

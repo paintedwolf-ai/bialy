@@ -36,12 +36,12 @@ def held(low, objective=5000, best_fact=100, rows=50, abstained=0):
 
 def test_viability_reads_the_interval_the_structural_facts_and_the_comparison():
     good = retention.viability(held(low=10), None, {"min_rows": 20})
-    assert good["viable"] and good["numbers"]["facts"] == [] and good["numbers"]["interval"]["low"] == 10
+    assert not good["viable"] and good["numbers"]["facts"] == [] and good["numbers"]["interval"]["low"] == 10
     for report, reason in ((held(low=-5), "not clear of releasing nothing"), (held(low=10, objective=0), "does not beat the deterministic baseline"),
                            (held(low=10, rows=5), "an interval needs 20"), (held(low=10, abstained=3), "did not load")):
         verdict = retention.viability(report, None, {"min_rows": 20})
         assert not verdict["viable"] and any(reason in r for r in verdict["reasons"]), verdict
-    comparison = {"requests": 40, "released_results": 12, "measures": {"prompt_tokens": {"off": 10, "on": 8, "delta": -2, "wants": "down"},
+    comparison = {"requests": 40, "asked": 40, "verified_usage_requests": 40, "verified_outcome_requests": 40, "released_results": 12, "measures": {"prompt_tokens": {"off": 10, "on": 8, "delta": -2, "wants": "down"},
                                                                        "recall_calls": {"off": 0.1, "on": 0.3, "delta": 0.2, "wants": "up"}}}
     verdict = retention.viability(held(low=10), comparison, {"min_rows": 20})
     assert verdict["viable"]

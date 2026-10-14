@@ -63,10 +63,10 @@ def test_engine_on_pass_raises_only_turn_decision_deadlines(tmp_path):
     (config / "packs/painted-wolf/platform/host/decisions.yaml").write_text(
         "turn:\n  deadline_ms: 2500\nrerank:\n  summarize:\n    deadline_ms: 300\nrequest:\n  deadline_ms: 2500\n")
     (config / "packs/painted-wolf/skills.yaml").write_text("skills: []\n")
-    (config / "packs/painted-wolf/platform/host/compaction.yaml").write_text("enabled: true\nretention_watermark_pct: 40\nretention_min_tokens: 400\n")
-    fleet.stage_runner_config(config, tmp_path / "engine", 30000, retention_watermark_pct=0)
+    (config / "packs/painted-wolf/platform/host/compaction.yaml").write_text("enabled: true\nbudget_trigger_pct: 60\n")
+    fleet.stage_runner_config(config, tmp_path / "engine", 30000)
     compaction = (tmp_path / "engine" / fleet.COMPACTION).read_text()
-    assert "retention_watermark_pct: 0\n" in compaction and "retention_min_tokens: 400" in compaction
+    assert compaction == "enabled: true\nbudget_trigger_pct: 60\n"
     # The whole tree travels, since the config root replaces the embedded configuration.
     assert (tmp_path / "engine/overlay/config/packs/painted-wolf/skills.yaml").exists()
     text = (tmp_path / "engine" / fleet.DECISIONS).read_text()

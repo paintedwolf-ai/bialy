@@ -54,6 +54,9 @@ def compare(off_rows, on_rows):
     on = {key(r): r for r in on_rows if not r["partial"]}
     shared = sorted(set(off) & set(on), key=str)
     out = {"requests": len(shared), "off_only": len(set(off) - set(on)), "on_only": len(set(on) - set(off)), "measures": {}}
+    out["partial_requests"] = sum(r["partial"] for r in off_rows + on_rows)
+    out["verified_usage_requests"] = sum(off[k].get("usage_available") is True and on[k].get("usage_available") is True for k in shared)
+    out["verified_outcome_requests"] = sum((off[k].get("meta") or {}).get("outcome_verified") is True and (on[k].get("meta") or {}).get("outcome_verified") is True for k in shared)
     if not shared:
         return out
     for measure, direction in BEHAVIOUR:
@@ -111,7 +114,17 @@ def viability(replay, comparison, settings):
                 reasons.append("%s rose by %s per request with the head deciding" % (measure, m["delta"]))
             if direction == "down" and m["delta"] >= 0 and comparison.get("released_results"):
                 reasons.append("%s did not fall with the head deciding (%s)" % (measure, m["delta"]))
+        if comparison.get("asked", 0) < min_rows:
+            reasons.append("matched runs do not demonstrate the retention head affected enough requests")
+        if comparison.get("verified_usage_requests", 0) != comparison.get("requests", 0):
+            reasons.append("matched requests lack complete provider-reported usage")
+        if comparison.get("verified_outcome_requests", 0) != comparison.get("requests", 0):
+            reasons.append("matched requests lack independently verified task outcomes")
+        if comparison.get("off_only") or comparison.get("on_only") or comparison.get("partial_requests"):
+            reasons.append("unmatched or partial requests leave comparison coverage incomplete")
         numbers["comparison"] = comparison
+    else:
+        reasons.append("provider savings and task continuity need a matched deployed comparison")
     return {"viable": not reasons, "reasons": reasons, "numbers": numbers}
 
 

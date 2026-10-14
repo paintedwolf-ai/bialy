@@ -169,7 +169,7 @@ def main(argv=None):
     p.add_argument("--epochs", type=int, help="cap every recipe's epochs, for a short check of the training stages")
     p.add_argument("--no-engine-on", action="store_true", help="skip the second pass that drives with the pilot heads")
     p.add_argument("--recipes", help="comma-separated training recipes for this run, such as R1 for a retention-only pilot")
-    p.add_argument("--no-judge", action="store_true", help="pass rows through unjudged; only the retention and code-rank recipes train without a judge")
+    p.add_argument("--no-judge", action="store_true", help="pass rows through unjudged; unverified retention observations cannot qualify a head")
     p.add_argument("--follow-up-rate", type=float, help="override every archetype's follow-up rate; 1.0 keeps every follow-up, each a retention decision")
     p.add_argument("--follow-ups", type=int, help="override the follow-ups a task may carry; longer sessions reach the compaction watermark")
     p.add_argument("--spend-ceiling", type=float, help="stop the run when metered spend passes this many dollars")
