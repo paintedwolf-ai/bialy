@@ -49,6 +49,9 @@ set -a
 # shellcheck disable=SC1091
 . "$out/sidecar.env"
 set +a
+# Record context retention candidates on every decided request, not only past the
+# watermark, so every session labels retention rows (retention.jsonl below).
+export LYCAON_RETENTION_RECORD=all
 # A Linux Opengrep build, which only development binaries accept.
 if [ -x /opt/bialy/engine/opengrep/opengrep ]; then
   export LYCAON_OPENGREP_CANDIDATE=/opt/bialy/engine/opengrep
@@ -103,10 +106,14 @@ if [ "${driven:-0}" -ne "$planned" ]; then
   exit 1
 fi
 
-# Rows from the sessions this shard drove, and the store they came from, so a
-# later label change can export again without driving anything.
+# Rows from the sessions this shard drove, with the retention and request rows beside
+# them, and the store they came from, so a later label change can export again
+# without driving anything.
 grep -o '"root_session":"[^"]*"' "$out/manifest.jsonl" | cut -d'"' -f4 >"$out/roots.txt" || true
-/opt/bialy/bin/lycaon-debug decide export --db /cfg/store.db --roots "$out/roots.txt" --out "$out/rows.part"
+/opt/bialy/bin/lycaon-debug decide export --db /cfg/store.db --roots "$out/roots.txt" --out "$out/rows.part" \
+  --retention "$out/retention.part" --requests "$out/requests.part"
 sqlite3 /cfg/store.db ".backup '$out/store.db'"
+mv "$out/retention.part" "$out/retention.jsonl"
+mv "$out/requests.part" "$out/requests.jsonl"
 mv "$out/rows.part" "$out/rows.jsonl"
 echo "shard done $(date -u +%FT%TZ)"

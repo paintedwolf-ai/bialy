@@ -55,8 +55,9 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=7)
     p = sub.add_parser("fleet")
-    p.add_argument("action", choices=("image", "warm", "plan", "replan", "run", "reap", "salvage"))
+    p.add_argument("action", choices=("image", "warm", "plan", "replan", "run", "reap", "salvage", "reexport"))
     p.add_argument("--into", help="salvage: run name that keeps the live containers' rows")
+    p.add_argument("--lycaon-debug", help="reexport: the lycaon-debug binary whose exporter rewrites every finished shard's rows from its kept store")
     p.add_argument("--out", help="salvage: task directory for the tasks still to drive")
     p.add_argument("--run")
     p.add_argument("--tasks")
@@ -167,6 +168,11 @@ def main(argv=None):
     p.add_argument("--runners", type=int)
     p.add_argument("--epochs", type=int, help="cap every recipe's epochs, for a short check of the training stages")
     p.add_argument("--no-engine-on", action="store_true", help="skip the second pass that drives with the pilot heads")
+    p.add_argument("--recipes", help="comma-separated training recipes for this run, such as R1 for a retention-only pilot")
+    p.add_argument("--no-judge", action="store_true", help="pass rows through unjudged; unverified retention observations cannot qualify a head")
+    p.add_argument("--follow-up-rate", type=float, help="override every archetype's follow-up rate; 1.0 keeps every follow-up, each a retention decision")
+    p.add_argument("--follow-ups", type=int, help="override the follow-ups a task may carry; longer sessions reach the compaction watermark")
+    p.add_argument("--spend-ceiling", type=float, help="stop the run when metered spend passes this many dollars")
     p = sub.add_parser("run-status")
     p.add_argument("--run", required=True)
     args = ap.parse_args(argv)
@@ -175,7 +181,11 @@ def main(argv=None):
 
     if args.cmd in ("run", "run-status"):
         overrides = {} if args.cmd == "run-status" else {"task_cap": args.task_cap, "workspaces": args.workspace, "runners": args.runners,
-                                                          "train.epochs": args.epochs, "engine_on.enabled": False if args.no_engine_on else None}
+                                                          "train.epochs": args.epochs, "engine_on.enabled": False if args.no_engine_on else None,
+                                                          "train.recipes": [r for r in args.recipes.split(",") if r] if args.recipes else None,
+                                                          "judge.enabled": False if args.no_judge else None,
+                                                          "retention.follow_up_rate": args.follow_up_rate, "retention.follow_ups": args.follow_ups,
+                                                          "spend_ceiling_usd": args.spend_ceiling}
         run = runmod.Run(factory=factory, name=args.run, settings=runmod.settings_for(factory, overrides),
                          push=getattr(args, "push", False), rebuild_image=getattr(args, "rebuild_image", False),
                          until=getattr(args, "until", None))
@@ -313,6 +323,12 @@ def main(argv=None):
                 return 1
             print("shards done=%d failed=%d" % (done, failed))
             return 0 if not failed else 1
+        if args.action == "reexport":
+            if not args.lycaon_debug:
+                ap.error("reexport needs --lycaon-debug")
+            shards = fleet.reexport(run_dir, args.lycaon_debug)
+            print("exported %d shards again from their stores" % len(shards))
+            return 0
         if args.action == "salvage":
             saved, settled = fleet.salvage(run_dir, runs / args.into)
             counts = tasks.rebase(factory, args.tasks, args.out, settled)

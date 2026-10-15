@@ -7,6 +7,31 @@ from conftest import FIXTURES
 from bialy import anchor, audit, heads, hub, release
 
 
+def retention_split(tmp_path):
+    """Retention rows for two of the split fixture's requests; the holdout split wrote none."""
+    out = tmp_path / "split" / "retention"
+    out.mkdir(parents=True)
+    row = lambda n, repo, group: {"schema": "pw-retention-row/1", "receipt": n, "session": "s%d" % n, "root_session": "s%d" % n,  # noqa: E731
+                                  "candidates": [{"id": "r", "tool": "read", "tokens": 400, "age": 1, "facts": {}, "option": "read a, 1 turns ago, 400 tokens"}],
+                                  "labels": {"needed": {"r": True}, "later": {"r": True}, "by": {"r": ["path"]}},
+                                  "meta": {"workspace": repo, "prompt_group": group, "task_id": "t%d" % n}}
+    (out / "train.jsonl").write_text(json.dumps(row(1, "flask", "flask:a")) + "\n" + json.dumps(row(3, "gin", "gin:b")) + "\n")
+    (out / "val.jsonl").write_text(json.dumps(row(4, "gin", "gin:c")) + "\n")
+    return out
+
+
+def test_a_release_carries_the_retention_rows_it_was_given(factory, split_dir, corpus_file, tmp_path, driven_file):
+    out = release.build(factory, split_dir, "v0r", tmp_path / "dist-retention", FIXTURES / "row.schema.json", corpus_file, "v0", driven=[driven_file],
+                        retention=retention_split(tmp_path), retention_schema=FIXTURES / "row.schema.json")
+    provenance = json.loads((out / "PROVENANCE.json").read_text())
+    assert provenance["retention_rows"] == {"train": 2, "validation": 1}
+    assert (out / "retention" / "train.jsonl").exists() and (out / "retention" / "retention-row.schema.json").exists()
+    assert not (out / "retention" / "holdout.jsonl").exists() and "## Context retention rows" in (out / "README.md").read_text()
+    assert "retention/train.jsonl" in (out / "SHA256SUMS").read_text()
+    plain = build_release(factory, split_dir, corpus_file, tmp_path)
+    assert json.loads((plain / "PROVENANCE.json").read_text())["retention_rows"] is None and not (plain / "retention").exists()
+
+
 def build_release(factory, split_dir, corpus_file, tmp_path, pairs=((3, 3), (0, 1), (4, 4)), driven=None):
     agreement = tmp_path / "agreement.jsonl"
     agreement.write_text("".join(json.dumps({"session": "s", "receipt": 1, "unit": "skills", "candidate": str(i), "first_judge": "a",

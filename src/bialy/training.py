@@ -21,11 +21,16 @@ TURN_ARGS = ["--tool-truth", "consensus", "--tool-weight", "none", "--tool-negat
              "--seed", "11", "--batch-size", "64", "--epochs", "45", "--patience", "8"]
 RANK_ARGS = ["--families", "skills,requests", "--skill-scored", "8", "--skill-zeros", "12", "--seed", "11", "--batch-size", "32",
              "--rank-levels", "skills-blended"]
+# The retention recipe's fixed arguments; the learning rate, positive weight, and label
+# rule come from the search grid (retention.search_grid).
+RETENTION_ARGS = ["--families", "retention", "--seed", "11", "--batch-size", "64", "--epochs", "45", "--patience", "8"]
 RECIPES = {
     "B5": {"head": "turn-load", "kind": "turn", "families": "tools"},
     "B7G": {"head": "guide-load", "kind": "turn", "families": "guides"},
     "E4": {"head": "unit-rank", "kind": "rank"},
     "code-rank": {"head": "code-rank", "kind": "rerank"},
+    # R1: the context retention head, over the retention rows the same sessions wrote.
+    "R1": {"head": "retention", "kind": "retention"},
 }
 
 
@@ -122,6 +127,45 @@ def skillreq_eval(judged, out):
     return out
 
 
+def train_retention_search(python, env, inputs, checkout, settings, heads_dir, label, budget_seconds, started):
+    """Every point of the retention search grid into heads_dir/search/retention-<point>.safetensors,
+    within the budget. The run's evaluate stage replays each, fits its policy, and
+    promotes the best to heads_dir/retention.safetensors; a point already trained is
+    kept, so a resumed run continues the grid."""
+    from . import retention
+    search_dir = Path(heads_dir) / "search"
+    search_dir.mkdir(parents=True, exist_ok=True)
+    trained = {}
+    for name, point_args in retention.search_grid(settings.get("retention") or {}):
+        out = search_dir / ("retention-%s.safetensors" % name)
+        if out.exists():
+            trained[name] = {"head": str(out), "reused": True}
+            continue
+        remaining = budget_seconds - (time.time() - started)
+        if remaining <= 0:
+            raise TrainingError("the training budget ran out before retention point %s" % name)
+        log = search_dir / ("retention-%s.log" % name)
+        args = with_epochs([str(python), "scripts/bialy/train.py", "--corpus", str(inputs["corpus"]), "--train", str(inputs["retention_train"]),
+                            "--val", str(inputs["retention_val"]), *RETENTION_ARGS, *point_args, "--label", "%s-%s" % (label, name), "--out", str(out)],
+                           settings.get("epochs"))
+        try:
+            run(args, cwd=str(checkout), env=env, timeout=remaining, log=log)
+        except subprocess.TimeoutExpired as exc:
+            raise TrainingError("retention point %s exceeded the training budget; see %s" % (name, log)) from exc
+        if not out.exists():
+            raise TrainingError("retention point %s wrote no head; see %s" % (name, log))
+        trained[name] = {"head": str(out), "log": str(log), "seconds": round(time.time() - started)}
+    return {"search": trained, "device": env.get("LYCAON_DECIDE_DEVICE", accelerator())}
+
+
+def has_rows(path):
+    """Whether a rows file exists and holds at least one row."""
+    if not path or not Path(path).exists():
+        return False
+    with open(path, encoding="utf-8") as fh:
+        return any(line.strip() for line in fh)
+
+
 def with_epochs(args, epochs):
     """The trainer arguments with every epoch count replaced, for a short run."""
     if not epochs:
@@ -136,11 +180,20 @@ def with_epochs(args, epochs):
 
 def train(recipe, inputs, checkout, root, settings, heads_dir, label, budget_seconds):
     """One recipe into heads_dir/<head>.safetensors. inputs: corpus, independent_corpus,
-    train, val, skillreq_train, skillreq_eval, dumps (a directory)."""
+    train, val, skillreq_train, skillreq_eval, dumps (a directory), retention_train,
+    retention_val."""
     spec = RECIPES[recipe]
     heads_dir = Path(heads_dir)
     heads_dir.mkdir(parents=True, exist_ok=True)
     out = heads_dir / (spec["head"] + ".safetensors")
+    if spec["kind"] == "retention":
+        # The final retention head is the search's winner, promoted by the evaluate
+        # stage; one left by an earlier run never stands in for the search.
+        if not has_rows(inputs.get("retention_train")) or not has_rows(inputs.get("retention_val")):
+            return {"skipped": "R1 needs retention rows in both splits; the sessions wrote none"}
+        python = venv_python(root, settings)
+        backbone(root)
+        return train_retention_search(python, environment(root, settings), inputs, checkout, settings, heads_dir, label, budget_seconds, time.time())
     if out.exists():
         return {"head": str(out), "reused": True}
     python = venv_python(root, settings)

@@ -61,6 +61,17 @@ request needed. No row comes from a person's private session.
 
 {splits}
 
+## Context retention rows
+
+`retention/` holds one `pw-retention-row/1` row per decided request
+(`retention/retention-row.schema.json`), split by the same prompt groups: the
+request state, the earlier tool results the host offered with the option text
+the engine read, what the engine dropped, and which results the session read
+again, by its own later tool calls and citations. No judge scores them. The
+runner records candidates on every request, not only past the compaction
+watermark, so `watermark` says whether the host would have asked. A release
+whose sessions wrote none has no `retention/` directory.
+
 ## Code-rank pairs
 
 `coderank/` holds the requests the code-rank head trains and is measured on.
@@ -115,11 +126,11 @@ def recipe(stages):
 
 
 def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreement=(), stages=(), driven=(), coderank=None,
-          stopping=""):
+          stopping="", retention=None, retention_schema=None):
     """A dataset release: the splits, the row schema and corpus they are read with, the
-    second-judge sample, the code-rank pairs, a card, provenance, and checksums. Every
-    statistic the card and provenance state is counted from the rows, as `bialy audit`
-    recounts it."""
+    second-judge sample, the code-rank pairs, the retention rows when the sessions wrote
+    them, a card, provenance, and checksums. Every statistic the card and provenance
+    state is counted from the rows, as `bialy audit` recounts it."""
     split_dir, out_dir = Path(split_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stats = {}
@@ -130,6 +141,16 @@ def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreem
         splits.append("- `%s`: %d rows (%s)" % (name, stats[split]["rows"], ", ".join("%s %d" % kv for kv in stats[split]["hosts"].items())))
     shutil.copy2(schema, out_dir / "row.schema.json")
     shutil.copy2(corpus, out_dir / "corpus.json")
+    retention_stats = {}
+    if retention and retention_schema:
+        # Retention rows split by the same groups; a split a run wrote no rows for is absent.
+        (out_dir / "retention").mkdir(exist_ok=True)
+        shutil.copy2(retention_schema, out_dir / "retention" / "retention-row.schema.json")
+        for split, name in audit.SPLITS:
+            source = Path(retention) / name
+            if source.exists():
+                shutil.copy2(source, out_dir / "retention" / name)
+                retention_stats[split] = len(audit.load_rows(source))
     # Every judge pass's second-judge sample, one record per doubly judged card.
     with open(out_dir / "agreement.jsonl", "w", encoding="utf-8") as fh:
         for path in agreement or ():
@@ -150,6 +171,7 @@ def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreem
         "repositories": [{"name": r.name, "url": r.url, "commit": r.commit, "license": r.spdx, "split": r.split} for r in factory.repos],
         "stacks": [{"name": s.name, "language": s.language, "brief": s.brief, "split": s.split} for s in factory.stacks],
         "stats": stats,
+        "retention_rows": retention_stats or None,
         "judge_agreement": {"weighted_kappa": kappa, "pairs": pairs},
         "tasks": audit.task_stats(out_dir / "tasks.jsonl"),
         "stopping": stopping or None,
