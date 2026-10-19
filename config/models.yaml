@@ -54,6 +54,30 @@ models:
     roles: [judge]
     hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4p1-flash, key_env: FIREWORKS_API_KEY,
              price_per_million: {input: 0.30, output: 1.20}, reasoning_effort: none}
+  - id: gemma-4-31b-it
+    hf: google/gemma-4-31B-it
+    revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
+    family: gemma
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-19: Apache-2.0 model card; no terms on outputs"
+    roles: [teacher]
+    serve:
+      gpu: 1
+      port: 8003
+      args: [--quantization, fp8, --kv-cache-dtype, fp8, --tool-call-parser, gemma4, --reasoning-parser, gemma4]
+  - id: gemma-4-e4b-it
+    hf: google/gemma-4-E4B-it
+    revision: ee0ef6023621cff504d758262d4e04895a5af4a2
+    family: gemma
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-19: Apache-2.0 model card; no terms on outputs"
+    roles: [student]
+    serve:
+      gpu: 1
+      port: 8004
+      args: [--tool-call-parser, gemma4, --reasoning-parser, gemma4]
 
 # Unreviewed hosted candidates, pinned and licensed as each model card states.
 # The configuration accepts one only once `reviewed` is filled in and the entry
