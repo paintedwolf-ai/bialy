@@ -236,6 +236,28 @@ def workflow_versions(factory):
     return versions
 
 
+def pick_generator(factory, archetype_id, generators, rng):
+    """Choose a driving generator for a task, honoring per-archetype and run-wide weights when configured."""
+    run_cfg = getattr(factory, "run", None) or {}
+    arch_map = (run_cfg.get("archetype_generators") or {}).get(archetype_id)
+    base_weights = run_cfg.get("generator_weights") or {}
+    if not arch_map and not base_weights:
+        return rng.choice(generators)
+    if isinstance(arch_map, dict):
+        candidates = [g for g in generators if float(arch_map.get(g, 0)) > 0]
+        weights = [float(arch_map[g]) for g in candidates]
+    elif isinstance(arch_map, (list, tuple)):
+        allowed = set(arch_map)
+        candidates = [g for g in generators if g in allowed]
+        weights = [float(base_weights.get(g, 1.0)) for g in candidates]
+    else:
+        candidates = [g for g in generators if float(base_weights.get(g, 1.0)) > 0]
+        weights = [float(base_weights.get(g, 1.0)) for g in candidates]
+    if not candidates or sum(weights) <= 0:
+        return rng.choice(generators)
+    return rng.choices(candidates, weights=weights, k=1)[0]
+
+
 def finalize(factory, workspace, raw, files, out_path, seed):
     """Validate, group, and assign one workspace's tasks, then write them. `files` lists a
     repository's files; a stack's workspace starts empty."""
@@ -265,7 +287,7 @@ def finalize(factory, workspace, raw, files, out_path, seed):
         pick = rng.choices([None, *names], [1 - sum(arch.workflows.values()), *(arch.workflows[n] for n in names)])[0]
         follow = t["follow_ups"] if rng.random() < arch.follow_up_rate else []
         tid = hashlib.sha1(("%s\n%s" % (workspace.name, t["prompt"])).encode()).hexdigest()[:16]
-        model = rng.choice(generators)
+        model = pick_generator(factory, arch.id, generators, rng)
         meta = {"task_id": tid, "workspace": workspace.name, "workspace_kind": workspace.kind, "split": workspace.split,
                 "archetype": arch.id, "prompt_group": group_key, "lang": t["lang"], "author_model": t["author"], "workflow": pick,
                 "prompt_timeout": arch.timeout(pick)}

@@ -189,10 +189,14 @@ def sidecar_files(factory, decide_env, lane):
                       "    models: [{id: %s}]" % m.id]
     gens = factory.generators()
     first = gens[0]
+    local_only = bool((getattr(factory, "run", None) or {}).get("local_workers_only"))
+    local_gens = [m for m in gens if not m.hosted]
+    worker_gens = local_gens if (local_only and local_gens) else gens
+    lite_model = worker_gens[0]
     policy = ["coordinator: {provider_id: %s, model: %s}" % (chosen[first.id], wire_model[first.id]),
-              "lite: {provider_id: %s, model: %s}" % (chosen[first.id], wire_model[first.id]),
+              "lite: {provider_id: %s, model: %s}" % (chosen[lite_model.id], wire_model[lite_model.id]),
               "agent_pool:", "  selection: random", "  models:"]
-    policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], wire_model[m.id]) for m in gens]
+    policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], wire_model[m.id]) for m in worker_gens]
     # The sidecar takes provider keys only from its own credential store, so the shard
     # names which provider gets which environment variable's key; run-shard.sh stores it
     # through the API after the sidecar starts. The names travel, never the keys.
@@ -621,6 +625,7 @@ def collect(run_dir, pass_name, tasks_dir):
     out = run_dir / "rows.jsonl"
     stats = {"rows": 0, "shards": 0, "tasks": 0, "settled": 0}
     driven = []
+    requests_out = []
     with open(out, "w", encoding="utf-8") as fh:
         for shard in sorted((run_dir / "shards").iterdir()):
             rows = shard / "rows.jsonl"
@@ -651,6 +656,13 @@ def collect(run_dir, pass_name, tasks_dir):
                 row["model"] = model_of[row["root_session"]]
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                 stats["rows"] += 1
+            requests_path = shard / "requests.jsonl"
+            if requests_path.exists():
+                for line in requests_path.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        requests_out.append(line)
+    if requests_out:
+        (run_dir / "requests.jsonl").write_text("\n".join(requests_out) + "\n", encoding="utf-8")
     with open(run_dir / "tasks-driven.jsonl", "w", encoding="utf-8") as fh:
         for task in driven:
             fh.write(json.dumps(task, ensure_ascii=False) + "\n")

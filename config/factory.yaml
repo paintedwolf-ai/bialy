@@ -25,7 +25,10 @@ judge:
 # and code-rank pairs.
 run:
   lycaon_checkout: ../paintedwolf-code   # built into the runner binaries, engine, and trainer the run uses
-  generators: [glm-5.3-flash]      # hosted generators; with several, tasks alternate between them
+  generators: [glm-5.3-flash]      # hosted or served generators; with several, tasks spread across them
+  generator_weights: {}            # optional {model_id: weight} for hybrid local + hosted driving shares
+  archetype_generators: {}         # optional {archetype_id: [model_id, ...] or {model_id: weight}}
+  local_workers_only: false        # when true, sidecar lite and agent_pool use local served generators
   judges: []                       # judges to use; empty keeps every judge in models.yaml
   runners: 4                       # concurrent runner containers on this machine
   spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
@@ -49,3 +52,11 @@ run:
     max_hours: 24                  # for all recipes of one training stage together
     torch_index: null              # a torch wheel index; detected from the accelerator when null
     epochs: null                   # cap for short checks; null keeps each recipe's own
+  custom_model:
+    enabled: false                 # extract SFT and DPO datasets for a small coordinator/worker student
+    student: gemma-4-e4b-it        # student model evaluated in shadow mode with thinking off
+    teacher: gemma-4-31b-it        # teacher model that repairs host rejections and nudges
+    min_score: 3                   # minimum judge score for synthetic engine-on preloading and skill/tool gates
+    preload_from_judge: true       # synthesize engine-on preloaded surface on engine-off transcripts
+    shadow: false                  # query the student at teacher states to harvest divergence DPO pairs
+    repair: false                  # query the teacher at student rejection states that lack a self-repair

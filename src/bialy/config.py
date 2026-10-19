@@ -164,6 +164,12 @@ class Factory:
     def generators(self):
         return [m for m in self.models if "generator" in m.roles]
 
+    def teachers(self):
+        return [m for m in self.models if "teacher" in m.roles or "generator" in m.roles]
+
+    def students(self):
+        return [m for m in self.models if "student" in m.roles]
+
     def provider_id(self, model):
         return model.hosted["provider"] + "-" + model.id.replace(".", "-") if model.hosted else "vllm-" + model.id.replace(".", "-")
 
@@ -221,7 +227,8 @@ def local_replicas():
 
 
 RUN_DEFAULTS = {
-    "lycaon_checkout": "../paintedwolf-code", "generators": [], "judges": [], "workspaces": [], "task_cap": None, "seed": 7, "workers": 16,
+    "lycaon_checkout": "../paintedwolf-code", "generators": [], "generator_weights": {}, "archetype_generators": {},
+    "local_workers_only": False, "judges": [], "workspaces": [], "task_cap": None, "seed": 7, "workers": 16,
     "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
     "engine_on": {"enabled": True, "deadline_ms": 60000},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
@@ -229,7 +236,12 @@ RUN_DEFAULTS = {
     "evaluate": {"rows": 500},
     "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
+    "custom_model": {"enabled": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
+                     "preload_from_judge": True, "shadow": False, "repair": False},
 }
+
+# Map-valued run settings whose inner keys are model or archetype ids, not fixed setting names.
+FREEFORM_MAP_SETTINGS = {"generator_weights", "archetype_generators"}
 
 
 def run_settings(raw):
@@ -239,7 +251,11 @@ def run_settings(raw):
     for key, value in (raw or {}).items():
         if key not in settings:
             raise ConfigError("run.%s is not a setting" % key)
-        if isinstance(settings[key], dict):
+        if key in FREEFORM_MAP_SETTINGS:
+            if value is not None and not isinstance(value, dict):
+                raise ConfigError("run.%s must be a mapping" % key)
+            settings[key] = dict(value or {})
+        elif isinstance(settings[key], dict):
             if value is not None and not isinstance(value, dict):
                 raise ConfigError("run.%s is a section of settings, not a single value" % key)
             for k, v in (value or {}).items():

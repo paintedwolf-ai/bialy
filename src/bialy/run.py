@@ -23,11 +23,11 @@ import sys
 import time
 from pathlib import Path
 
-from . import anchor, build, coderank, config, fleet, heads, judge, provenance, publishing, release, repos, skillreq, split, tasks, training
+from . import anchor, build, coderank, config, dpo, fleet, heads, judge, provenance, publishing, release, repos, skillreq, split, tasks, training
 
 STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "plan", "drive", "collect", "judge",
           "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "plan_on", "drive_on", "collect_on", "judge_on",
-          "split", "coderank", "release", "train", "evaluate", "release_heads", "report")
+          "split", "custom_model", "coderank", "release", "train", "evaluate", "release_heads", "report")
 ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "plan_on", "drive_on", "collect_on", "judge_on")
 
 
@@ -127,9 +127,10 @@ def stamp():
 
 def run_generators(run):
     named = run.setting("generators") or []
-    generators = run.factory.generators()
     if named:
-        generators = [m for m in generators if m.id in named]
+        generators = [m for m in run.factory.models if m.id in named and ("generator" in m.roles or "teacher" in m.roles)]
+    else:
+        generators = run.factory.generators()
     return [m for m in generators if m.hosted or m.serve]
 
 
@@ -138,7 +139,7 @@ def writer_model(run):
     first writer that is hosted or served here."""
     named = run.setting("skillreq", {}).get("writer")
     for m in run.factory.models:
-        if "writer" in m.roles and (m.hosted or m.serve) and (not named or m.id == named):
+        if (m.hosted or m.serve) and ((named and m.id == named) or (not named and "writer" in m.roles)):
             return m
     raise RunError("no writer model is usable; give one the writer role in models.yaml")
 
@@ -151,7 +152,12 @@ def roster(run):
     judges = set(run.setting("judges") or [])
     out = []
     for m in run.factory.models:
-        roles = tuple(r for r in m.roles if not (r == "generator" and m.id not in generators) and not (r == "judge" and judges and m.id not in judges))
+        base_roles = list(m.roles)
+        if m.id in generators and "generator" not in base_roles:
+            base_roles.append("generator")
+        if m.id in judges and "judge" not in base_roles and (m.serve or "generator" in base_roles or "teacher" in base_roles):
+            base_roles.append("judge")
+        roles = tuple(r for r in base_roles if not (r == "generator" and m.id not in generators) and not (r == "judge" and judges and m.id not in judges))
         if roles:
             out.append(dataclasses.replace(m, roles=roles))
     return out
@@ -165,7 +171,7 @@ def scaled_factory(run):
     archetypes = [dataclasses.replace(a, per_workspace=min(a.per_workspace, int(cap))) if cap else a for a in f.archetypes]
     names = set(run.setting("workspaces") or [])
     return dataclasses.replace(f, models=models, archetypes=archetypes, repos=[r for r in f.repos if not names or r.name in names],
-                               stacks=[s for s in f.stacks if not names or s.name in names])
+                               stacks=[s for s in f.stacks if not names or s.name in names], run=run.settings)
 
 
 # ---- check --------------------------------------------------------------------
@@ -187,7 +193,7 @@ def stage_check(run):
     if unknown:
         faults.append("run.workspaces names %s, which no repository or stack is" % ", ".join(sorted(unknown)))
     for name in run.setting("judges") or []:
-        if not any(m.id == name and "judge" in m.roles for m in f.models):
+        if not any(m.id == name and ("judge" in m.roles or m.serve) for m in f.models):
             faults.append("run.judges names %s, which is not a judge in models.yaml" % name)
     for model in generators:
         try:
@@ -479,6 +485,51 @@ def stage_split(run):
     return {"split": str(run.path("split")), "counts": counts, "passes": len(judged_files(run))}
 
 
+def stage_custom_model(run):
+    """Extract non-thinking SFT warmup and multi-source DPO preference datasets for custom small-model training."""
+    cfg = run.setting("custom_model") or {}
+    if not cfg.get("enabled"):
+        return {"skipped": "run.custom_model is off"}
+    base = run.path("custom_model")
+    base.mkdir(parents=True, exist_ok=True)
+    transcripts_path = base / "transcripts.jsonl.gz"
+    if not transcripts_path.exists():
+        for pass_dir in (run.path("fleet-on"), run.path("fleet-off")):
+            if (pass_dir / "shards").exists():
+                dpo.export_transcripts(pass_dir, run.path("tasks"), transcripts_path)
+                break
+    if not transcripts_path.exists():
+        return {"skipped": "no transcripts archive or shard stores found"}
+    sft_raw = base / "sft.raw.jsonl"
+    dpo_raw = base / "dpo.raw.jsonl"
+    stats = dpo.extract(
+        transcripts_path,
+        rows_paths=judged_files(run),
+        out_sft=sft_raw,
+        out_dpo=dpo_raw,
+        min_score=int(cfg.get("min_score", 3)),
+        preload_from_judge=bool(cfg.get("preload_from_judge", True)),
+    )
+    dpo_inputs = [str(dpo_raw)]
+    workers = int(run.setting("workers", 16))
+    seed = int(run.setting("seed", 7))
+    if cfg.get("repair") and dpo_raw.exists() and dpo_raw.stat().st_size > 0:
+        repaired = base / "dpo.repaired.jsonl"
+        stats["repair"] = dpo.repair(run.factory, dpo_raw, repaired, teacher_id=cfg.get("teacher", "gemma-4-31b-it"), workers=workers, seed=seed)
+        dpo_inputs = [str(repaired)]
+    if cfg.get("shadow") and sft_raw.exists() and sft_raw.stat().st_size > 0:
+        shadow_out = base / "dpo.shadow.jsonl"
+        stats["shadow"] = dpo.shadow(run.factory, sft_raw, shadow_out, student_id=cfg.get("student", "gemma-4-e4b-it"), workers=workers, seed=seed)
+        if shadow_out.exists() and shadow_out.stat().st_size > 0:
+            dpo_inputs.append(str(shadow_out))
+    if sft_raw.exists() and sft_raw.stat().st_size > 0:
+        stats["sft_splits"] = split.split(run.factory, [str(sft_raw)], base / "sft")
+    existing_dpo = [p for p in dpo_inputs if Path(p).exists() and Path(p).stat().st_size > 0]
+    if existing_dpo:
+        stats["dpo_splits"] = split.split(run.factory, existing_dpo, base / "dpo")
+    return stats
+
+
 # ---- code-rank pairs -----------------------------------------------------------
 
 def stage_coderank(run):
@@ -642,20 +693,22 @@ def stage_release_heads(run):
 # ---- accounting and report -----------------------------------------------------
 
 def usage_summary(run):
-    path = run.path("usage.jsonl")
-    if not path.exists():
-        return {}
     totals = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            entry = json.loads(line)
-        except ValueError:
+    for path in (run.path("usage.jsonl"), run.path("requests.jsonl"), run.path("fleet-off", "requests.jsonl"), run.path("fleet-on", "requests.jsonl")):
+        if not path.exists():
             continue
-        usage = entry.get("usage") or {}
-        t = totals.setdefault(entry.get("model", "?"), {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
-        t["calls"] += 1
-        t["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
-        t["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            usage = entry.get("usage") or {}
+            prompt_toks = int(usage.get("prompt_tokens") if "prompt_tokens" in usage else (entry.get("input_tokens") or 0))
+            comp_toks = int(usage.get("completion_tokens") if "completion_tokens" in usage else (entry.get("output_tokens") or 0))
+            t = totals.setdefault(entry.get("model", "?"), {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+            t["calls"] += 1
+            t["prompt_tokens"] += prompt_toks
+            t["completion_tokens"] += comp_toks
     return totals
 
 
