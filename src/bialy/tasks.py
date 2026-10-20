@@ -56,7 +56,74 @@ REPLY_SCHEMA = {
         "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": 3}}}}},
 }
 
-PATHLIKE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:py|go|js|jsx|ts|tsx|rs|rb|java|kt|php|c|h|cpp|hpp|cc|cs|sh|sql|html|css|vue|svelte|md|toml|yaml|yml|json|lock|cfg|ini|txt))(?![\w/])")
+# Supported 44-language matrix from lycaon/internal/filekind/supported.go and docs/supported-languages.md.
+SUPPORTED_LANGUAGES = (
+    "apex", "bash", "c", "c_sharp", "cairo", "circom", "clojure", "commonlisp",
+    "cpp", "dart", "dockerfile", "elixir", "go", "groovy", "hack", "hcl", "html", "java",
+    "javascript", "json", "jsonnet", "julia", "kotlin", "lua", "move", "ocaml",
+    "perl", "php", "powershell", "promql", "proto", "python", "ql", "r", "ruby", "rust", "scala",
+    "scheme", "solidity", "swift", "typescript", "vue", "xml", "yaml",
+)
+
+# 37 of 44 languages with OpenGrep SAST/security rule coverage in docs/supported-languages.md.
+UNSCANNED_SECURITY_LANGUAGES = frozenset({"commonlisp", "lua", "ocaml", "promql", "proto", "ql", "scheme"})
+SECURITY_SUPPORTED_LANGUAGES = tuple(lang for lang in SUPPORTED_LANGUAGES if lang not in UNSCANNED_SECURITY_LANGUAGES)
+
+# Canonical file extensions per supported grammar in the 44-language matrix.
+LANGUAGE_FILE_EXTENSIONS = {
+    "apex": ("cls", "trigger", "apex"),
+    "bash": ("sh", "bash", "zsh", "ksh", "bats"),
+    "c": ("c", "h"),
+    "c_sharp": ("cs", "csx", "csproj", "sln"),
+    "cairo": ("cairo",),
+    "circom": ("circom",),
+    "clojure": ("clj", "cljs", "cljc", "edn"),
+    "commonlisp": ("lisp", "lsp", "cl", "asd"),
+    "cpp": ("cpp", "cc", "cxx", "hpp", "hh", "hxx"),
+    "dart": ("dart",),
+    "dockerfile": ("dockerfile",),
+    "elixir": ("ex", "exs"),
+    "go": ("go", "mod", "sum"),
+    "groovy": ("groovy", "gradle", "gvy"),
+    "hack": ("hack", "hhi"),
+    "hcl": ("tf", "tfvars", "hcl"),
+    "html": ("html", "htm"),
+    "java": ("java",),
+    "javascript": ("js", "mjs", "cjs", "jsx"),
+    "json": ("json",),
+    "jsonnet": ("jsonnet", "libsonnet"),
+    "julia": ("jl",),
+    "kotlin": ("kt", "kts"),
+    "lua": ("lua", "rockspec"),
+    "move": ("move",),
+    "ocaml": ("ml", "mli", "opam"),
+    "perl": ("pl", "pm", "t", "psgi", "cgi", "fcgi", "PL"),
+    "php": ("php", "phtml"),
+    "powershell": ("ps1", "psm1", "psd1"),
+    "promql": ("promql", "rules"),
+    "proto": ("proto",),
+    "python": ("py", "pyi"),
+    "ql": ("ql", "qll"),
+    "r": ("r", "R", "Rmd"),
+    "ruby": ("rb", "rake", "gemspec"),
+    "rust": ("rs",),
+    "scala": ("scala", "sc", "sbt"),
+    "scheme": ("scm", "ss", "sld"),
+    "solidity": ("sol",),
+    "swift": ("swift",),
+    "typescript": ("ts", "mts", "cts", "tsx"),
+    "vue": ("vue",),
+    "xml": ("xml", "xsd", "xsl", "plist", "svg"),
+    "yaml": ("yaml", "yml"),
+}
+
+_ALL_PATH_EXTENSIONS = sorted(
+    {ext for exts in LANGUAGE_FILE_EXTENSIONS.values() for ext in exts}
+    | {"sql", "css", "scss", "less", "svelte", "md", "rst", "toml", "lock", "cfg", "ini", "txt"}
+)
+PATHLIKE = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:" + "|".join(_ALL_PATH_EXTENSIONS) + r"))(?![\w/])"
+)
 LANGUAGE_NAMES = {"es": "Spanish", "de": "German", "fr": "French", "pt": "Portuguese", "ja": "Japanese", "zh": "Chinese", "ko": "Korean", "it": "Italian"}
 
 

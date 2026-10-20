@@ -545,15 +545,34 @@ SCOPED_CMD_READ_RE = re.compile(
 )
 UNSCOPED_CMD_CAT_RE = re.compile(r"^\s*(?:cat|nl)\b")
 MUTATING_CMD_RE = re.compile(
-    r"(?:>>?|2>>?|&>>?|\|\s*tee\b|<<-?['\"]?\w+|\bsed\s+(?:-[a-zA-Z]*i|--in-place)\b"
-    r"|\b(?:rm|rmdir|cp|mv|mkdir|touch|chmod|chown|tar|unzip|code-rewrite|jq-edit)\b"
-    r"|\bgit\s+(?:add|commit|restore|checkout|switch|merge|rebase|reset|clean|stash\s+(?:save|push|pop|apply|drop))\b"
+    r"(?:>>?|2>>?|&>>?|\|\s*tee\b|<<-?['\"]?\w+"
+    r"|\b(?:sed|perl|ruby)\s+(?:-[a-zA-Z]*i|--in-place)\b"
+    r"|\b(?:rm|rmdir|cp|mv|mkdir|touch|chmod|chown|tar|unzip|patch|code-rewrite|jq-edit)\b"
+    r"|\bgit\s+(?:add|commit|restore|checkout|switch|merge|rebase|reset|clean|apply|cherry-pick|stash\s+(?:save|push|pop|apply|drop))\b"
+    r"|\b(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall)\b"
+    r"|\b(?:pip3?\s+(?:install|uninstall)|uv\s+(?:add|remove|pip\s+install)|(?:poetry|pdm)\s+(?:add|remove|install))\b"
+    r"|\b(?:cargo\s+(?:add|remove|install)|go\s+(?:get|install|mod\s+tidy)|dotnet\s+(?:add|remove|tool\s+install|new\s+install))\b"
+    r"|\b(?:gem\s+(?:install|uninstall)|bundle\s+(?:add|install)|composer\s+(?:require|remove|install|create-project)|cs\s+install)\b"
+    r"|\b(?:(?:dart|flutter)\s+pub\s+add|mix\s+(?:archive\.install|escript\.install|deps\.get)|cpanm?\b|luarocks\s+install|opam\s+install|conan\s+install|scarb\s+add|Install-Module\b|Install-PSResource\b)\b"
+    r"|\b(?:terraform|tofu)\s+apply\b"
     r"|\b(?:python3?|node)\s+-(?:c|e)\b)"
 )
+# Test runners, compilers, typecheckers, and linters across all 44 supported languages in filekind/supported.go.
 EXEC_OR_TEST_CMD_RE = re.compile(
-    r"\b(?:pytest|py\.test|cargo\s+(?:test|check|build|clippy|run)|go\s+(?:test|build|vet|run)"
-    r"|npm\s+(?:test|run)|pnpm\s+(?:test|run)|yarn\s+(?:test|run)|bun\s+(?:test|run)"
-    r"|mvn\s+test|gradle\s+test|dotnet\s+test|bundle\s+exec|rake\b|ctest\b|zig\s+build\s+test|\./task\b|make\b)\b"
+    r"(?:\b(?:pytest|py\.test|tox|nox|ruff|mypy|flake8|pyright|(?:uv|poetry|pdm)\s+run|python3?\s+-m\s+(?:pytest|unittest|mypy|ruff|flake8|doctest|compileall))\b"
+    r"|\b(?:(?:npm|pnpm|yarn|bun)\s+(?:test|run|check|lint|build)|(?:npx|pnpx|bunx)\b|vitest|jest|mocha|ava|playwright|cypress|vue-tsc|tsc|eslint|biome|deno\s+(?:test|lint|check|run))\b"
+    r"|\b(?:go\s+(?:test|build|vet|run|generate)|golangci-lint|staticcheck)\b"
+    r"|\b(?:cargo\s+(?:test|nextest|check|build|clippy|run|bench)|rustc|scarb\s+(?:test|build|cairo-run)|snforge\s+test)\b"
+    r"|\b(?:(?:\./)?mvnw?\b|(?:\./)?gradlew?\b|sbt\b|mill\b|lein\s+(?:test|check|compile|run)|(?:clj|clojure)\s+-M|javac|kotlinc|scalac|groovyc|cs\s+launch)\b"
+    r"|\b(?:dotnet\s+(?:test|build|run|vstest|format)|msbuild|vstest\.console|Invoke-Pester|(?:pwsh|powershell)\s+-(?:Command|c|File))\b"
+    r"|\b(?:bundle\s+exec|rspec|rake|minitest|rubocop|ruby\s+-(?:I|c|e))\b"
+    r"|\b(?:(?:vendor/bin/)?(?:phpunit|pest)|composer\s+(?:test|run|check)|phpstan|psalm|php\s+-(?:l|f)|hh_client|hhvm)\b"
+    r"|\b(?:ctest|cmake|meson\s+(?:test|compile)|ninja|g?make|scons|(?:bazel|buck2)\s+(?:test|build|run)|conan\s+build|gcc|g\+\+|clang(?:\+\+)?|cppcheck|valgrind)\b"
+    r"|\b(?:(?:dart|flutter)\s+(?:test|analyze|compile|run|build)|mix\s+(?:test|compile|credo|dialyzer|run)|elixir\b|swift\s+(?:test|build|run)|xcodebuild|swiftlint)\b"
+    r"|\b(?:dune\s+(?:runtest|test|build|exec)|opam\s+exec|ocaml(?:find|c|opt)|prove|perl\s+(?:-[Ic]|Makefile\.PL|Build\.PL|t/)|(?:\./)?Build\s+test|dzil\s+test|perlcritic)\b"
+    r"|\b(?:busted|luacheck|luajit?\b|julia\s+(?:--project|-e)|Rscript\b|R\s+(?:CMD\s+check|-e)|sbcl\s+(?:--eval|--load|--script)|ros\s+(?:test|run)|guile|racket|raco\s+test)\b"
+    r"|\b(?:forge\s+(?:test|build|script)|(?:hardhat|truffle)\s+(?:test|compile)|slither|circom\b|snarkjs\b|(?:aptos|sui)\s+move\s+(?:test|compile|build|prove))\b"
+    r"|\b(?:(?:terraform|tofu)\s+(?:test|validate|plan|fmt)|tflint|docker\s+build|hadolint|buf\s+(?:lint|build|breaking|generate)|protoc|jsonnet(?:fmt)?|promtool\s+(?:test|check)|codeql\s+(?:test|query|database)|sf\s+apex\s+(?:run|get)\s+test|sfdx\s+force:apex:test:run|bats|shellcheck|(?:ba|z)?sh\s+-n|xmllint|yamllint|just\b))"
 )
 READONLY_ORIENTATION_CMD_RE = re.compile(
     r"^\s*(?:cat|head|tail|nl|sed\s+-n|grep|rg|find|ls|stat|wc|diff|jq|yq|git\s+(?:status|diff|log|show|blame|rev-parse|branch|stash\s+list))\b"

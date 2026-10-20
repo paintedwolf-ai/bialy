@@ -1087,3 +1087,88 @@ def test_command_rework_surface_and_legacy_rejection_filtering(tmp_path):
     assert cmds[3].startswith("cat <<'EOF' > out.txt\nhello\nEOF")
 
 
+def test_supported_44_language_matrix_coverage():
+    assert len(tasks.SUPPORTED_LANGUAGES) == 44
+    assert len(tasks.SECURITY_SUPPORTED_LANGUAGES) == 37
+    assert set(tasks.LANGUAGE_FILE_EXTENSIONS) == set(tasks.SUPPORTED_LANGUAGES)
+
+    # Every supported language's canonical extension is recognized by PATHLIKE / mentioned_paths_exist.
+    for lang, exts in tasks.LANGUAGE_FILE_EXTENSIONS.items():
+        sample_file = "module.%s" % exts[0]
+        assert tasks.mentioned_paths_exist("Inspect %s and explain its structure." % sample_file, [sample_file]), lang
+        assert not tasks.mentioned_paths_exist("Inspect missing_%s" % sample_file, [sample_file]), lang
+
+    # Native test/build/lint commands across the 44-language matrix are recognized without relying on ./task.
+    matrix_test_commands = [
+        "pytest -q",
+        "python3 -m unittest discover",
+        "vitest run",
+        "deno test",
+        "go test ./...",
+        "cargo test --workspace",
+        "scarb test",
+        "./gradlew test",
+        "mvn test",
+        "sbt test",
+        "lein test",
+        "dotnet test",
+        "Invoke-Pester",
+        "bundle exec rspec",
+        "vendor/bin/phpunit",
+        "hh_client",
+        "ctest --output-on-failure",
+        "meson test -C build",
+        "dart test",
+        "mix test",
+        "swift test",
+        "dune runtest",
+        "prove -lv t/",
+        "busted",
+        "julia --project=. -e 'using Pkg; Pkg.test()'",
+        "R CMD check .",
+        "sbcl --eval '(asdf:test-system :app)'",
+        "raco test .",
+        "forge test",
+        "circom circuit.circom --r1cs",
+        "aptos move test",
+        "terraform test",
+        "docker build .",
+        "buf lint",
+        "jsonnet config.jsonnet",
+        "promtool test rules alerts.rules",
+        "codeql test run queries/",
+        "sf apex run test",
+        "bats test.bats",
+        "xmllint --noout pom.xml",
+        "yamllint config.yaml",
+    ]
+    for cmd in matrix_test_commands:
+        call = {"name": "command", "arguments": json.dumps({"command": cmd})}
+        assert dpo._is_exec_or_test_command(call), cmd
+
+    # Package manager mutations across package-execution-managers.yaml are recognized as mutating commands.
+    matrix_pkg_commands = [
+        "npm install zod",
+        "pnpm add fastify",
+        "pip install httpx",
+        "uv add pydantic",
+        "cargo add serde",
+        "go get github.com/go-chi/chi/v5",
+        "dotnet add package Newtonsoft.Json",
+        "bundle add sinatra",
+        "composer require slim/slim",
+        "dart pub add http",
+        "mix archive.install hex phx_new",
+        "cpanm Plack",
+        "luarocks install busted",
+        "opam install dune",
+        "conan install . --build=missing",
+        "scarb add alexandria_math",
+        "Install-Module -Name Pester",
+    ]
+    for cmd in matrix_pkg_commands:
+        call = {"name": "command", "arguments": json.dumps({"command": cmd})}
+        assert dpo._is_mutating_command(call), cmd
+
+
+
