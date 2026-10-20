@@ -62,7 +62,7 @@ archetypes:
     prompt_timeout: 150m
   - id: refactor
     per_workspace: 8
-    brief: Ask for a structural refactor across several call sites, or a mechanical AST/pattern rewrite of a construct throughout the code.
+    brief: Ask for a structural refactor across several call sites, or a mechanical AST/pattern rewrite of a construct (such as function/method declarations, call expressions, or type definitions) throughout the code in the project's language.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
     prompt_timeout: 180m
   - id: design_review
@@ -82,7 +82,7 @@ archetypes:
     prompt_timeout: 240m
   - id: run_and_verify
     per_workspace: 10
-    brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running background processes or interactive terminal REPL/CLI prompts that wait for interactive input.
+    brief: Ask to build, run the project's test suite (using its native ecosystem runner such as pytest/unittest, cargo test, go test, vitest/jest, mvn/gradle/sbt, bundle exec rspec/rake, phpunit, ctest/cmake/make, mix test, dart test, swift test, dotnet test, prove, busted, or dune runtest), run a single targeted test, run a linter/typechecker or benchmark, start the program, or check that a change works; some should involve long-running background processes or interactive terminal REPL/CLI prompts that wait for interactive input.
     prompt_timeout: 180m
   - id: git_history
     per_workspace: 8
@@ -93,7 +93,8 @@ archetypes:
     brief: Ask to make two or three small, distinct edits across files and then check in all uncommitted work in logical groups (or ask for the edits first and, as a follow-up, ask to split what is uncommitted into logical commits with clear commit messages), or ask to create or switch a branch, amend the last commit, revert a commit, or stash and restore work in progress.
   - id: data_files
     per_workspace: 6
-    brief: Ask to inspect or edit structured files in the repo (JSON, YAML, TOML, package manifests, lockfiles), count or measure things, or extract an archive the task provides.
+    new_files: true
+    brief: Ask to inspect, validate, or edit structured data, schema, query, or configuration files in the repo (JSON, YAML, XML, HTML, Vue, TOML, Protobuf `.proto`, HCL/Terraform `.tf`, Jsonnet `.jsonnet`, PromQL `.promql`/`.rules`, CodeQL `.ql`, Dockerfile, Bash `.sh`, PowerShell `.ps1`, Groovy `.gradle`, package manifests, or lockfiles), count or measure things, or extract an archive the task provides.
   - id: web
     per_workspace: 8
     brief: Ask something that needs the live web or browser inspection - a CVE, an HTTP endpoint's live response, a status page, or opening a page in the browser to capture a screenshot, measure element layout/bounding boxes, or review accessibility.
@@ -138,7 +139,7 @@ archetypes:
   - id: project_setup
     per_workspace: 8
     new_files: true
-    brief: Ask to add project infrastructure or assistant customization the repository lacks - a CI workflow (including OIDC cloud deployment trust), a Dockerfile or dev container, a Makefile or task runner, a linter or formatter configuration, a pre-commit hook, a benchmark harness, or project-level `.paintedwolf/` customizations such as a custom multi-phase workflow (`workflow.yaml`), a reusable project skill (`SKILL.md`), or a Sigma security detection pack (`pack.yaml`, `rules/*.yml`, and `fixtures.yaml`).
+    brief: Ask to add project infrastructure, polyglot build/schema/infrastructure files, or assistant customization the repository lacks - a CI workflow (including OIDC cloud deployment trust), a Dockerfile or dev container, a Terraform/HCL module (`.tf`), a Protobuf schema (`.proto`), a Jsonnet config (`.jsonnet`), a PromQL alert rule (`.rules`), a CodeQL query (`.ql`), a Bash or PowerShell automation script, a Makefile/CMake/Gradle build file, a linter or formatter configuration, a pre-commit hook, a benchmark harness, or project-level `.paintedwolf/` customizations such as a custom multi-phase workflow (`workflow.yaml`), a reusable project skill (`SKILL.md`), or a Sigma security detection pack (`pack.yaml`, `rules/*.yml`, and `fixtures.yaml`).
     prompt_timeout: 150m
   - id: research_change
     per_workspace: 8
@@ -198,5 +199,5 @@ archetypes:
   - id: port
     workspace: stack
     per_workspace: 6
-    brief: Paste a short program, script, or function written in another language or framework (include its code in the request, ten to sixty lines) and ask to rewrite it as a working project on this stack, keeping its behaviour, and to show that it runs.
+    brief: Paste a short program, script, module, or contract written in another language from the supported language matrix (such as Elixir, Kotlin, Scala, C#, Swift, Dart, OCaml, Clojure, Common Lisp, Scheme, Lua, Perl, Julia, R, Groovy, PowerShell, Bash, Solidity, Cairo, Move, Circom, Apex, Hack, C, C++, Go, Rust, Python, TypeScript, Java, Ruby, or PHP — include its source code in the request, ten to sixty lines) and ask to rewrite it as a working, tested project on this stack, keeping its behaviour, and to show that it runs and passes tests.
     prompt_timeout: 180m

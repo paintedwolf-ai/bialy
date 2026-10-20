@@ -25,4 +25,11 @@ fi
 [ -f Gemfile ] && step bundle install
 [ -f composer.json ] && step composer install --no-interaction --no-progress
 [ -f pom.xml ] && step mvn -q -Dmaven.repo.local=/cache/m2 -DskipTests dependency:go-offline
+if [ -x ./gradlew ]; then step ./gradlew --no-daemon testClasses
+elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then command -v gradle >/dev/null 2>&1 && step gradle --no-daemon testClasses
+fi
+[ -f build.sbt ] && command -v sbt >/dev/null 2>&1 && step sbt -batch update
+[ -f mix.exs ] && command -v mix >/dev/null 2>&1 && step mix deps.get
+[ -f pubspec.yaml ] && command -v dart >/dev/null 2>&1 && step dart pub get
+[ -f cpanfile ] && command -v cpanm >/dev/null 2>&1 && step cpanm --installdeps --notest .
 exit 0
