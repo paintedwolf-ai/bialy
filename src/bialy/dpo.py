@@ -575,6 +575,43 @@ def _session_meta(session, row=None):
     }
 
 
+def _completed_openings(messages):
+    """Return opening user message ids that settled cleanly before any later timeout."""
+    openings = []
+    completed = set()
+    cur = None
+    for idx, msg in enumerate(messages):
+        if msg.get("role") == "user":
+            if parse_host_user_rejection(msg) is None and msg.get("origin") != "host":
+                if cur is not None:
+                    completed.add(cur)
+                cur = msg.get("id")
+                if cur:
+                    openings.append(cur)
+            continue
+        if msg.get("role") != "assistant" or not cur:
+            continue
+        turn = strip_thinking(msg)
+        next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
+        results = _tool_results_in(next_msg) if (next_msg and next_msg.get("role") == "tool") else []
+        rejs = [r for r in (parse_rejection(res) for res in results) if r is not None]
+        if parse_host_user_rejection(next_msg) is not None:
+            rejs.append(parse_host_user_rejection(next_msg))
+        if rejs:
+            continue
+        call_names = {c.get("name") for c in turn["tool_calls"]}
+        if "complete_leg" in call_names:
+            completed.add(cur)
+            continue
+        turn_text = turn.get("text") or ""
+        if not turn["tool_calls"] and (
+            "```citations" in turn_text
+            or ("```json" in turn_text and not is_host_assembled_closeout(msg) and not report_document_defect_code(msg))
+        ):
+            completed.add(cur)
+    return completed
+
+
 def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_score=3, preload_from_judge=True, teacher_models=None):
     """Extract Stage 1 SFT rows and Stage 2 DPO pairs from transcripts and judged rows."""
     by_session, by_opening = load_judged_index(rows_paths)
@@ -590,6 +627,7 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
         primary_row = sess_rows[0] if sess_rows else None
         meta = _session_meta(session, primary_row)
         messages = session.get("messages") or []
+        completed_openings = _completed_openings(messages)
         called_in_session = {
             call.get("name")
             for msg in messages if msg.get("role") == "assistant"
@@ -774,7 +812,13 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             if host_assembled or defect_code:
                 continue
             task_status = ((row or {}).get("meta") or {}).get("task_status")
-            if session.get("status") not in ("settled", "idle", "") or task_status not in (None, "", "settled"):
+            sess_settled = session.get("status") in ("settled", "idle", "") and task_status in (None, "", "settled")
+            opening_settled = (
+                bool(current_opening and current_opening in completed_openings)
+                and session.get("status") in ("settled", "idle", "", "timeout", "overdue")
+                and task_status in (None, "", "settled", "timeout", "overdue")
+            )
+            if not (sess_settled or opening_settled):
                 continue
             if teachers and meta["model"] and meta["model"] not in teachers:
                 continue

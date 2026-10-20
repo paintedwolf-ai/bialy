@@ -534,8 +534,12 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
 def test_security_survey_workflow_and_report_document_defects(factory, tmp_path):
     archs = {a.id: a for a in factory.archetypes}
     assert archs["security_survey"].workflows == {"security-auto": 1.0}
-    assert archs["security_survey"].timeout("security-auto") == "180m"
+    assert archs["security_survey"].timeout("security-auto") == "360m"
     assert archs["security"].workflows == {"implement-dispatch": 0.35}
+    assert archs["security"].timeout("implement-dispatch") == "300m"
+    assert archs["question"].timeout(None) == "120m"
+    assert factory.fleet["shard_minutes"] == 720
+    assert factory.run["engine_on"]["deadline_ms"] == 120000
     assert "security-auto" not in archs["security"].workflows
 
     # Coordinator session running security-auto + child security-reviewer session + defective vs clean report closeout.
@@ -782,6 +786,26 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
         {"text": clean_report_sft["target"]["text"], "tool_calls": []},
         {"text": '## Security survey\n\n```json\n{"headline":"h","rating":{"level":"hardening","why":"w"},"findings":[],"set_asides":[],"ask":{"do":"d","effort":"s","why":"w"},"cited_evidence":[{"evidence":"scan#1"}]}\n```', "tool_calls": []},
     ) == "closeout_fence_missing_or_malformed"
+
+    # Verify that if a multi-turn task settles Turn 1 and times out on Turn 2, Turn 1 and completed worker legs are still kept in SFT.
+    timeout_coord = dict(
+        coord_session,
+        session_id="sec-coord-timeout",
+        status="timeout",
+        messages=coord_session["messages"] + [
+            {"id": "u-followup-2", "role": "user", "content": "Now write a patch for claim-1."},
+            {"id": "a-incomplete", "role": "assistant", "content": "", "tool_calls_json": json.dumps([{"id": "c9", "name": "read", "args": {"path": "src/flask/sessions.py"}}])},
+        ],
+    )
+    timeout_worker = dict(worker_session, session_id="sec-worker-timeout", status="timeout")
+    to_path = tmp_path / "sec_timeout.jsonl"
+    to_path.write_text(json.dumps(timeout_coord) + "\n" + json.dumps(timeout_worker) + "\n")
+    to_sft = tmp_path / "sec_timeout_sft.jsonl"
+    dpo.extract(to_path, out_sft=to_sft)
+    to_sft_rows = [json.loads(line) for line in to_sft.read_text().splitlines()]
+    # The 5 completed turns from Turn 1 and the completed worker leg are retained; the incomplete Turn 2 read is excluded.
+    assert len(to_sft_rows) == 5
+
 
 
 

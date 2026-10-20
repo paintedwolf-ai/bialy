@@ -28,8 +28,8 @@
 # `prompt_timeout` bounds each prompt of a task; a task that starts a workflow
 # gets the workflow budget, since its coordinator waits on worker legs.
 defaults:
-  prompt_timeout: 60m
-  workflow_prompt_timeout: 180m
+  prompt_timeout: 120m
+  workflow_prompt_timeout: 300m
   follow_up_rate: 0.3        # share of tasks that continue with one or two follow-ups
   languages:                 # share of tasks written in another language than English
     other_rate: 0.15
@@ -53,18 +53,18 @@ archetypes:
     attachment_rate: 0.2
     brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
     workflows: {implement-dispatch: 0.2, plan-auto: 0.1}
-    prompt_timeout: 150m
+    prompt_timeout: 180m
   - id: small_change
     per_workspace: 18
     new_files: true
     follow_up_rate: 0.45
     brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one. Often ask to follow existing patterns in sibling packages. Some follow-ups should ask to inspect the session's file version history or line authorship for the edited file, compare the current file to its pre-edit version, or roll the file back to its previous version and try an alternative edit.
-    prompt_timeout: 90m
+    prompt_timeout: 150m
   - id: refactor
     per_workspace: 8
     brief: Ask for a structural refactor across several call sites, or a mechanical AST/pattern rewrite of a construct throughout the code.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
-    prompt_timeout: 150m
+    prompt_timeout: 180m
   - id: design_review
     per_workspace: 12
     new_files: true
@@ -72,18 +72,18 @@ archetypes:
     attachment_rate: 0.35
     brief: Ask for an architectural, maintainability, or design review of part of the codebase—or include feedback/analysis from another engineer or agent—and explicitly instruct the assistant NOT to make code changes yet ("Don't make changes, just give me a report", "Is it worth changing X?", "What would you recommend?"). Then in follow-ups, push back on a tradeoff or clarify scope, and finally ask the assistant to implement what it recommended ("Do as you would recommend", "OK great, add it", "Build this as you recommend now").
     workflows: {implement-dispatch: 0.15, recon-auto: 0.15, plan-auto: 0.15}
-    prompt_timeout: 120m
+    prompt_timeout: 240m
   - id: compliance_audit
     per_workspace: 8
     follow_up_rate: 0.6
     attachment_rate: 0.25
     brief: Ask the assistant to do a thorough compliance or conformance audit of the repository against its documented specification, architecture rules, RFC/standard, or test contract—requiring it to inspect the actual implementation modules across the codebase (not just top-level docs or directory listings) and run the test or conformance suite to verify behavior before reporting findings. Follow-ups challenge whether it actually read the implementation or ran the tests, or ask to fix a gap uncovered by the audit.
     workflows: {recon-auto: 0.3, implement-dispatch: 0.3}
-    prompt_timeout: 150m
+    prompt_timeout: 240m
   - id: run_and_verify
     per_workspace: 16
     brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running background processes or interactive terminal REPL/CLI prompts that wait for interactive input.
-    prompt_timeout: 120m
+    prompt_timeout: 180m
   - id: git_history
     per_workspace: 10
     brief: Ask about history - who changed something and why, what changed between two points, show a commit, blame a line, list branches, compare two refs, or inspect uncommitted file version effects and line attribution in the working tree.
@@ -105,46 +105,46 @@ archetypes:
     per_workspace: 8
     brief: Ask to research online and recommend the best current dependency or library for a specific capability in this ecosystem (comparing candidate packages on latest version, maintenance activity, compatibility, and API ergonomics from fetched package/documentation pages), or to upgrade, audit, or add a dependency and check official documentation or migration guides for breaking changes.
     workflows: {implement-dispatch: 0.4}
-    prompt_timeout: 90m
+    prompt_timeout: 150m
   - id: security
     per_workspace: 6
     follow_up_rate: 0.45
     brief: Ask to run the project's security, SAST, and secret scanners on this repository (or a specific package/module) and summarize or query the findings, to triage scanner findings into real exploitable issues versus false positives or test-fixture noise, or to fix a specific vulnerability and compare the scan results before and after the fix to prove the finding is resolved without introducing new issues.
     workflows: {implement-dispatch: 0.35}
-    prompt_timeout: 120m
+    prompt_timeout: 180m
   - id: security_survey
     per_workspace: 6
     follow_up_rate: 0.45
     brief: Ask for a comprehensive security audit and threat-model survey of this repository (or of its untrusted-input boundaries, parser/handler entrypoints, authentication/session logic, file/path handling, or command/network execution surfaces) to identify exploitable vulnerabilities with concrete reachability, attacker control, and impact, separate hardening opportunities and accepted residuals, and account for scanner findings and out-of-scope set-asides—without making code changes during the survey. Follow-ups ask to drill into a specific surviving or refuted claim, explain why a scanner group was set aside, or propose a concrete patch for the highest-risk finding.
     workflows: {security-auto: 1.0}
-    prompt_timeout: 180m
+    prompt_timeout: 360m
   - id: secrets_and_auth
     per_workspace: 10
     new_files: true
     follow_up_rate: 0.55
     brief: Ask to set up OIDC credentials (such as configuring an OIDC provider/relying-party client, OAuth2 token exchange, JWKS/JWT signing secret, or CI/CD OIDC workload identity configuration), webhook HMAC signature verification (such as Stripe or GitHub webhooks), or authenticated local service/API credentials using managed generated secrets without ever hardcoding, echoing, or logging raw secret values. Ask to wire the generated secret references into configuration or `.env` files, verify both positive authentication and negative rejection (using a second generated test credential) against a local endpoint or test harness, and in follow-ups ask to rotate a credential, revoke temporary test secrets, or confirm the active/revoked secret list.
-    prompt_timeout: 120m
+    prompt_timeout: 180m
   - id: multi_part
     per_workspace: 10
     brief: Ask for a broad piece of work with several independent parts that a lead engineer would split among helpers. Mix the kinds of part - some need an external library's or standard's documentation looked up online, some need the codebase investigated to find how or where something is done, and some are changes to make (for example, check what the upstream docs recommend for X, find every place we do Y, then update Z and its tests).
     workflows: {implement-dispatch: 0.7}
-    prompt_timeout: 150m
+    prompt_timeout: 240m
   - id: new_module
     per_workspace: 8
     new_files: true
     brief: Ask to add a new piece to this codebase that does not exist yet - a subcommand, a middleware, an adapter for another backend, a plugin, an example program, or a small module with its tests. Say where it should live and which existing code it should follow or plug into, or leave that to the assistant; the new files do not exist yet.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
-    prompt_timeout: 150m
+    prompt_timeout: 240m
   - id: project_setup
     per_workspace: 8
     new_files: true
     brief: Ask to add project infrastructure or assistant customization the repository lacks - a CI workflow (including OIDC cloud deployment trust), a Dockerfile or dev container, a Makefile or task runner, a linter or formatter configuration, a pre-commit hook, a benchmark harness, or project-level `.paintedwolf/` customizations such as a custom multi-phase workflow (`workflow.yaml`), a reusable project skill (`SKILL.md`), or a Sigma security detection pack (`pack.yaml`, `rules/*.yml`, and `fixtures.yaml`).
-    prompt_timeout: 90m
+    prompt_timeout: 150m
   - id: research_change
     per_workspace: 8
     brief: Ask to find out how something should be done from an external source - a library's official documentation, a migration guide, a specification or RFC, or a well-known project's approach - and then apply it in this codebase, checking where the code currently differs.
     workflows: {implement-dispatch: 0.7}
-    prompt_timeout: 150m
+    prompt_timeout: 240m
   - id: docs
     per_workspace: 6
     new_files: true
@@ -155,10 +155,11 @@ archetypes:
   - id: chores
     per_workspace: 14
     brief: Ask for a routine chore - format the code, run the linter and fix what it reports, bump the version number, add an entry to .gitignore, find all TODO comments, clean build artifacts, rename a file and update its references, show what changed today, count lines of code, or check that the project builds.
-    prompt_timeout: 90m
+    prompt_timeout: 150m
   - id: ops
     per_workspace: 6
     brief: Ask to start or containerize a local service, wait for a process, port, or HTTP endpoint to become ready, inspect or signal running processes, or open an interactive PTY terminal session to drive an interactive CLI or REPL and capture a terminal snapshot.
+    prompt_timeout: 150m
 
   # Greenfield: each stack's sessions start in an empty directory. The generator
   # gets the stack and a drawn project idea and scale (stacks.yaml), not
@@ -169,33 +170,33 @@ archetypes:
     follow_up_rate: 0.65
     brief: Ask the assistant to build something new from scratch in this empty directory - a small application, playable browser or terminal game, tool, service, or site for the idea given. Some requests spell out the framework, the files, and the features; others only describe what it should do and leave every choice to the assistant. For web or graphical apps, often ask to start the app locally, open it in the built-in browser to verify that it renders and responds to clicks/input, measure layout or check accessibility, and capture a screenshot or surface note. Follow-ups ask for the next feature, report that the page loads blank or an interaction did not work when they tried it, ask to show a screenshot of the working UI, or ask for polish, tests, containerization, or a README.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.15}
-    prompt_timeout: 150m
+    prompt_timeout: 240m
   - id: greenfield_auth
     workspace: stack
     per_workspace: 6
     follow_up_rate: 0.55
     brief: Ask to build a new service, CLI, or web app on this stack that includes OIDC authentication (discovery, client credentials or authorization-code flow, and JWT/JWKS validation), signed webhook handling, or token-authenticated API endpoints, using generated managed secrets for all client secrets, signing keys, and API tokens without hardcoding or printing raw secret values, and verifying both valid and invalid credentials against the running service. Follow-ups ask to run the secret and SAST scanners on the newly created project to confirm zero leaked secrets or injection/auth issues (or fix and re-scan to compare results), rotate a credential, or revoke temporary test secrets.
-    prompt_timeout: 120m
+    prompt_timeout: 180m
   - id: prototype
     workspace: stack
     per_workspace: 10
     brief: Ask for a quick spike or proof of concept before committing to an approach - research online to find the best current library or dependency on this stack for a specific task, compare the top candidates with fetched documentation/package evidence, and build and run a small spike with the chosen library to report whether it works.
     workflows: {implement-dispatch: 0.25}
-    prompt_timeout: 90m
+    prompt_timeout: 150m
   - id: public_api_cli
     workspace: stack
     per_workspace: 8
     follow_up_rate: 0.5
     brief: Ask the assistant to build a working CLI or small tool on this stack that fetches live real-world data—such as the current weather for a city ("Build me a Python CLI that tells me the current weather"), live currency exchange rates, public holiday schedules, earthquake/weather alerts, geocoding, or package registry release metadata—without naming a specific API provider or supplying any API key, so the assistant must search the web to discover a free keyless public API, read its documentation page for the endpoint URL and JSON schema, implement the tool, and run it against the live endpoint to verify real output. Follow-ups ask to add a flag (such as unit conversion, multi-day forecast, or JSON output) or ask which public API and documentation page it used.
     workflows: {implement-dispatch: 0.25}
-    prompt_timeout: 120m
+    prompt_timeout: 180m
   - id: scaffold
     workspace: stack
     per_workspace: 8
     brief: Ask to set up a project skeleton for the idea given before much code exists - the folder layout, package or build configuration, a test runner with one passing test, a linter or formatter, a .gitignore, a README with how to run it, and a git repository with a first commit.
-    prompt_timeout: 90m
+    prompt_timeout: 150m
   - id: port
     workspace: stack
     per_workspace: 8
     brief: Paste a short program, script, or function written in another language or framework (include its code in the request, ten to sixty lines) and ask to rewrite it as a working project on this stack, keeping its behaviour, and to show that it runs.
-    prompt_timeout: 120m
+    prompt_timeout: 180m
