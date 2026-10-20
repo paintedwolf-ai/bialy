@@ -72,8 +72,9 @@ def _open_jsonl(path):
 
 
 def export_transcripts(run_dir, tasks_dir, out_path):
-    """Export sessions/transcripts.jsonl(.gz) from a pass directory's shard SQLite stores."""
-    run_dir, out_path = Path(run_dir), Path(out_path)
+    """Export sessions/transcripts.jsonl(.gz) from one or more pass directories' shard SQLite stores."""
+    run_dirs = [Path(p) for p in run_dir] if isinstance(run_dir, (list, tuple)) else [Path(run_dir)]
+    out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     specs = {}
     for path in Path(tasks_dir).glob("*.jsonl"):
@@ -84,100 +85,101 @@ def export_transcripts(run_dir, tasks_dir, out_path):
     opener = (lambda p: gzip.open(p, "wt", encoding="utf-8")) if out_path.suffix == ".gz" else (lambda p: open(p, "w", encoding="utf-8"))
     sessions_written = 0
     with opener(out_path) as out:
-        shards_dir = run_dir / "shards"
-        for shard in sorted(shards_dir.iterdir()) if shards_dir.exists() else []:
-            db_path = shard / "store.db"
-            manifest_path = shard / "manifest.jsonl"
-            if not db_path.exists() or not manifest_path.exists():
-                continue
-            by_root = {}
-            for line in manifest_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
+        for pass_dir in run_dirs:
+            shards_dir = pass_dir / "shards"
+            for shard in sorted(shards_dir.iterdir()) if shards_dir.exists() else []:
+                db_path = shard / "store.db"
+                manifest_path = shard / "manifest.jsonl"
+                if not db_path.exists() or not manifest_path.exists():
                     continue
-                entry = json.loads(line)
-                if entry.get("root_session"):
-                    by_root[entry["root_session"]] = (entry, specs.get(entry["task_id"], {}))
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
-            try:
-                sess_rows = conn.execute("SELECT id, parent_session_id, title, workflow_id FROM sessions ORDER BY created_at, id").fetchall()
-                parent_of = {r["id"]: r["parent_session_id"] for r in sess_rows}
-
-                def root_of(sid, parent_of=parent_of):
-                    cur = sid
-                    seen = set()
-                    while parent_of.get(cur) and cur not in seen:
-                        seen.add(cur)
-                        cur = parent_of[cur]
-                    return cur
-
-                msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
-                for srow in sess_rows:
-                    sid = srow["id"]
-                    root = root_of(sid)
-                    if root not in by_root:
+                by_root = {}
+                for line in manifest_path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
                         continue
-                    mentry, spec = by_root[root]
-                    meta = spec.get("meta") or mentry.get("meta") or {}
-                    if "tool_calls_json" in msg_cols:
-                        extra_cols = [
-                            c for c in ("origin", "grounding_json", "artifact_ids_json", "completion_report_json", "draft_version_count", "draft_status")
-                            if c in msg_cols
-                        ]
-                        col_sql = ", ".join(["id", "role", "content", "kind", "visibility", "seq", "ord", "ts", "tool_calls_json", "tool_result_json", "reasoning_json"] + extra_cols)
-                        msgs = conn.execute(
-                            "SELECT %s FROM messages WHERE session_id = ? ORDER BY seq, ord, rowid" % col_sql,
-                            (sid,),
-                        ).fetchall()
-                        messages = [dict(m) for m in msgs]
-                    else:
-                        msgs = conn.execute(
-                            "SELECT id, role, turn_kind, text, content_json, created_at FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
-                            (sid,),
-                        ).fetchall()
-                        messages = []
-                        for m in msgs:
-                            try:
-                                content = json.loads(m["content_json"]) if m["content_json"] else []
-                            except ValueError:
-                                content = []
-                            messages.append({
-                                "id": m["id"],
-                                "role": m["role"],
-                                "turn_kind": m["turn_kind"],
-                                "text": m["text"] or "",
-                                "content": content,
-                                "created_at": m["created_at"],
-                            })
-                    draft_versions = []
-                    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-                    if "draft_versions" in tables:
-                        drows = conn.execute(
-                            "SELECT slot_id, version_index, body, outcome_code, created_at "
-                            "FROM draft_versions WHERE session_id = ? ORDER BY created_at, version_index",
-                            (sid,),
-                        ).fetchall()
-                        draft_versions = [dict(d) for d in drows]
-                    record = {
-                        "shard": shard.name,
-                        "session_id": sid,
-                        "parent_session_id": srow["parent_session_id"],
-                        "root_session": root,
-                        "task_id": mentry["task_id"],
-                        "workspace": meta.get("workspace", ""),
-                        "prompt_group": meta.get("prompt_group", "%s:%s" % (meta.get("workspace", "unknown"), mentry["task_id"])),
-                        "archetype": meta.get("archetype", ""),
-                        "model": spec.get("model") or mentry.get("model", ""),
-                        "status": mentry.get("status", ""),
-                        "title": srow["title"] or "",
-                        "workflow_id": srow["workflow_id"],
-                        "messages": messages,
-                        "draft_versions": draft_versions,
-                    }
-                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    sessions_written += 1
-            finally:
-                conn.close()
+                    entry = json.loads(line)
+                    if entry.get("root_session"):
+                        by_root[entry["root_session"]] = (entry, specs.get(entry["task_id"], {}))
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                try:
+                    sess_rows = conn.execute("SELECT id, parent_session_id, title, workflow_id FROM sessions ORDER BY created_at, id").fetchall()
+                    parent_of = {r["id"]: r["parent_session_id"] for r in sess_rows}
+
+                    def root_of(sid, parent_of=parent_of):
+                        cur = sid
+                        seen = set()
+                        while parent_of.get(cur) and cur not in seen:
+                            seen.add(cur)
+                            cur = parent_of[cur]
+                        return cur
+
+                    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+                    for srow in sess_rows:
+                        sid = srow["id"]
+                        root = root_of(sid)
+                        if root not in by_root:
+                            continue
+                        mentry, spec = by_root[root]
+                        meta = spec.get("meta") or mentry.get("meta") or {}
+                        if "tool_calls_json" in msg_cols:
+                            extra_cols = [
+                                c for c in ("origin", "grounding_json", "artifact_ids_json", "completion_report_json", "draft_version_count", "draft_status")
+                                if c in msg_cols
+                            ]
+                            col_sql = ", ".join(["id", "role", "content", "kind", "visibility", "seq", "ord", "ts", "tool_calls_json", "tool_result_json", "reasoning_json"] + extra_cols)
+                            msgs = conn.execute(
+                                "SELECT %s FROM messages WHERE session_id = ? ORDER BY seq, ord, rowid" % col_sql,
+                                (sid,),
+                            ).fetchall()
+                            messages = [dict(m) for m in msgs]
+                        else:
+                            msgs = conn.execute(
+                                "SELECT id, role, turn_kind, text, content_json, created_at FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
+                                (sid,),
+                            ).fetchall()
+                            messages = []
+                            for m in msgs:
+                                try:
+                                    content = json.loads(m["content_json"]) if m["content_json"] else []
+                                except ValueError:
+                                    content = []
+                                messages.append({
+                                    "id": m["id"],
+                                    "role": m["role"],
+                                    "turn_kind": m["turn_kind"],
+                                    "text": m["text"] or "",
+                                    "content": content,
+                                    "created_at": m["created_at"],
+                                })
+                        draft_versions = []
+                        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                        if "draft_versions" in tables:
+                            drows = conn.execute(
+                                "SELECT slot_id, version_index, body, outcome_code, created_at "
+                                "FROM draft_versions WHERE session_id = ? ORDER BY created_at, version_index",
+                                (sid,),
+                            ).fetchall()
+                            draft_versions = [dict(d) for d in drows]
+                        record = {
+                            "shard": shard.name,
+                            "session_id": sid,
+                            "parent_session_id": srow["parent_session_id"],
+                            "root_session": root,
+                            "task_id": mentry["task_id"],
+                            "workspace": meta.get("workspace", ""),
+                            "prompt_group": meta.get("prompt_group", "%s:%s" % (meta.get("workspace", "unknown"), mentry["task_id"])),
+                            "archetype": meta.get("archetype", ""),
+                            "model": spec.get("model") or mentry.get("model", ""),
+                            "status": mentry.get("status", ""),
+                            "title": srow["title"] or "",
+                            "workflow_id": srow["workflow_id"],
+                            "messages": messages,
+                            "draft_versions": draft_versions,
+                        }
+                        out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                        sessions_written += 1
+                finally:
+                    conn.close()
     return {"sessions": sessions_written, "out": str(out_path)}
 
 
@@ -612,13 +614,61 @@ def _completed_openings(messages):
     return completed
 
 
-def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_score=3, preload_from_judge=True, teacher_models=None):
+def _is_scoped_read(call):
+    if call.get("name") != "read":
+        return False
+    try:
+        args = json.loads(call.get("arguments") or "{}")
+    except ValueError:
+        return False
+    return bool(isinstance(args, dict) and (set(args) & SCOPED_READ_KEYS))
+
+
+ROUTINE_ORIENTATION_TOOLS = {"read", "grep", "list_dir", "find_by_name", "summarize"}
+
+
+def _has_multi_root_path(call):
+    try:
+        args = json.loads(call.get("arguments") or "{}")
+    except ValueError:
+        return False
+    if not isinstance(args, dict):
+        return False
+    path = args.get("path")
+    return isinstance(path, str) and path.strip().startswith("@")
+
+
+def _is_routine_orientation_turn(turn, idx, steps_since_opening=1):
+    """Return True when a turn only performs unscoped single-root read/grep/list_dir orientation after the opening step."""
+    if idx <= 2 or steps_since_opening <= 0:
+        return False
+    calls = turn.get("tool_calls") or []
+    if not calls:
+        return False
+    for call in calls:
+        if call.get("name") not in ROUTINE_ORIENTATION_TOOLS:
+            return False
+        if _is_scoped_read(call) or _has_multi_root_path(call):
+            return False
+    return True
+
+
+def extract(
+    transcripts_path,
+    rows_paths=(),
+    out_sft=None,
+    out_dpo=None,
+    min_score=3,
+    preload_from_judge=True,
+    teacher_models=None,
+    max_routine_reads_per_session=6,
+):
     """Extract Stage 1 SFT rows and Stage 2 DPO pairs from transcripts and judged rows."""
     by_session, by_opening = load_judged_index(rows_paths)
     teachers = set(teacher_models) if teacher_models else None
     sft_rows = []
     dpo_rows = []
-    stats = {"sessions": 0, "sft_rows": 0, "dpo_rows": 0, "by_source": {}, "rejection_codes": {}}
+    stats = {"sessions": 0, "sft_rows": 0, "dpo_rows": 0, "by_source": {}, "rejection_codes": {}, "capped_routine_sft": 0}
 
     for session in iter_transcripts(transcripts_path):
         stats["sessions"] += 1
@@ -639,13 +689,18 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             if slot:
                 draft_by_slot.setdefault(slot, []).append(dv)
         current_opening = None
+        steps_since_opening = 0
+        routine_reads_kept = 0
         for idx, msg in enumerate(messages):
             if msg.get("role") == "user":
                 if parse_host_user_rejection(msg) is None and msg.get("origin") != "host":
                     current_opening = msg.get("id")
+                    steps_since_opening = 0
                 continue
             if msg.get("role") != "assistant":
                 continue
+            step_offset = steps_since_opening
+            steps_since_opening += 1
             row = by_opening.get((sid, current_opening)) or primary_row
             surface = synthesized_surface(row, min_score=min_score, preload_from_judge=preload_from_judge, observed_tools=called_in_session)
             turn = strip_thinking(msg)
@@ -830,6 +885,15 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             prior_tool_msgs = sum(1 for m in prefix if m.get("role") == "tool")
             if not adapted["tool_calls"] and not (has_grounded_citations and prior_tool_msgs >= 1):
                 continue
+            if (
+                max_routine_reads_per_session is not None
+                and max_routine_reads_per_session > 0
+                and _is_routine_orientation_turn(adapted, idx, steps_since_opening=step_offset)
+            ):
+                if routine_reads_kept >= max_routine_reads_per_session:
+                    stats["capped_routine_sft"] += 1
+                    continue
+                routine_reads_kept += 1
             sft_rows.append({
                 "schema": SFT_SCHEMA,
                 "id": "%s:%d:sft" % (sid, idx),
@@ -865,16 +929,6 @@ def _prior_tool_signatures(prompt_messages):
                 fn = tc.get("function") or {}
                 seen.add((fn.get("name", ""), fn.get("arguments", "")))
     return seen
-
-
-def _is_scoped_read(call):
-    if call.get("name") != "read":
-        return False
-    try:
-        args = json.loads(call.get("arguments") or "{}")
-    except ValueError:
-        return False
-    return bool(isinstance(args, dict) and (set(args) & SCOPED_READ_KEYS))
 
 
 TRAILING_FENCE_RE = re.compile(r"```(?:json|citations)\s*\n(\{[\s\S]*?\})\s*\n```\s*$", re.IGNORECASE)

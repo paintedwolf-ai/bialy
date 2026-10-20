@@ -807,6 +807,143 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
     assert len(to_sft_rows) == 5
 
 
+def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(factory, tmp_path):
+    # Build a long session with:
+    # - 1 opening read (step 0 -> always kept)
+    # - 10 mid-loop unscoped reads (capped at max_routine_reads_per_session=3)
+    # - 1 mid-loop scoped read with start_line/end_line (always kept)
+    # - 1 mid-loop multi-root @repo/ read (always kept)
+    # - 1 mid-loop verify tool call (always kept)
+    # - 1 grounded closeout (always kept)
+    msgs = [{"id": "u-long", "role": "user", "content": "Audit all modules and run tests."}]
+    # Opening read (idx=1, step_offset=0)
+    msgs.append({
+        "id": "a-open",
+        "role": "assistant",
+        "content": "",
+        "tool_calls_json": json.dumps([{"id": "c0", "name": "read", "args": {"path": "src/mod0.py"}}]),
+    })
+    msgs.append({
+        "id": "t-open",
+        "role": "tool",
+        "tool_result_json": json.dumps([{"tool_call_id": "c0", "tool_name": "read", "content": "def f0(): pass"}]),
+    })
+    # 10 mid-loop unscoped reads
+    for i in range(1, 11):
+        msgs.append({
+            "id": "a-mid-%d" % i,
+            "role": "assistant",
+            "content": "",
+            "tool_calls_json": json.dumps([{"id": "c%d" % i, "name": "read", "args": {"path": "src/mod%d.py" % i}}]),
+        })
+        msgs.append({
+            "id": "t-mid-%d" % i,
+            "role": "tool",
+            "tool_result_json": json.dumps([{"tool_call_id": "c%d" % i, "tool_name": "read", "content": "def f%d(): pass" % i}]),
+        })
+    # Scoped read (never capped)
+    msgs.append({
+        "id": "a-scoped",
+        "role": "assistant",
+        "content": "",
+        "tool_calls_json": json.dumps([{"id": "c-sc", "name": "read", "args": {"path": "src/core.py", "start_line": 10, "end_line": 40}}]),
+    })
+    msgs.append({
+        "id": "t-scoped",
+        "role": "tool",
+        "tool_result_json": json.dumps([{"tool_call_id": "c-sc", "tool_name": "read", "content": "10: x = 1"}]),
+    })
+    # Multi-root read (never capped)
+    msgs.append({
+        "id": "a-mr",
+        "role": "assistant",
+        "content": "",
+        "tool_calls_json": json.dumps([{"id": "c-mr", "name": "read", "args": {"path": "@spec/clause.md"}}]),
+    })
+    msgs.append({
+        "id": "t-mr",
+        "role": "tool",
+        "tool_result_json": json.dumps([{"tool_call_id": "c-mr", "tool_name": "read", "content": "Clause 1"}]),
+    })
+    # Verify call (never capped)
+    msgs.append({
+        "id": "a-ver",
+        "role": "assistant",
+        "content": "",
+        "tool_calls_json": json.dumps([{"id": "c-v", "name": "verify", "args": {}}]),
+    })
+    msgs.append({
+        "id": "t-ver",
+        "role": "tool",
+        "tool_result_json": json.dumps([{"tool_call_id": "c-v", "tool_name": "verify", "content": "ok"}]),
+    })
+    # Grounded closeout (never capped)
+    msgs.append({
+        "id": "a-close",
+        "role": "assistant",
+        "content": "Audit complete.\n\n```citations\n- read#1: src/mod0.py\n```",
+    })
 
+    session = {
+        "session_id": "long-sess",
+        "root_session": "long-sess",
+        "workspace": "flask",
+        "prompt_group": "flask:g1",
+        "archetype": "compliance_audit",
+        "model": "glm-5.3-flash",
+        "status": "settled",
+        "messages": msgs,
+    }
+    tx_path = tmp_path / "long_tx.jsonl"
+    tx_path.write_text(json.dumps(session) + "\n")
+    sft_capped = tmp_path / "sft_capped.jsonl"
+    stats = dpo.extract(tx_path, out_sft=sft_capped, max_routine_reads_per_session=3)
+    assert stats["capped_routine_sft"] == 7
+    # Kept: 1 opening + 3 mid-loop routine + 1 scoped + 1 multi-root + 1 verify + 1 closeout = 8 SFT rows.
+    assert stats["sft_rows"] == 8
 
+    # Verify stage_custom_model integrates multi_root synthesis and splits both SFT and DPO.
+    import dataclasses
+
+    f = dataclasses.replace(factory, root=tmp_path)
+    run = runmod.Run(
+        factory=f,
+        name="cm-test",
+        settings=runmod.settings_for(
+            f,
+            {
+                "custom_model": {
+                    "enabled": True,
+                    "student": "gemma-4-e4b-it",
+                    "teacher": "gemma-4-31b-it",
+                    "min_score": 3,
+                    "preload_from_judge": True,
+                    "max_routine_reads_per_session": 3,
+                    "multi_root": True,
+                    "multi_root_max_pairs": 10,
+                    "shadow": False,
+                    "repair": False,
+                }
+            },
+        ),
+    )
+    cm_dir = run.path("custom_model")
+    cm_dir.mkdir(parents=True, exist_ok=True)
+    import gzip
+
+    with gzip.open(cm_dir / "transcripts.jsonl.gz", "wt", encoding="utf-8") as gz:
+        gz.write(json.dumps(session) + "\n")
+    cm_stats = runmod.stage_custom_model(run)
+    assert cm_stats["sft_rows"] == 8
+    assert cm_stats["multi_root"]["sft_rows"] >= 1
+    assert cm_stats["multi_root"]["dpo_rows"] >= 1
+    assert (cm_dir / "sft" / "train.jsonl").exists()
+    assert (cm_dir / "dpo" / "train.jsonl").exists()
+
+    # Verify right-sized total raw task count across all 31 workspaces (16 repos + 15 stacks).
+    repo_per_ws = sum(a.per_workspace for a in factory.archetypes if a.workspace == "repository")
+    stack_per_ws = sum(a.per_workspace for a in factory.archetypes if a.workspace == "stack")
+    total_raw = len(factory.repos) * repo_per_ws + len(factory.stacks) * stack_per_ws
+    assert len(factory.repos) == 16 and len(factory.stacks) == 15
+    assert repo_per_ws == 216 and stack_per_ws == 50 and total_raw == 4206
 

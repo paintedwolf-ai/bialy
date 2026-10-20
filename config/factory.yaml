@@ -58,5 +58,8 @@ run:
     teacher: gemma-4-31b-it        # teacher model that repairs host rejections and nudges
     min_score: 3                   # minimum judge score for synthetic engine-on preloading and skill/tool gates
     preload_from_judge: true       # synthesize engine-on preloaded surface on engine-off transcripts
+    max_routine_reads_per_session: 6   # cap mid-loop unscoped single-root read/grep/list_dir steps per session in SFT
+    multi_root: true               # synthesize @<folder>/ multi-root SFT and DPO examples
+    multi_root_max_pairs: 200      # maximum synthesized multi-root SFT/DPO pairs
     shadow: false                  # query the student at teacher states to harvest divergence DPO pairs
     repair: false                  # query the teacher at student rejection states that lack a self-repair

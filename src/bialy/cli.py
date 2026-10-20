@@ -170,6 +170,7 @@ def main(argv=None):
     p.add_argument("--teacher", default="gemma-4-31b-it", help="repair: teacher model id")
     p.add_argument("--min-score", type=int, default=3, help="extract: minimum judge score for synthetic preloading")
     p.add_argument("--no-preload", action="store_true", help="extract: disable synthetic engine-on preloading from judge scores")
+    p.add_argument("--max-routine-reads", type=int, default=6, help="extract: max mid-loop unscoped read/grep/list_dir steps per session in SFT (0 disables)")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--seed", type=int, default=7)
     p = sub.add_parser("run", help="drive a whole pass on this machine, resumable; uploads only with --push")
@@ -201,7 +202,8 @@ def main(argv=None):
             if not args.transcripts:
                 ap.error("dpo extract needs --transcripts")
             print(json.dumps(dpo.extract(args.transcripts, rows_paths=args.rows, out_sft=args.out_sft, out_dpo=args.out_dpo,
-                                         min_score=args.min_score, preload_from_judge=not args.no_preload), indent=2))
+                                         min_score=args.min_score, preload_from_judge=not args.no_preload,
+                                         max_routine_reads_per_session=args.max_routine_reads), indent=2))
             return 0
         if args.action == "shadow":
             if not (args.sft and args.out):
