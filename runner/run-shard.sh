@@ -7,6 +7,8 @@
 # repository, PROMPT_TIMEOUT, and the model servers in /shard/providers.local.yaml and
 # /shard/model-policy.yaml.
 set -euo pipefail
+# shellcheck source=runner/provider-credentials.sh
+. /opt/bialy/provider-credentials.sh
 : "${WORKSPACE:?}" "${WORKSPACE_KIND:?}" "${PROMPT_TIMEOUT:=20m}"
 out=/shard
 project=/work/"$WORKSPACE"
@@ -60,11 +62,18 @@ set -a
 # shellcheck disable=SC1091
 . "$out/sidecar.env"
 set +a
+if [ -n "${PW_TRAINING_CAPTURE_DIR:-}" ]; then
+  mkdir -p "$PW_TRAINING_CAPTURE_DIR"
+  chmod 700 "$PW_TRAINING_CAPTURE_DIR"
+fi
 # A Linux Opengrep build, which only development binaries accept.
 if [ -x /opt/bialy/engine/opengrep/opengrep ]; then
   export LYCAON_OPENGREP_CANDIDATE=/opt/bialy/engine/opengrep
 fi
-LYCAON_ADDR=127.0.0.1:8850 LYCAON_CONFIG_DIR=/cfg /opt/bialy/bin/lycaon serve >"$out/sidecar.log" 2>&1 &
+(
+  clear_provider_environment
+  exec env LYCAON_ADDR=127.0.0.1:8850 LYCAON_CONFIG_DIR=/cfg /opt/bialy/bin/lycaon serve
+) >"$out/sidecar.log" 2>&1 &
 sidecar=$!
 stop_sidecar() {
   if kill -0 "$sidecar" 2>/dev/null; then
@@ -78,26 +87,30 @@ for _ in $(seq 1 120); do
   kill -0 "$sidecar" || { echo "sidecar exited during startup"; exit 1; }
   sleep 1
 done
-# Hosted providers: the key goes from this container's environment into the sidecar's
-# credential store on its tmpfs, then out of the environment the sessions run in.
+# Hosted providers: the setup shell installs keys into the sidecar's tmpfs vault.
+# The sidecar and every program it spawns started without those environment keys.
 # Providers can share one key, so the keys leave the environment only once every
 # provider has its own.
 IFS=, read -ra hosted <<<"${BIALY_HOSTED_PROVIDERS:-}"
-key_envs=()
+printf 'Authorization: Bearer %s\n' "$(cat /cfg/api.token)" > /cfg/credential.headers
+chmod 600 /cfg/credential.headers
 for pair in "${hosted[@]}"; do
   [ -n "$pair" ] || continue
   provider=${pair%%:*}
   key_env=${pair#*:}
   if [ -z "${!key_env:-}" ]; then echo "hosted provider $provider: $key_env is not set"; exit 1; fi
-  body=$(printf '{"api_key": "%s"}' "${!key_env}")
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $(cat /cfg/api.token)" \
-    -H 'Content-Type: application/json' --data-binary "$body" "http://127.0.0.1:8850/v1/providers/$provider/credential")
+  code=$(store_provider_credential "$provider" "$key_env" /cfg/credential.headers)
   [ "$code" = 200 ] || { echo "hosted provider $provider: storing the key returned HTTP $code"; exit 1; }
-  key_envs+=("$key_env")
 done
-for key_env in "${key_envs[@]}"; do
-  unset "$key_env"
+for pair in github:GITHUB_SEARCH_API_KEY gitlab:GITLAB_SEARCH_API_KEY stackexchange:STACKEXCHANGE_API_KEY; do
+  provider=${pair%%:*}
+  key_env=${pair#*:}
+  [ -n "${!key_env:-}" ] || continue
+  code=$(store_provider_credential "$provider" "$key_env" /cfg/credential.headers web-research/providers)
+  [ "$code" = 200 ] || { echo "web research provider $provider: storing the key returned HTTP $code"; exit 1; }
 done
+clear_provider_environment
+rm /cfg/credential.headers
 
 /opt/bialy/bin/lycaon-debug decide generate --addr http://127.0.0.1:8850 --token "$(cat /cfg/api.token)" \
   --tasks "$out/tasks.jsonl" --project "$project" --project-name "$WORKSPACE" --manifest "$out/manifest.jsonl" \

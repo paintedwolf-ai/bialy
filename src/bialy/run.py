@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import anchor, build, coderank, config, dpo, fleet, heads, judge, provenance, publishing, release, repos, skillreq, split, tasks, training
+from . import anchor, build, coderank, config, custom_model_run, fleet, heads, judge, provenance, publishing, release, repos, skillreq, split, tasks, training
 
 STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "plan", "drive", "collect", "judge",
           "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "plan_on", "drive_on", "collect_on", "judge_on",
@@ -185,10 +185,33 @@ def stage_check(run):
     f = run.factory
     faults = []
     generators = run_generators(run)
+    cfg = run.setting("custom_model") or {}
+    if cfg.get("enabled"):
+        try:
+            custom_model_run.validate_settings(cfg)
+        except custom_model_run.DatasetError as exc:
+            faults.append(str(exc))
     if not generators:
         faults.append("no generator model is usable: name hosted generators in run.generators or serve one locally")
     used = list(generators)
     scaled = scaled_factory(run)
+    generator_ids = [model.id for model in generators]
+    inactive = set(run.setting("generators") or []) - set(generator_ids)
+    if inactive:
+        faults.append("run.generators names unavailable generators: %s" % ", ".join(sorted(inactive)))
+    routing = run.setting("archetype_generators") or {}
+    unknown_archetypes = set(routing) - {a.id for a in scaled.archetypes}
+    if unknown_archetypes:
+        faults.append("run.archetype_generators names unknown archetypes: %s" % ", ".join(sorted(unknown_archetypes)))
+    if generators:
+        for archetype in scaled.archetypes:
+            try:
+                if archetype.id in routing and not isinstance(routing[archetype.id], (dict, list)):
+                    raise config.ConfigError("generator routing for %s must be a list or weight mapping" % archetype.id)
+                tasks.pick_generator(scaled, archetype.id, generator_ids, random.Random(0))
+            except config.ConfigError as exc:
+                faults.append(str(exc))
+                break
     unknown = set(run.setting("workspaces") or []) - {w.name for w in f.workspaces()}
     if unknown:
         faults.append("run.workspaces names %s, which no repository or stack is" % ", ".join(sorted(unknown)))
@@ -204,6 +227,15 @@ def stage_check(run):
         used.append(writer_model(run))
     except RunError as exc:
         faults.append(str(exc))
+    for role, action in (("student", "shadow"), ("teacher", "repair")):
+        if cfg.get("enabled") and cfg.get(action):
+            try:
+                model = f.model(cfg[role])
+                if not model.hosted and not model.serve:
+                    faults.append("custom-model %s has no configured endpoint" % role)
+                used.append(model)
+            except (config.ConfigError, KeyError) as exc:
+                faults.append(str(exc))
     for model in {m.id: m for m in used}.values():
         if model.hosted and not os.environ.get(model.hosted["key_env"]):
             faults.append("model %s needs %s in the environment" % (model.id, model.hosted["key_env"]))
@@ -237,7 +269,7 @@ def stage_check(run):
             "scanner": run.setting("scanner") if scanner else "none",
             "accelerator": training.accelerator(), "go": "host" if shutil.which("go") else build.GO_IMAGE,
             "cargo": "rustup" if shutil.which("rustup") else build.rust_image(run.checkout), "priced_models": priced,
-            "spend_note": "provider usage inside runner sessions is not metered here; the provider's dashboard is the record for driving"}
+            "spend_note": "usage is checked between stages; spend_ceiling_usd is not a hard provider spending cap"}
 
 
 # ---- sources -------------------------------------------------------------------
@@ -330,6 +362,9 @@ def plan_pass(run, pass_name, pilot):
     run_dir = run.path("fleet-" + pass_name)
     run_dir.mkdir(parents=True, exist_ok=True)
     decide_env = fleet.pilot_env(pilot)
+    custom = run.setting("custom_model") or {}
+    if custom.get("enabled"):
+        decide_env.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"])
     if (run_dir / "shards").exists():
         # A plan stage runs again only when its pass is being redone, so earlier shards
         # of the pass are stale; containers still running are kept and adopted.
@@ -486,66 +521,7 @@ def stage_split(run):
 
 
 def stage_custom_model(run):
-    """Extract non-thinking SFT warmup and multi-source DPO preference datasets for custom small-model training."""
-    cfg = run.setting("custom_model") or {}
-    if not cfg.get("enabled"):
-        return {"skipped": "run.custom_model is off"}
-    base = run.path("custom_model")
-    base.mkdir(parents=True, exist_ok=True)
-    transcripts_path = base / "transcripts.jsonl.gz"
-    if not transcripts_path.exists():
-        pass_dirs = [p for p in (run.path("fleet-off"), run.path("fleet-on")) if (p / "shards").exists()]
-        if pass_dirs:
-            dpo.export_transcripts(pass_dirs, run.path("tasks"), transcripts_path)
-    if not transcripts_path.exists():
-        return {"skipped": "no transcripts archive or shard stores found"}
-    sft_raw = base / "sft.raw.jsonl"
-    dpo_raw = base / "dpo.raw.jsonl"
-    max_routine = cfg.get("max_routine_reads_per_session", 6)
-    stats = dpo.extract(
-        transcripts_path,
-        rows_paths=judged_files(run),
-        out_sft=sft_raw,
-        out_dpo=dpo_raw,
-        min_score=int(cfg.get("min_score", 3)),
-        preload_from_judge=bool(cfg.get("preload_from_judge", True)),
-        max_routine_reads_per_session=int(max_routine) if max_routine is not None else None,
-    )
-    sft_inputs = [str(sft_raw)]
-    dpo_inputs = [str(dpo_raw)]
-    workers = int(run.setting("workers", 16))
-    seed = int(run.setting("seed", 7))
-    if cfg.get("repair") and dpo_raw.exists() and dpo_raw.stat().st_size > 0:
-        repaired = base / "dpo.repaired.jsonl"
-        stats["repair"] = dpo.repair(run.factory, dpo_raw, repaired, teacher_id=cfg.get("teacher", "gemma-4-31b-it"), workers=workers, seed=seed)
-        dpo_inputs = [str(repaired)]
-    if cfg.get("shadow") and sft_raw.exists() and sft_raw.stat().st_size > 0:
-        shadow_out = base / "dpo.shadow.jsonl"
-        stats["shadow"] = dpo.shadow(run.factory, sft_raw, shadow_out, student_id=cfg.get("student", "gemma-4-e4b-it"), workers=workers, seed=seed)
-        if shadow_out.exists() and shadow_out.stat().st_size > 0:
-            dpo_inputs.append(str(shadow_out))
-    if cfg.get("multi_root", True) and sft_raw.exists() and sft_raw.stat().st_size > 0:
-        raw_sft_rows = [json.loads(line) for line in sft_raw.read_text(encoding="utf-8").splitlines() if line.strip()]
-        synth_sft, synth_dpo = dpo.synthesize_multi_root_pairs(
-            raw_sft_rows,
-            max_pairs=int(cfg.get("multi_root_max_pairs", 200)),
-        )
-        if synth_sft:
-            multi_sft = base / "sft.multiroot.jsonl"
-            multi_sft.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in synth_sft), encoding="utf-8")
-            sft_inputs.append(str(multi_sft))
-        if synth_dpo:
-            multi_dpo = base / "dpo.multiroot.jsonl"
-            multi_dpo.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in synth_dpo), encoding="utf-8")
-            dpo_inputs.append(str(multi_dpo))
-        stats["multi_root"] = {"sft_rows": len(synth_sft), "dpo_rows": len(synth_dpo)}
-    existing_sft = [p for p in sft_inputs if Path(p).exists() and Path(p).stat().st_size > 0]
-    if existing_sft:
-        stats["sft_splits"] = split.split(run.factory, existing_sft, base / "sft")
-    existing_dpo = [p for p in dpo_inputs if Path(p).exists() and Path(p).stat().st_size > 0]
-    if existing_dpo:
-        stats["dpo_splits"] = split.split(run.factory, existing_dpo, base / "dpo")
-    return stats
+    return custom_model_run.collect(run, judge_factory=scaled_factory(run))
 
 
 # ---- code-rank pairs -----------------------------------------------------------
@@ -774,7 +750,7 @@ def stage_report(run, publish=True):
         spend = estimated_spend(run, totals)
         if spend is not None:
             lines.append("\nEstimated spend: $%.2f" % spend)
-        lines.append("\nCalls the runners' sidecars made while driving tasks are not in this table.")
+        lines.append("\nIncludes collected runner sidecar usage; live calls can exceed the ceiling before the next stage check.")
     else:
         lines.append("No provider calls were recorded.")
     dataset = run.outputs("release")
@@ -817,6 +793,11 @@ def plan(run, start=None, until=None, redo=()):
 
 def execute(run, start=None, until=None, funcs=None, redo=()):
     funcs = funcs or STAGE_FUNCS
+    if run.setting("custom_model", {}).get("enabled"):
+        try:
+            custom_model_run.binding(run)
+        except custom_model_run.DatasetError as exc:
+            raise RunError(str(exc)) from exc
     os.environ["BIALY_USAGE_JSONL"] = str(run.path("usage.jsonl"))
     state = run.load_state()
     for name in (STAGES[STAGES.index(start):] if start else ()) + tuple(redo):
@@ -831,8 +812,12 @@ def execute(run, start=None, until=None, funcs=None, redo=()):
             check_spend(run)
             outputs = funcs[name](run)
             state = run.load_state()
-            state["stages"][name] = {"status": "done", "at": stamp(), "seconds": round(time.time() - started), "outputs": outputs}
+            status = "not_ready" if outputs and outputs.get("status") == "not_ready" else "done"
+            state["stages"][name] = {"status": status, "at": stamp(), "seconds": round(time.time() - started), "outputs": outputs}
             run.save_state(state)
+            if status == "not_ready":
+                stage_report(run, publish=False)
+                return run.load_state()
             if outputs and outputs.get("skipped"):
                 print("%s: %s skipped: %s" % (run.name, name, outputs["skipped"]), flush=True)
         except Exception as exc:  # any stage failure stops the run where it stands

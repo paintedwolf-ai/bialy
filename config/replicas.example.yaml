@@ -9,3 +9,10 @@
 replicas:
   qwen3.6-35b-a3b:
     - {port: 8003, ssh: root@gpu-2.example, key: /root/.ssh/bialy_tunnel, remote: "127.0.0.1:8000"}
+
+# A model with serve.external in models.yaml is served outside the factory (a
+# consumer-GPU llama-server). models.yaml pins its alias and artifact; this file
+# gives the tunnel to it, on the model's own port.
+external:
+  qwen3.6-35b-a3b-q4: {ssh: root@gpu-1.example, key: /root/.ssh/bialy_tunnel, remote: "127.0.0.1:8011"}
+  gemma-4-26b-a4b-it-q4: {ssh: root@gpu-2.example, key: /root/.ssh/bialy_tunnel, remote: "127.0.0.1:8012"}

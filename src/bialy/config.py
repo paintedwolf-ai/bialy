@@ -8,6 +8,7 @@ model.
 import ipaddress
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,6 +55,16 @@ class Model:
     @property
     def port(self):
         return int(self.serve["port"])
+
+    @property
+    def wire_model(self):
+        return ((self.serve or {}).get("external") or {}).get("model", self.id)
+
+    def tunnels(self):
+        external = (self.serve or {}).get("external")
+        if external and not external.get("ssh"):
+            raise ConfigError("model %s: replicas.local.yaml must give the tunnel (ssh, remote, key) to its external server" % self.id)
+        return ([dict(external, port=self.port)] if external else []) + list(self.replicas)
 
     def ports(self):
         """Every bridge port this model answers on: its own server, then its replicas."""
@@ -107,7 +118,7 @@ class Archetype:
     prompt_timeout: str
     workflow_prompt_timeout: str
     new_files: bool = False
-    attachment_rate: float = 0.0
+    reference_rate: float = 0.0
 
     def timeout(self, workflow):
         """The per-prompt budget for one of this archetype's tasks."""
@@ -199,7 +210,7 @@ class Factory:
             if not key:
                 raise ConfigError("model %s: set %s to call %s" % (model.id, model.hosted["key_env"], model.hosted["provider"]))
             return [Chat(model.hosted["base_url"], model.hosted["model"], api_key=key, hosted=True, reasoning_effort=model.reasoning_effort)]
-        return [Chat(self.base_url(model, port), model.id) for port in model.ports()]
+        return [Chat(self.base_url(model, port), model.wire_model) for port in model.ports()]
 
 
 HUB_ENV = {"dataset_repo": "BIALY_HF_DATASET_REPO", "model_repo": "BIALY_HF_MODEL_REPO", "code_repo": "BIALY_CODE_REPO"}
@@ -219,12 +230,12 @@ def _read(name):
         return yaml.safe_load(fh)
 
 
-def local_replicas():
-    """This deployment's replicas by model id, from the uncommitted replicas.local.yaml."""
+def local_deployment():
+    """This deployment's replicas and external-server tunnels by model id, from the
+    uncommitted replicas.local.yaml."""
     path = CONFIG / "replicas.local.yaml"
-    if not path.exists():
-        return {}
-    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("replicas") or {}
+    raw = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    return raw.get("replicas") or {}, raw.get("external") or {}
 
 
 RUN_DEFAULTS = {
@@ -237,9 +248,9 @@ RUN_DEFAULTS = {
     "evaluate": {"rows": 500},
     "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
-    "custom_model": {"enabled": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
-                     "preload_from_judge": True, "max_routine_reads_per_session": 6, "multi_root": True,
-                     "multi_root_max_pairs": 200, "shadow": False, "repair": False},
+    "custom_model": {"enabled": False, "diagnostic_only": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
+                     "epoch": None, "tool_surface": "legacy", "host_commit": None, "quality_reports": None, "quality_judge": False,
+                     "preload_from_judge": False, "max_routine_reads_per_session": 6, "shadow": False, "repair": False},
 }
 
 # Map-valued run settings whose inner keys are model or archetype ids, not fixed setting names.
@@ -275,7 +286,7 @@ def run_settings(raw):
 
 def load():
     factory = _read("factory.yaml")
-    replicas = local_replicas()
+    replicas, tunnels = local_deployment()
     out = Factory(root=Path(factory["root"]), network=factory["network"], fleet=factory["fleet"],
                   split=factory["split"], judge=factory["judge"], run=run_settings(factory.get("run")))
     # Docker gives every runner an address on the bridge; beyond the subnet, runs fail to start.
@@ -294,12 +305,25 @@ def load():
             raise ConfigError("model %s: hosted needs provider, base_url, model, and key_env, and takes no replicas" % raw.get("id"))
         if hosted and hosted.get("reasoning_effort") not in (None, *REASONING_EFFORTS):
             raise ConfigError("model %s: hosted.reasoning_effort is one of %s" % (raw.get("id"), ", ".join(REASONING_EFFORTS)))
+        external = (serve or {}).get("external")
+        if external:
+            # The durable pins live here; the deployment's tunnel stays out of the repository.
+            if set(external) != {"model", "artifact", "artifact_sha256"} or not all(external.values()) or not re.fullmatch(r"[0-9a-f]{64}", str(external["artifact_sha256"])):
+                raise ConfigError("model %s: serve.external pins model (the server's alias), artifact (file name) and artifact_sha256; the tunnel belongs in replicas.local.yaml" % raw.get("id"))
+            tunnel = tunnels.get(raw["id"])
+            if tunnel:
+                if any(not tunnel.get(k) for k in ("ssh", "remote", "key")):
+                    raise ConfigError("model %s: replicas.local.yaml external needs ssh, remote and key" % raw["id"])
+                serve = dict(serve, external=dict(external, **tunnel))
         out.models.append(Model(id=raw["id"], hf=raw["hf"], revision=raw["revision"], family=raw["family"],
                                 license=raw["license"], roles=tuple(raw["roles"]), serve=serve,
                                 replicas=tuple(replicas.get(raw["id"]) or ()), hosted=hosted))
-    unknown = set(replicas) - {m.id for m in out.models}
+    unknown = (set(replicas) | set(tunnels)) - {m.id for m in out.models}
     if unknown:
         raise ConfigError("replicas.local.yaml names unknown models: %s" % ", ".join(sorted(unknown)))
+    not_external = set(tunnels) & {m.id for m in out.models if not (m.serve or {}).get("external")}
+    if not_external:
+        raise ConfigError("replicas.local.yaml gives external tunnels to models the factory serves itself: %s" % ", ".join(sorted(not_external)))
     for raw in _read("repos.yaml")["repos"]:
         repo = Repo(**raw)
         if len(repo.commit) != 40 or repo.spdx not in PERMISSIVE or repo.split not in ("train", "holdout"):
@@ -337,7 +361,7 @@ def load():
                                         follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"])),
                                         prompt_timeout=timeout, workflow_prompt_timeout=max(timeout, workflow_timeout, key=minutes),
                                         new_files=workspace == "stack" or bool(raw.get("new_files", False)),
-                                        attachment_rate=float(raw.get("attachment_rate", 0.0))))
+                                        reference_rate=float(raw.get("reference_rate", 0.0))))
     names = [w.name for w in out.workspaces()]
     if len(set(names)) != len(names):
         raise ConfigError("repository and stack names must be unique together: a workspace's name is its rows' identity")

@@ -48,7 +48,7 @@ RUN git config --system --add safe.directory '*'
 
 COPY engine/ /opt/bialy/engine/
 COPY bin/ /opt/bialy/bin/
-COPY --chmod=755 run-shard.sh setup-repo.sh /opt/bialy/
+COPY --chmod=755 run-shard.sh setup-repo.sh provider-credentials.sh /opt/bialy/
 COPY unattended.yaml /opt/bialy/
 COPY workflows/ /opt/bialy/workflows/
 # The overlay holds staged configuration, such as an engine-on pass's decision deadlines.

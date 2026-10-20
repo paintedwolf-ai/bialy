@@ -41,7 +41,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import audit, coderank, config, dpo, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
+from . import audit, coderank, config, custom_quality, dpo, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
 from . import run as runmod
 
 
@@ -156,7 +156,7 @@ def main(argv=None):
     p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
     sub.add_parser("check", help="validate the configuration and pins, offline")
     p = sub.add_parser("dpo", help="extract SFT warmup and multi-source DPO pairs for custom small-model training")
-    p.add_argument("action", choices=("export", "extract", "shadow", "repair"))
+    p.add_argument("action", choices=("export", "extract", "shadow", "repair", "quality"))
     p.add_argument("--run", help="export: pass directory containing shards/*/store.db")
     p.add_argument("--tasks", help="export: task directory")
     p.add_argument("--transcripts", help="extract: transcripts.jsonl or transcripts.jsonl.gz")
@@ -169,7 +169,7 @@ def main(argv=None):
     p.add_argument("--student", default="gemma-4-e4b-it", help="shadow: student model id")
     p.add_argument("--teacher", default="gemma-4-31b-it", help="repair: teacher model id")
     p.add_argument("--min-score", type=int, default=3, help="extract: minimum judge score for synthetic preloading")
-    p.add_argument("--no-preload", action="store_true", help="extract: disable synthetic engine-on preloading from judge scores")
+    p.add_argument("--synthetic-preload", action="store_true", help="extract: diagnostic candidates only; synthesize a counterfactual offered surface")
     p.add_argument("--max-routine-reads", type=int, default=6, help="extract: max mid-loop unscoped read/grep/list_dir steps per session in SFT (0 disables)")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--seed", type=int, default=7)
@@ -193,6 +193,11 @@ def main(argv=None):
     runs = factory.root / "runs"
 
     if args.cmd == "dpo":
+        if args.action == "quality":
+            if not (args.sft and args.transcripts and args.out):
+                ap.error("dpo quality needs --sft, --transcripts, and --out")
+            print(json.dumps(custom_quality.judge_rows(factory, args.sft, args.transcripts, args.out, args.seed), indent=2))
+            return 0
         if args.action == "export":
             if not (args.run and args.tasks and args.out):
                 ap.error("dpo export needs --run, --tasks, and --out")
@@ -202,7 +207,7 @@ def main(argv=None):
             if not args.transcripts:
                 ap.error("dpo extract needs --transcripts")
             print(json.dumps(dpo.extract(args.transcripts, rows_paths=args.rows, out_sft=args.out_sft, out_dpo=args.out_dpo,
-                                         min_score=args.min_score, preload_from_judge=not args.no_preload,
+                                         min_score=args.min_score, preload_from_judge=args.synthetic_preload,
                                          max_routine_reads_per_session=args.max_routine_reads), indent=2))
             return 0
         if args.action == "shadow":
@@ -235,6 +240,9 @@ def main(argv=None):
         except runmod.RunError as exc:
             print(exc, file=sys.stderr)
             return 1
+        if any(stage.get("status") == "not_ready" for stage in state["stages"].values()):
+            print("run %s needs attention; custom-model datasets are not ready (see REPORT.md)" % args.run)
+            return 2
         report = state["stages"].get("report", {}).get("outputs", {}).get("report")
         print("run %s finished%s" % (args.run, "; report at " + report if report else ""))
         return 0

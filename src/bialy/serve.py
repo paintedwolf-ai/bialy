@@ -7,6 +7,7 @@ a reused PID is never signalled.
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -30,6 +31,8 @@ def snapshot(factory, model):
 
 
 def start(factory, model):
+    if (model.serve or {}).get("external"):
+        return None
     record = _record(factory, model)
     if running(factory, model):
         return json.loads(record.read_text())["pid"]
@@ -55,21 +58,27 @@ def _tunnel_record(factory, model, replica):
 def start_tunnels(factory, model):
     """One supervised SSH tunnel per replica, from the bridge gateway to the replica's
     loopback server; the loop reconnects if the connection drops."""
-    for replica in model.replicas:
+    for replica in model.tunnels():
+        (factory.root / "run").mkdir(parents=True, exist_ok=True)
+        (factory.root / "logs").mkdir(parents=True, exist_ok=True)
         record = _tunnel_record(factory, model, replica)
-        if record.exists() and _start_time(json.loads(record.read_text())["pid"]) == json.loads(record.read_text())["start"]:
-            continue
+        if record.exists():
+            prior = json.loads(record.read_text())
+            if _start_time(prior["pid"]) == prior["start"]:
+                if prior.get("config") != replica:
+                    raise ValueError("live model tunnel configuration changed; stop its recorded tunnel before restarting")
+                continue
         forward = "%s:%d:%s" % (factory.network["gateway"], int(replica["port"]), replica["remote"])
         loop = ("while true; do ssh -N -i %s -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 "
-                "-o StrictHostKeyChecking=accept-new -o GatewayPorts=yes -L %s %s; sleep 5; done") % (replica["key"], forward, replica["ssh"])
+                "-o StrictHostKeyChecking=accept-new -o GatewayPorts=yes -L %s -- %s; sleep 5; done") % (shlex.quote(replica["key"]), shlex.quote(forward), shlex.quote(replica["ssh"]))
         log = open(factory.root / "logs" / ("tunnel-%s-%d.log" % (model.id, int(replica["port"]))), "w")
         proc = subprocess.Popen(["bash", "-c", loop], stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
         time.sleep(1)
-        record.write_text(json.dumps({"pid": proc.pid, "start": _start_time(proc.pid), "forward": forward, "host": replica["ssh"]}))
+        record.write_text(json.dumps({"pid": proc.pid, "start": _start_time(proc.pid), "forward": forward, "host": replica["ssh"], "config": replica}))
 
 
 def stop_tunnels(factory, model):
-    for replica in model.replicas:
+    for replica in model.tunnels():
         record = _tunnel_record(factory, model, replica)
         if not record.exists():
             continue
@@ -80,7 +89,8 @@ def stop_tunnels(factory, model):
 
 
 def running(factory, model):
-    record = _record(factory, model)
+    external = (model.serve or {}).get("external")
+    record = _tunnel_record(factory, model, dict(external, port=model.port)) if external else _record(factory, model)
     if not record.exists():
         return False
     entry = json.loads(record.read_text())
@@ -92,7 +102,7 @@ def ready(factory, model):
     for port in model.ports():
         try:
             with urllib.request.urlopen(factory.base_url(model, port) + "/models", timeout=5) as resp:
-                if resp.status != 200:
+                if resp.status != 200 or model.wire_model not in {item.get("id") for item in json.load(resp).get("data", [])}:
                     return False
         except OSError:
             return False
@@ -100,6 +110,8 @@ def ready(factory, model):
 
 
 def stop(factory, model):
+    if (model.serve or {}).get("external"):
+        return False
     record = _record(factory, model)
     if not running(factory, model):
         record.unlink(missing_ok=True)

@@ -62,7 +62,12 @@ class Chat:
         reply = self.client.chat.completions.create(
             model=self.model, temperature=temperature, top_p=1.0, max_tokens=max_tokens, messages=messages, **extra)
         record_usage(self.model, reply)
-        msg = reply.choices[0].message
+        choice = reply.choices[0]
+        if choice.finish_reason not in {"stop", "tool_calls"}:
+            raise ValueError("incomplete assistant turn: finish_reason=%s" % choice.finish_reason)
+        msg = choice.message
+        if getattr(msg, "refusal", None):
+            raise ValueError("provider refused the assistant turn")
         calls = [{"id": getattr(c, "id", "") or "call_%d" % i, "name": c.function.name, "arguments": c.function.arguments}
                  for i, c in enumerate(getattr(msg, "tool_calls", None) or [])]
         return {"text": (msg.content or "").strip(), "tool_calls": calls}

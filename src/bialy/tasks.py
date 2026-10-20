@@ -16,6 +16,7 @@ it starts, if any, and follow-ups.
 import concurrent.futures
 import hashlib
 import json
+import math
 import random
 import re
 import subprocess
@@ -247,8 +248,8 @@ def generate(factory, repos_dir, out_dir, seed=7, workers=48):
                 count = min(6, remaining)
                 other = rng.random() < factory.languages["other_rate"]
                 language = rng.choice(factory.languages["choices"]) if other else None
-                author = generators[(n + len(jobs)) % len(generators)].id
                 key = "%s/%s/%d" % (workspace.name, arch.id, n)
+                author = pick_generator(factory, arch.id, [m.id for m in generators], random.Random("%s:author:%s" % (seed, key)))
                 job_seed = rng.randrange(1 << 30)
                 # A stack's batches each draw their own idea and scale, so its tasks spread over many projects.
                 drawn = {"domain": rng.choice(factory.seeds["domains"]), "scale": rng.choice(factory.seeds["scales"])} \
@@ -276,8 +277,8 @@ def generate(factory, repos_dir, out_dir, seed=7, workers=48):
     for workspace in factory.workspaces():
         raw = []
         path = raw_dir / (workspace.name + ".jsonl")
-        for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else []):
-            entry = json.loads(line)
+        entries = [json.loads(line) for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else [])]
+        for entry in sorted(entries, key=lambda entry: entry["job"]):
             raw += [{**t, "archetype": entry["archetype"], "lang": entry["lang"], "author": entry["author"], "seed": entry.get("seed")}
                     for t in entry["tasks"]]
         files = repo_files(Path(repos_dir) / workspace.name) if workspace.kind == "repository" else []
@@ -308,8 +309,17 @@ def pick_generator(factory, archetype_id, generators, rng):
     run_cfg = getattr(factory, "run", None) or {}
     arch_map = (run_cfg.get("archetype_generators") or {}).get(archetype_id)
     base_weights = run_cfg.get("generator_weights") or {}
-    if not arch_map and not base_weights:
+    if not generators:
+        raise ConfigError("at least one generator is required")
+    if arch_map is None and not base_weights:
         return rng.choice(generators)
+    unknown = (set(arch_map) if isinstance(arch_map, (dict, list, tuple)) else set()) - set(generators)
+    unknown |= set(base_weights) - set(generators)
+    if unknown:
+        raise ConfigError("generator routing names inactive models: %s" % ", ".join(sorted(unknown)))
+    values = list(base_weights.values()) + (list(arch_map.values()) if isinstance(arch_map, dict) else [])
+    if any(not isinstance(w, (int, float)) or isinstance(w, bool) or not math.isfinite(w) or w < 0 for w in values):
+        raise ConfigError("generator weights must be finite nonnegative numbers")
     if isinstance(arch_map, dict):
         candidates = [g for g in generators if float(arch_map.get(g, 0)) > 0]
         weights = [float(arch_map[g]) for g in candidates]
@@ -321,20 +331,19 @@ def pick_generator(factory, archetype_id, generators, rng):
         candidates = [g for g in generators if float(base_weights.get(g, 1.0)) > 0]
         weights = [float(base_weights.get(g, 1.0)) for g in candidates]
     if not candidates or sum(weights) <= 0:
-        return rng.choice(generators)
+        raise ConfigError("generator routing for %s selects no models" % archetype_id)
     return rng.choices(candidates, weights=weights, k=1)[0]
 
 
-def format_attachment(path, is_dir=False):
-    """Format a Den file or folder attachment fence matching real interactive user sessions."""
-    name = path.rstrip("/").rsplit("/", 1)[-1]
+def format_reference(path, is_dir=False):
+    """Name an existing path without claiming the host delivered attachment content."""
     kind = "folder" if is_dir else "file"
-    return '```attachment filename="%s" mime="text/plain" truncated="false"\n[User attached %s: %s]\n```' % (name, kind, path)
+    return "Please include the existing %s `%s` in your review." % (kind, path)
 
 
-def maybe_attach(prompt, files, attachment_rate, rng):
-    """Append a realistic Den file or folder attachment block on `attachment_rate` share of prompts."""
-    if attachment_rate <= 0 or not files or "```attachment" in prompt or rng.random() >= attachment_rate:
+def maybe_reference(prompt, files, reference_rate, rng):
+    """Append an explicit file or folder reference to a share of generated requests."""
+    if reference_rate <= 0 or not files or rng.random() >= reference_rate:
         return prompt
     file_set = set(files)
     by_base = {f.rsplit("/", 1)[-1]: f for f in files}
@@ -348,12 +357,12 @@ def maybe_attach(prompt, files, attachment_rate, rng):
             matched_files.append(by_base[clean_tok])
     if matched_files:
         chosen = matched_files[0]
-        return "%s\n\n%s" % (prompt, format_attachment(chosen, is_dir=False))
+        return "%s\n\n%s" % (prompt, format_reference(chosen, is_dir=False))
     if dirs and rng.random() < 0.25:
         chosen_dir = rng.choice(dirs)
-        return "%s\n\n%s" % (prompt, format_attachment(chosen_dir, is_dir=True))
+        return "%s\n\n%s" % (prompt, format_reference(chosen_dir, is_dir=True))
     chosen_file = rng.choice(files)
-    return "%s\n\n%s" % (prompt, format_attachment(chosen_file, is_dir=False))
+    return "%s\n\n%s" % (prompt, format_reference(chosen_file, is_dir=False))
 
 
 def finalize(factory, workspace, raw, files, out_path, seed):
@@ -387,7 +396,7 @@ def finalize(factory, workspace, raw, files, out_path, seed):
         follow = t["follow_ups"] if rng.random() < arch.follow_up_rate else []
         tid = hashlib.sha1(("%s\n%s" % (workspace.name, t["prompt"])).encode()).hexdigest()[:16]
         model = pick_generator(factory, arch.id, generators, rng)
-        prompt_text = maybe_attach(t["prompt"], files, getattr(arch, "attachment_rate", 0.0), attach_rng) if len(files) > 1 else t["prompt"]
+        prompt_text = maybe_reference(t["prompt"], files, getattr(arch, "reference_rate", 0.0), attach_rng) if files else t["prompt"]
         meta = {"task_id": tid, "workspace": workspace.name, "workspace_kind": workspace.kind, "split": workspace.split,
                 "archetype": arch.id, "prompt_group": group_key, "lang": t["lang"], "author_model": t["author"], "workflow": pick,
                 "prompt_timeout": arch.timeout(pick)}
