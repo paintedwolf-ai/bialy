@@ -120,9 +120,13 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                     mentry, spec = by_root[root]
                     meta = spec.get("meta") or mentry.get("meta") or {}
                     if "tool_calls_json" in msg_cols:
+                        extra_cols = [
+                            c for c in ("origin", "grounding_json", "artifact_ids_json", "completion_report_json", "draft_version_count", "draft_status")
+                            if c in msg_cols
+                        ]
+                        col_sql = ", ".join(["id", "role", "content", "kind", "visibility", "seq", "ord", "ts", "tool_calls_json", "tool_result_json", "reasoning_json"] + extra_cols)
                         msgs = conn.execute(
-                            "SELECT id, role, content, kind, visibility, seq, ord, ts, tool_calls_json, tool_result_json, reasoning_json "
-                            "FROM messages WHERE session_id = ? ORDER BY seq, ord, rowid",
+                            "SELECT %s FROM messages WHERE session_id = ? ORDER BY seq, ord, rowid" % col_sql,
                             (sid,),
                         ).fetchall()
                         messages = [dict(m) for m in msgs]
@@ -145,6 +149,15 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                                 "content": content,
                                 "created_at": m["created_at"],
                             })
+                    draft_versions = []
+                    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                    if "draft_versions" in tables:
+                        drows = conn.execute(
+                            "SELECT slot_id, version_index, body, outcome_code, created_at "
+                            "FROM draft_versions WHERE session_id = ? ORDER BY created_at, version_index",
+                            (sid,),
+                        ).fetchall()
+                        draft_versions = [dict(d) for d in drows]
                     record = {
                         "shard": shard.name,
                         "session_id": sid,
@@ -159,6 +172,7 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                         "title": srow["title"] or "",
                         "workflow_id": srow["workflow_id"],
                         "messages": messages,
+                        "draft_versions": draft_versions,
                     }
                     out.write(json.dumps(record, ensure_ascii=False) + "\n")
                     sessions_written += 1
@@ -173,6 +187,108 @@ def iter_transcripts(path):
         for line in fh:
             if line.strip():
                 yield json.loads(line)
+
+
+def _parse_json_field(val):
+    if not val:
+        return None
+    if isinstance(val, (dict, list)):
+        return val
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except ValueError:
+            return None
+    return None
+
+
+def is_host_assembled_closeout(message):
+    """Return True when a completion_report row was host-assembled after model citation/closeout failure."""
+    grounding = _parse_json_field(message.get("grounding_json") or message.get("grounding"))
+    if not isinstance(grounding, dict):
+        return False
+    return bool(grounding.get("host_assembled")) or (grounding.get("traced") is False)
+
+
+def reconstruct_closeout_fence(message):
+    """Reconstruct the trailing ```json closeout fence stripped from messages.content by closeoutWireContent."""
+    grounding = _parse_json_field(message.get("grounding_json") or message.get("grounding"))
+    if not isinstance(grounding, dict):
+        return ""
+    if not grounding.get("traced") or grounding.get("host_assembled"):
+        return ""
+    fence_obj = {}
+    cited_ev = []
+    for ce in grounding.get("cited_evidence") or []:
+        if not isinstance(ce, dict):
+            continue
+        item = {}
+        handle = ce.get("evidence") or ce.get("handle")
+        if handle:
+            item["evidence"] = handle
+        if ce.get("path"):
+            item["path"] = ce["path"]
+        if ce.get("line"):
+            item["line"] = ce["line"]
+        if ce.get("excerpt"):
+            item["excerpt"] = ce["excerpt"]
+        if item:
+            cited_ev.append(item)
+    if cited_ev:
+        fence_obj["cited_evidence"] = cited_ev
+    if grounding.get("cited_urls"):
+        fence_obj["cited_urls"] = list(grounding["cited_urls"])
+    artifact_ids = _parse_json_field(message.get("artifact_ids_json") or message.get("artifact_ids"))
+    if isinstance(artifact_ids, list) and artifact_ids:
+        fence_obj["artifact_ids"] = artifact_ids
+    if isinstance(grounding.get("verification"), dict) and grounding["verification"]:
+        fence_obj["verification"] = grounding["verification"]
+    comp_meta = _parse_json_field(message.get("completion_report_json") or message.get("completion_report"))
+    if isinstance(comp_meta, dict):
+        for k in ("headline", "summary", "limits", "ask", "rating", "set_asides"):
+            if comp_meta.get(k):
+                fence_obj[k] = comp_meta[k]
+        if comp_meta.get("findings"):
+            findings = []
+            for f in comp_meta["findings"]:
+                if not isinstance(f, dict):
+                    continue
+                fc = dict(f)
+                if "where" in fc and isinstance(fc["where"], list):
+                    where_list = []
+                    for w in fc["where"]:
+                        if isinstance(w, dict):
+                            wc = {}
+                            if w.get("evidence") or w.get("handle"):
+                                wc["evidence"] = w.get("evidence") or w.get("handle")
+                            if w.get("path"):
+                                wc["path"] = w["path"]
+                            if w.get("line"):
+                                wc["line"] = w["line"]
+                            if wc:
+                                where_list.append(wc)
+                    fc["where"] = where_list
+                findings.append(fc)
+            if findings:
+                fence_obj["findings"] = findings
+    if not fence_obj:
+        return ""
+    return "```json\n%s\n```" % json.dumps(fence_obj, ensure_ascii=False)
+
+
+def render_draft_version_body(body_str):
+    """Render a retracted draft_versions.body JSON envelope back into the assistant's Markdown + trailing fence."""
+    parsed = _parse_json_field(body_str)
+    if not isinstance(parsed, dict):
+        return str(body_str or "").strip()
+    data = dict(parsed)
+    synthesis = str(data.pop("synthesis", "") or "").strip()
+    if not data:
+        return synthesis
+    fence = "```json\n%s\n```" % json.dumps(data, ensure_ascii=False)
+    if not synthesis:
+        return fence
+    return "%s\n\n%s" % (synthesis, fence)
 
 
 def strip_thinking(message):
@@ -217,6 +333,10 @@ def strip_thinking(message):
                 "arguments": args,
             })
     text = "\n\n".join(p for p in text_parts if p) or (message.get("text") or "").strip()
+    if not tool_calls and "```json" not in text and "```citations" not in text:
+        fence = reconstruct_closeout_fence(message)
+        if fence:
+            text = ("%s\n\n%s" % (text, fence)).strip() if text else fence
     return {"role": "assistant", "text": text, "tool_calls": tool_calls}
 
 
@@ -227,6 +347,11 @@ def parse_rejection(result_block):
     is_error = bool(result_block.get("is_error")) or bool(STATUS_ERROR_RE.search(content))
     code_match = REJECTION_CODE_RE.search(content)
     code = code_match.group(1) if code_match else details.get("code")
+    if not code and is_error:
+        if "no progress checklist yet" in content:
+            code = "PROGRESS_REQUIRED_BEFORE_EDIT"
+        elif "Shell file-writing redirection" in content or "stream piping targeting" in content:
+            code = "SHELL_FILE_WRITE_FORBIDDEN"
     if not is_error and not code:
         return None
     return {
@@ -434,6 +559,11 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             for msg in messages if msg.get("role") == "assistant"
             for call in strip_thinking(msg)["tool_calls"] if call.get("name")
         }
+        draft_by_slot = {}
+        for dv in session.get("draft_versions") or []:
+            slot = dv.get("slot_id")
+            if slot:
+                draft_by_slot.setdefault(slot, []).append(dv)
         current_opening = None
         for idx, msg in enumerate(messages):
             if msg.get("role") == "user":
@@ -451,10 +581,73 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             host_user_rej = parse_host_user_rejection(next_msg)
             if not rejections and host_user_rej is not None:
                 rejections = [host_user_rej]
-            has_grounded_citations = "```citations" in (turn.get("text") or "")
+            turn_text = turn.get("text") or ""
+            host_assembled = is_host_assembled_closeout(msg)
+            has_grounded_citations = (
+                "```citations" in turn_text
+                or ("```json" in turn_text and not host_assembled)
+            )
+            prefix = _openai_messages(messages[:idx])
+
+            # Extract retracted closeout drafts from draft_versions for this message slot.
+            slot_drafts = draft_by_slot.get(msg.get("id")) or []
+            if slot_drafts:
+                chosen_closeout = turn if (has_grounded_citations or turn["tool_calls"]) and not host_assembled else None
+                if chosen_closeout is None and idx + 1 < len(messages):
+                    for later in messages[idx + 1:idx + 4]:
+                        if later.get("role") == "assistant":
+                            cand = strip_thinking(later)
+                            if any(c.get("name") == "update_progress" for c in cand["tool_calls"]):
+                                chosen_closeout = cand
+                                break
+                for dv_idx, dv in enumerate(slot_drafts):
+                    dv_code = dv.get("outcome_code") or "TURN_CLOSEOUT_REJECTED"
+                    stats["rejection_codes"][dv_code] = stats["rejection_codes"].get(dv_code, 0) + 1
+                    rej_turn = {
+                        "role": "assistant",
+                        "text": render_draft_version_body(dv.get("body", "")),
+                        "tool_calls": [],
+                    }
+                    dpo_rows.append({
+                        "schema": DPO_SCHEMA,
+                        "id": "%s:%d:draft:%d" % (sid, idx, dv_idx),
+                        "session": sid,
+                        "root_session": session.get("root_session") or sid,
+                        "turn_index": idx,
+                        "source": "host_rejection",
+                        "rejection_code": dv_code,
+                        "rejection_details": {"slot_id": msg.get("id", ""), "version_index": dv.get("version_index", dv_idx)},
+                        "surface": surface,
+                        "prompt": prefix,
+                        "chosen": chosen_closeout,
+                        "rejected": rej_turn,
+                        "meta": meta,
+                    })
+                    stats["by_source"]["host_rejection"] = stats["by_source"].get("host_rejection", 0) + 1
+            elif host_assembled and not rejections:
+                grounding = _parse_json_field(msg.get("grounding_json") or msg.get("grounding")) or {}
+                hint_code = grounding.get("hint_code") or "INVEST_CITATIONS_REQUIRED"
+                stats["rejection_codes"][hint_code] = stats["rejection_codes"].get(hint_code, 0) + 1
+                dpo_rows.append({
+                    "schema": DPO_SCHEMA,
+                    "id": "%s:%d:untraced" % (sid, idx),
+                    "session": sid,
+                    "root_session": session.get("root_session") or sid,
+                    "turn_index": idx,
+                    "source": "host_rejection",
+                    "rejection_code": hint_code,
+                    "rejection_details": {"host_assembled": True},
+                    "surface": surface,
+                    "prompt": prefix,
+                    "chosen": None,
+                    "rejected": turn,
+                    "meta": meta,
+                })
+                stats["by_source"]["host_rejection"] = stats["by_source"].get("host_rejection", 0) + 1
+                continue
+
             if not turn["tool_calls"] and not rejections and not has_grounded_citations:
                 continue
-            prefix = _openai_messages(messages[:idx])
 
             if rejections:
                 rej = rejections[0]
@@ -462,13 +655,16 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                 stats["rejection_codes"][code] = stats["rejection_codes"].get(code, 0) + 1
                 repaired_turn = None
                 if idx + 2 < len(messages) and messages[idx + 2].get("role") == "assistant":
-                    candidate = strip_thinking(messages[idx + 2])
+                    candidate_msg = messages[idx + 2]
+                    candidate = strip_thinking(candidate_msg)
                     later_msg = messages[idx + 3] if idx + 3 < len(messages) else None
                     later_results = _tool_results_in(later_msg) if (later_msg and later_msg.get("role") == "tool") else []
                     later_rejs = [r for r in (parse_rejection(res) for res in later_results) if r is not None]
                     if parse_host_user_rejection(later_msg) is not None:
                         later_rejs.append(parse_host_user_rejection(later_msg))
-                    if (candidate["tool_calls"] or "```citations" in (candidate.get("text") or "")) and not later_rejs:
+                    cand_text = candidate.get("text") or ""
+                    cand_grounded = ("```citations" in cand_text or ("```json" in cand_text and not is_host_assembled_closeout(candidate_msg)))
+                    if (candidate["tool_calls"] or cand_grounded) and not later_rejs:
                         repaired_turn = candidate
                 # 1. Pre-rejection prevention pair at s_t.
                 dpo_rows.append({
@@ -533,6 +729,8 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                     continue
 
             # Clean turn candidate for Stage 1 SFT warmup.
+            if host_assembled:
+                continue
             task_status = ((row or {}).get("meta") or {}).get("task_status")
             if session.get("status") not in ("settled", "idle", "") or task_status not in (None, "", "settled"):
                 continue
@@ -544,7 +742,7 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                 continue
             adapted = _adapt_turn_for_preloaded(turn, surface["active_tools"], preload_from_judge=preload_from_judge)
             prior_tool_msgs = sum(1 for m in prefix if m.get("role") == "tool")
-            if not adapted["tool_calls"] and not (has_grounded_citations and prior_tool_msgs >= 2):
+            if not adapted["tool_calls"] and not (has_grounded_citations and prior_tool_msgs >= 1):
                 continue
             sft_rows.append({
                 "schema": SFT_SCHEMA,
@@ -593,12 +791,65 @@ def _is_scoped_read(call):
     return bool(isinstance(args, dict) and (set(args) & SCOPED_READ_KEYS))
 
 
+TRAILING_FENCE_RE = re.compile(r"```(?:json|citations)\s*\n(\{[\s\S]*?\})\s*\n```\s*$", re.IGNORECASE)
+UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
+
+
+def _extract_trailing_fence_json(text):
+    if not text:
+        return None
+    m = TRAILING_FENCE_RE.search(text.strip())
+    if not m:
+        return None
+    try:
+        parsed = json.loads(m.group(1))
+        return parsed if isinstance(parsed, dict) else None
+    except ValueError:
+        return None
+
+
+def _is_malformed_closeout_fence(teacher_fence, student_text, student_fence):
+    if student_fence is None:
+        return True
+    s_ev = student_fence.get("cited_evidence")
+    if isinstance(s_ev, list):
+        for item in s_ev:
+            if not isinstance(item, dict):
+                return True
+            if "handle" in item:
+                return True
+            ev_val = str(item.get("evidence") or "")
+            if ev_val and "#" not in ev_val:
+                return True
+            if UUID_RE.search(ev_val) or UUID_RE.search(str(item.get("path") or "")):
+                return True
+    if teacher_fence.get("cited_evidence") and not s_ev:
+        return True
+    if teacher_fence.get("verification") and not isinstance(student_fence.get("verification"), dict):
+        return True
+    if teacher_fence.get("artifact_ids") and not student_fence.get("artifact_ids"):
+        return True
+    body_without_fence = TRAILING_FENCE_RE.sub("", student_text or "")
+    if teacher_fence.get("artifact_ids") and UUID_RE.search(body_without_fence):
+        return True
+    return False
+
+
 def classify_divergence(sft_row, teacher_turn, student_turn):
     """Return a structured divergence code when the student's non-thinking turn is inferior to the teacher's."""
     surface = sft_row.get("surface") or {}
     allowed_tools = set(surface.get("active_tools") or []) | set(surface.get("loadable") or [])
     t_calls = teacher_turn.get("tool_calls") or []
     s_calls = student_turn.get("tool_calls") or []
+    t_text = teacher_turn.get("text") or ""
+    s_text = student_turn.get("text") or ""
+    if not t_calls:
+        t_fence = _extract_trailing_fence_json(t_text)
+        if t_fence is not None and not s_calls:
+            s_fence = _extract_trailing_fence_json(s_text)
+            if _is_malformed_closeout_fence(t_fence, s_text, s_fence):
+                return "closeout_fence_missing_or_malformed"
+        return None
     if t_calls and not s_calls:
         return "premature_stop"
     for call in s_calls:
@@ -618,6 +869,12 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
     s_names = {c.get("name") for c in s_calls}
     if "skills_read" in t_names and "skills_read" not in s_names:
         return "missed_skill_read"
+    if "update_progress" in t_names and "update_progress" not in s_names:
+        if s_names & {"write", "edit", "replace_lines", "command"}:
+            return "missing_progress_before_edit"
+        return "unclosed_progress_before_closeout"
+    if (t_names & {"capture_page", "capture_tui"}) and not (s_names & {"capture_page", "capture_tui"}):
+        return "missed_visual_capture"
     req_tools = set(surface.get("required_tools") or [])
     teacher_req = t_names & req_tools
     if teacher_req and not (s_names & teacher_req):
@@ -752,3 +1009,96 @@ def repair(factory, dpo_path, out_path, teacher_id="gemma-4-31b-it", workers=16,
         for r in completed:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
     return {"input_rows": len(rows), "repaired": len(need_repair), "completed_pairs": len(completed)}
+
+
+def _prefix_path_with_root(path_val, root_label):
+    if not isinstance(path_val, str) or not path_val.strip():
+        return path_val
+    p = path_val.strip()
+    if p.startswith("@"):
+        return p
+    if p == ".":
+        return "@%s/" % root_label
+    return "@%s/%s" % (root_label, p.lstrip("./"))
+
+
+def synthesize_multi_root_pairs(sft_rows, companion_label="spec-reference", max_pairs=200):
+    """Synthesize multi-root @<folder>/ SFT and DPO examples from single-root trajectories.
+
+    When a project has two or more attached roots (e.g. an implementation repo and a
+    specification/companion repo), Painted Wolf Code requires @<folder>/ path prefixes
+    in file tools and closeout citations, and expects cross-root audits to inspect both roots.
+    """
+    synth_sft = []
+    synth_dpo = []
+    for row in sft_rows:
+        if len(synth_dpo) >= max_pairs:
+            break
+        meta = dict(row.get("meta") or {})
+        ws = (meta.get("workspace") or "primary-repo").strip("@/")
+        target = row.get("target") or {}
+        calls = target.get("tool_calls") or []
+        file_tools = {"read", "list_dir", "grep", "summarize", "find_by_name", "edit", "write"}
+        if not any(c.get("name") in file_tools for c in calls):
+            continue
+        prefixed_calls = []
+        unprefixed_calls = []
+        changed = False
+        for c in calls:
+            unprefixed_calls.append(dict(c))
+            if c.get("name") in file_tools:
+                try:
+                    args = json.loads(c.get("arguments") or "{}")
+                except ValueError:
+                    args = None
+                if isinstance(args, dict) and isinstance(args.get("path"), str) and not args["path"].startswith("@"):
+                    new_args = dict(args, path=_prefix_path_with_root(args["path"], ws))
+                    prefixed_calls.append(dict(c, arguments=json.dumps(new_args, ensure_ascii=False, sort_keys=True)))
+                    changed = True
+                    continue
+            prefixed_calls.append(dict(c))
+        if not changed:
+            continue
+        prompt = []
+        injected = False
+        for m in row.get("prompt") or []:
+            mc = dict(m)
+            if mc.get("role") == "user" and not injected:
+                mc["content"] = (
+                    "[Workspace roots attached: @%s/ (primary), @%s/ (companion). "
+                    "Use @<folder>/ path prefixes for all file tools and citations.]\n\n%s"
+                    % (ws, companion_label, mc.get("content") or "")
+                )
+                injected = True
+            prompt.append(mc)
+        if not injected:
+            continue
+        chosen_turn = {"role": "assistant", "text": target.get("text") or "", "tool_calls": prefixed_calls}
+        rejected_turn = {"role": "assistant", "text": target.get("text") or "", "tool_calls": unprefixed_calls}
+        synth_sft.append({
+            "schema": SFT_SCHEMA,
+            "id": "%s:multiroot:sft" % row["id"],
+            "session": row["session"],
+            "root_session": row.get("root_session") or row["session"],
+            "turn_index": row["turn_index"],
+            "surface": row["surface"],
+            "prompt": prompt,
+            "target": chosen_turn,
+            "meta": dict(meta, multi_root=True),
+        })
+        synth_dpo.append({
+            "schema": DPO_SCHEMA,
+            "id": "%s:multiroot:dpo" % row["id"],
+            "session": row["session"],
+            "root_session": row.get("root_session") or row["session"],
+            "turn_index": row["turn_index"],
+            "source": "shadow_divergence",
+            "rejection_code": "multi_root_prefix_missing",
+            "rejection_details": {"primary_root": ws, "companion_root": companion_label},
+            "surface": row["surface"],
+            "prompt": prompt,
+            "chosen": chosen_turn,
+            "rejected": rejected_turn,
+            "meta": dict(meta, multi_root=True),
+        })
+    return synth_sft, synth_dpo
