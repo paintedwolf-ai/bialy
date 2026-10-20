@@ -419,4 +419,12 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     )
     assert div == "shallow_investigation"
 
+    web_div = dpo.classify_divergence(
+        {"surface": {"active_tools": ["web_search", "fetch_url"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "fetch_url", "arguments": '{"url":"https://open-meteo.com/en/docs"}'}]},
+        {"tool_calls": [{"name": "web_search", "arguments": '{"query":"free weather api python"}'}]},
+    )
+    assert web_div == "snippet_only_web_research"
+    assert "public_api_cli" in arch_by_id and arch_by_id["public_api_cli"].workspace == "stack"
+
 

@@ -44,7 +44,7 @@ def test_stacks_are_workspaces_with_their_own_archetypes(factory):
     assert [w.name for w in factory.workspaces()] == [r.name for r in factory.repos] + [s.name for s in factory.stacks]
     assert factory.workspace("react-vite").kind == "stack" and factory.workspace("flask").kind == "repository"
     stack_archetypes = factory.archetypes_for(factory.workspace("react-vite"))
-    assert {a.id for a in stack_archetypes} == {"new_project", "greenfield_auth", "prototype", "scaffold", "port"}
+    assert {a.id for a in stack_archetypes} == {"new_project", "greenfield_auth", "prototype", "public_api_cli", "scaffold", "port"}
     assert all(a.new_files for a in stack_archetypes)
     assert not {a.id for a in stack_archetypes} & {a.id for a in factory.archetypes_for(factory.workspace("flask"))}
     assert all(factory.seeds[key] for key in ("domains", "scales"))

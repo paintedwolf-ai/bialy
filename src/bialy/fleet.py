@@ -395,6 +395,10 @@ def container_args(factory, run_name, shard, extra_mounts, image=None):
     for key_env in sorted({m.hosted["key_env"] for m in factory.generators() if m.hosted}):
         if os.environ.get(key_env):
             args += ["-e", key_env]
+    # Optional rate-limit tokens for the default direct search seed channels (GitHub, GitLab, StackExchange).
+    for opt_env in ("GITHUB_SEARCH_API_KEY", "GITLAB_SEARCH_API_KEY", "STACKEXCHANGE_API_KEY"):
+        if os.environ.get(opt_env):
+            args += ["-e", opt_env]
     return name, work, args + [image or fleet["image"]]
 
 
