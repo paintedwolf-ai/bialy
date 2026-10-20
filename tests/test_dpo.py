@@ -379,4 +379,44 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     assert "[User attached file: src/flask/ctx.py]" in task["prompt"]
     assert len(task["follow_ups"]) == 3
 
+    # 3. Citation-grounding repair, AMBIENT_UNGROUNDED_COMPLETION extraction, and shallow_investigation divergence.
+    cit_tx = {
+        "id": "sess-cit-1",
+        "parent_session_id": None,
+        "status": "settled",
+        "model": "glm-5.3-flash",
+        "messages": [
+            {"id": "u1", "role": "user", "origin": "user", "content": "Audit oar-gateway compliance."},
+            {"id": "a1", "role": "assistant", "origin": "model", "content": "",
+             "tool_calls_json": json.dumps([{"name": "read", "id": "c1", "args": {"path": "src/engine.rs"}}])},
+            {"id": "t1", "role": "tool", "origin": "tool", "content": "[read#1]\npub struct Engine;"},
+            {"id": "a2", "role": "assistant", "origin": "model", "content": "",
+             "tool_calls_json": json.dumps([{"name": "verify", "id": "c2", "args": {"command": "cargo test"}}])},
+            {"id": "t2", "role": "tool", "origin": "tool", "content": "[tui#1]\ntest result: ok."},
+            {"id": "a3", "role": "assistant", "origin": "model", "content": "Report body citing bare path.\n```citations\n{\"cited_evidence\": [\"src/engine.rs\"]}\n```"},
+            {"id": "u2", "role": "user", "origin": "host",
+             "content": "[host:coordinator-citation-grounding]\n\nTo repair citations, emit only the citations fence; the host keeps the pinned body. Attempt 2/3.\n\nRejected: src/engine.rs (Code: INVEST_HANDLE_NOT_OBSERVED)"},
+            {"id": "a4", "role": "assistant", "origin": "model", "content": "```citations\n{\"cited_evidence\": [\"read#1\", \"tui#1\"]}\n```"},
+        ],
+    }
+    cit_path = tmp_path / "cit_tx.jsonl"
+    cit_path.write_text(json.dumps(cit_tx) + "\n")
+    cit_sft = tmp_path / "cit_sft.jsonl"
+    cit_dpo = tmp_path / "cit_dpo.jsonl"
+    cit_stats = dpo.extract(cit_path, out_sft=cit_sft, out_dpo=cit_dpo)
+    assert cit_stats["rejection_codes"] == {"COORDINATOR_CITATION_GROUNDING": 1}
+    assert dpo.parse_host_user_rejection({"role": "user", "content": ">>> Tool feedback\nGap.\nCode: AMBIENT_UNGROUNDED_COMPLETION"})["code"] == "AMBIENT_UNGROUNDED_COMPLETION"
+    cit_sft_rows = [json.loads(line) for line in cit_sft.read_text().splitlines()]
+    assert any("```citations" in (r["target"].get("text") or "") for r in cit_sft_rows)
+    cit_dpo_rows = [json.loads(line) for line in cit_dpo.read_text().splitlines()]
+    cit_recover = next(r for r in cit_dpo_rows if r["source"] == "post_rejection_recovery")
+    assert '"read#1"' in cit_recover["chosen"]["text"]
+
+    div = dpo.classify_divergence(
+        {"surface": {"active_tools": ["list_dir", "summarize", "read", "verify"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "verify", "arguments": '{"command":"cargo test"}'}]},
+        {"tool_calls": [{"name": "list_dir", "arguments": '{"path":"."}'}]},
+    )
+    assert div == "shallow_investigation"
+
 

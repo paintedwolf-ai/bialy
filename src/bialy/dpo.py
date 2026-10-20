@@ -246,10 +246,17 @@ def parse_host_user_rejection(message):
     text = (message.get("text") or (raw if isinstance(raw, str) else "") or "").strip()
     if not text:
         return None
+    code_match = REJECTION_CODE_RE.search(text)
     if text.startswith(">>> Tool feedback"):
-        return {"code": "COORDINATOR_FEEDBACK", "details": {}, "content": text[:1000]}
+        code = code_match.group(1) if code_match else "COORDINATOR_FEEDBACK"
+        return {"code": code, "details": {}, "content": text[:1000]}
+    if text.startswith("[host:coordinator-citation-grounding]"):
+        code = code_match.group(1) if code_match else "COORDINATOR_CITATION_GROUNDING"
+        return {"code": code, "details": {}, "content": text[:1000]}
     if text.startswith("Rejected:"):
-        if "progress steps" in text:
+        if code_match:
+            code = code_match.group(1)
+        elif "progress steps" in text:
             code = "TURN_CLOSEOUT_PENDING_PROGRESS"
         elif "could not parse the arguments" in text:
             code = "TOOL_ARGS_MALFORMED"
@@ -444,7 +451,8 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             host_user_rej = parse_host_user_rejection(next_msg)
             if not rejections and host_user_rej is not None:
                 rejections = [host_user_rej]
-            if not turn["tool_calls"] and not rejections:
+            has_grounded_citations = "```citations" in (turn.get("text") or "")
+            if not turn["tool_calls"] and not rejections and not has_grounded_citations:
                 continue
             prefix = _openai_messages(messages[:idx])
 
@@ -460,7 +468,7 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                     later_rejs = [r for r in (parse_rejection(res) for res in later_results) if r is not None]
                     if parse_host_user_rejection(later_msg) is not None:
                         later_rejs.append(parse_host_user_rejection(later_msg))
-                    if candidate["tool_calls"] and not later_rejs:
+                    if (candidate["tool_calls"] or "```citations" in (candidate.get("text") or "")) and not later_rejs:
                         repaired_turn = candidate
                 # 1. Pre-rejection prevention pair at s_t.
                 dpo_rows.append({
@@ -535,7 +543,8 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             if surface["required_tools"] and not (set(surface["required_tools"]) & called_in_session):
                 continue
             adapted = _adapt_turn_for_preloaded(turn, surface["active_tools"], preload_from_judge=preload_from_judge)
-            if not adapted["tool_calls"]:
+            prior_tool_msgs = sum(1 for m in prefix if m.get("role") == "tool")
+            if not adapted["tool_calls"] and not (has_grounded_citations and prior_tool_msgs >= 2):
                 continue
             sft_rows.append({
                 "schema": SFT_SCHEMA,
@@ -617,6 +626,10 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
         return "missed_loadable_tool"
     if any(_is_scoped_read(c) for c in t_calls) and any(c.get("name") == "read" for c in s_calls) and not any(_is_scoped_read(c) for c in s_calls):
         return "unscoped_read"
+    shallow_only = {"list_dir", "summarize"}
+    deep_tools = {"read", "grep", "verify", "command", "task", "fanout_plan", "delegate_dispatch"}
+    if (t_names & deep_tools) and s_names and s_names <= shallow_only and not (t_names <= shallow_only):
+        return "shallow_investigation"
     return None
 
 

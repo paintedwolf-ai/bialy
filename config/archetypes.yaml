@@ -73,6 +73,13 @@ archetypes:
     brief: Ask for an architectural, maintainability, or design review of part of the codebase—or include feedback/analysis from another engineer or agent—and explicitly instruct the assistant NOT to make code changes yet ("Don't make changes, just give me a report", "Is it worth changing X?", "What would you recommend?"). Then in follow-ups, push back on a tradeoff or clarify scope, and finally ask the assistant to implement what it recommended ("Do as you would recommend", "OK great, add it", "Build this as you recommend now").
     workflows: {implement-dispatch: 0.15, recon-auto: 0.15, plan-auto: 0.15}
     prompt_timeout: 120m
+  - id: compliance_audit
+    per_workspace: 8
+    follow_up_rate: 0.6
+    attachment_rate: 0.25
+    brief: Ask the assistant to do a thorough compliance or conformance audit of the repository against its documented specification, architecture rules, RFC/standard, or test contract—requiring it to inspect the actual implementation modules across the codebase (not just top-level docs or directory listings) and run the test or conformance suite to verify behavior before reporting findings. Follow-ups challenge whether it actually read the implementation or ran the tests, or ask to fix a gap uncovered by the audit.
+    workflows: {recon-auto: 0.3, implement-dispatch: 0.3}
+    prompt_timeout: 150m
   - id: run_and_verify
     per_workspace: 16
     brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running background processes or interactive terminal REPL/CLI prompts that wait for interactive input.
