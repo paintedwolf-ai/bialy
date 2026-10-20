@@ -10,7 +10,7 @@ fleet:
   memory: 8g                       # per runner (a cap, not a reservation)
   pids: 2048                       # per runner
   tasks_per_shard: 8               # most tasks one runner drives, one after another, in one project
-  shard_minutes: 480               # a shard holds only as many tasks as fit, at their prompt budget
+  shard_minutes: 720               # a shard holds only as many tasks as fit, at their prompt budget
   prompt_timeout: 60m              # per prompt; a turn that finishes slowly under load is still a label
   image: bialy-runner
 split:
@@ -36,7 +36,7 @@ run:
   scanner_candidate: null          # for candidate: the downstream repository's artifact directory (opengrep, provenance.json, source-lock.json)
   engine_on:
     enabled: true                  # a second pass with the pilot heads deciding
-    deadline_ms: 60000             # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long
+    deadline_ms: 120000            # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long
   skillreq:
     writer: null                   # the first usable writer in models.yaml
     families: {clear: 2, nearmiss: 1, multi: 1}   # request families per skill and kind
