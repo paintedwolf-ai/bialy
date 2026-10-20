@@ -626,6 +626,7 @@ def collect(run_dir, pass_name, tasks_dir):
     stats = {"rows": 0, "shards": 0, "tasks": 0, "settled": 0}
     driven = []
     requests_out = []
+    retention_out = []
     with open(out, "w", encoding="utf-8") as fh:
         for shard in sorted((run_dir / "shards").iterdir()):
             rows = shard / "rows.jsonl"
@@ -661,8 +662,15 @@ def collect(run_dir, pass_name, tasks_dir):
                 for line in requests_path.read_text(encoding="utf-8").splitlines():
                     if line.strip():
                         requests_out.append(line)
+            retention_path = shard / "retention.jsonl"
+            if retention_path.exists():
+                for line in retention_path.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        retention_out.append(line)
     if requests_out:
         (run_dir / "requests.jsonl").write_text("\n".join(requests_out) + "\n", encoding="utf-8")
+    if retention_out:
+        (run_dir / "retention.jsonl").write_text("\n".join(retention_out) + "\n", encoding="utf-8")
     with open(run_dir / "tasks-driven.jsonl", "w", encoding="utf-8") as fh:
         for task in driven:
             fh.write(json.dumps(task, ensure_ascii=False) + "\n")

@@ -18,7 +18,7 @@ CONFIG = ROOT / "config"
 
 PERMISSIVE = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unlicense", "MIT OR Apache-2.0", "Unlicense OR MIT"}
 # Project workflows the runner image installs in every workspace.
-WORKFLOWS = ("implement-dispatch",)
+WORKFLOWS = ("implement-dispatch", "plan-auto", "recon-auto", "security-auto")
 # Where a task's session runs: a checkout of a pinned public repository, or an
 # empty directory a request starts a new project in, for one stack.
 WORKSPACE_KINDS = ("repository", "stack")

@@ -111,9 +111,13 @@ def test_worker_archetypes_start_their_workflow_on_their_share(factory, tmp_path
     if version is not None:
         manifest["version"] = version
         root = tmp_path / "workflows"
-        path = root / "implement-dispatch" / "workflow.yaml"
-        path.parent.mkdir(parents=True)
-        path.write_text(yaml.safe_dump(manifest))
+        for wf_dir in tasks.WORKFLOW_ROOT.iterdir():
+            if (wf_dir / "workflow.yaml").exists():
+                wf_manifest = yaml.safe_load((wf_dir / "workflow.yaml").read_text())
+                wf_manifest["version"] = version
+                path = root / wf_dir.name / "workflow.yaml"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(yaml.safe_dump(wf_manifest))
         monkeypatch.setattr(tasks, "WORKFLOW_ROOT", root)
     repo = factory.repos[0]
     raw = [{"prompt": "Update module number %d and its tests, and document the change in the guide." % i,
