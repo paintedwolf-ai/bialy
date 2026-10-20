@@ -626,8 +626,10 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
         return "missed_loadable_tool"
     if any(_is_scoped_read(c) for c in t_calls) and any(c.get("name") == "read" for c in s_calls) and not any(_is_scoped_read(c) for c in s_calls):
         return "unscoped_read"
+    if "fetch_url" in t_names and "fetch_url" not in s_names and s_names <= {"web_search"}:
+        return "snippet_only_web_research"
     shallow_only = {"list_dir", "summarize"}
-    deep_tools = {"read", "grep", "verify", "command", "task", "fanout_plan", "delegate_dispatch"}
+    deep_tools = {"read", "grep", "verify", "command", "task", "fanout_plan", "delegate_dispatch", "web_search", "fetch_url", "http_request"}
     if (t_names & deep_tools) and s_names and s_names <= shallow_only and not (t_names <= shallow_only):
         return "shallow_investigation"
     return None

@@ -45,6 +45,17 @@ fi
 mkdir -p /cfg
 cp "$out/providers.local.yaml" "$out/model-policy.yaml" /cfg/
 printf 'rules: []\nnever_ask: true\n' > /cfg/approvals.yaml
+cat <<'EOF' > /cfg/web-research-config.yaml
+search_enabled: true
+warming: true
+guess_domains: true
+warming_caps:
+  seed_warms_per_hour: 64
+  turn_hosts: 4
+  turn_probes: 6
+  seed_probes: 10
+  scheduled_probes: 24
+EOF
 set -a
 # shellcheck disable=SC1091
 . "$out/sidecar.env"

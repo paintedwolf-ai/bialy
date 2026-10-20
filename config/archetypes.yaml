@@ -99,11 +99,11 @@ archetypes:
     brief: Ask something that needs the live web or browser inspection - a CVE, an HTTP endpoint's live response, a status page, or opening a page in the browser to capture a screenshot, measure element layout/bounding boxes, or review accessibility.
   - id: docs_online
     per_workspace: 14
-    brief: Ask to look something up in documentation online - how a dependency's API or config option works per its official docs, what a framework's guide recommends, the latest published version of a package, a migration guide between versions, or what an error message means according to the project that raises it.
+    brief: Ask to look something up in documentation online - how a dependency's API or config option works per its official docs, what a framework's guide recommends, the latest published version of a package, a migration guide between versions, what an error message means according to the project that raises it, or to research online and compare the best current libraries/dependencies for a specific task in this language and recommend one with fetched evidence.
     workflows: {implement-dispatch: 0.25}
   - id: dependencies
-    per_workspace: 6
-    brief: Ask to upgrade, audit, or add a dependency, or to check what a dependency upgrade would break. Often ask to check documentation or migration guides for breaking changes in the new version.
+    per_workspace: 8
+    brief: Ask to research online and recommend the best current dependency or library for a specific capability in this ecosystem (comparing candidate packages on latest version, maintenance activity, compatibility, and API ergonomics from fetched package/documentation pages), or to upgrade, audit, or add a dependency and check official documentation or migration guides for breaking changes.
     workflows: {implement-dispatch: 0.4}
     prompt_timeout: 90m
   - id: security
@@ -172,9 +172,16 @@ archetypes:
   - id: prototype
     workspace: stack
     per_workspace: 10
-    brief: Ask for a quick spike or proof of concept before committing to an approach - try a library, an API, or an algorithm for the idea given, and report whether it works. Often ask the assistant to check the library's documentation for how it is meant to be used.
-    workflows: {implement-dispatch: 0.2}
+    brief: Ask for a quick spike or proof of concept before committing to an approach - research online to find the best current library or dependency on this stack for a specific task, compare the top candidates with fetched documentation/package evidence, and build and run a small spike with the chosen library to report whether it works.
+    workflows: {implement-dispatch: 0.25}
     prompt_timeout: 90m
+  - id: public_api_cli
+    workspace: stack
+    per_workspace: 8
+    follow_up_rate: 0.5
+    brief: Ask the assistant to build a working CLI or small tool on this stack that fetches live real-world data—such as the current weather for a city ("Build me a Python CLI that tells me the current weather"), live currency exchange rates, public holiday schedules, earthquake/weather alerts, geocoding, or package registry release metadata—without naming a specific API provider or supplying any API key, so the assistant must search the web to discover a free keyless public API, read its documentation page for the endpoint URL and JSON schema, implement the tool, and run it against the live endpoint to verify real output. Follow-ups ask to add a flag (such as unit conversion, multi-day forecast, or JSON output) or ask which public API and documentation page it used.
+    workflows: {implement-dispatch: 0.25}
+    prompt_timeout: 120m
   - id: scaffold
     workspace: stack
     per_workspace: 8
