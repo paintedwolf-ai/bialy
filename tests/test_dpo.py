@@ -531,4 +531,258 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     assert mr_dpo[0]["rejection_code"] == "multi_root_prefix_missing"
 
 
+def test_security_survey_workflow_and_report_document_defects(factory, tmp_path):
+    archs = {a.id: a for a in factory.archetypes}
+    assert archs["security_survey"].workflows == {"security-auto": 1.0}
+    assert archs["security_survey"].timeout("security-auto") == "180m"
+    assert archs["security"].workflows == {"implement-dispatch": 0.35}
+    assert "security-auto" not in archs["security"].workflows
+
+    # Coordinator session running security-auto + child security-reviewer session + defective vs clean report closeout.
+    coord_session = {
+        "session_id": "sec-coord",
+        "parent_session_id": None,
+        "root_session": "sec-coord",
+        "workspace": "flask",
+        "archetype": "security_survey",
+        "model": "glm-5.3-flash",
+        "status": "settled",
+        "workflow_id": "security-auto",
+        "messages": [
+            {"id": "u-sec", "role": "user", "content": "Run a full security survey of Flask's session and request parsing surfaces."},
+            {
+                "id": "a-plan-scan",
+                "role": "assistant",
+                "content": "",
+                "tool_calls_json": json.dumps([
+                    {"id": "c1", "name": "scan_summary", "args": {"scan_id": "scan-secrets-1"}},
+                    {"id": "c2", "name": "scan_query", "args": {"scan_id": "scan-sast-1", "view": "groups"}},
+                ]),
+            },
+            {
+                "id": "t-plan-scan",
+                "role": "tool",
+                "tool_result_json": json.dumps([
+                    {"tool_call_id": "c1", "tool_name": "scan_summary", "content": "0 secret findings"},
+                    {"tool_call_id": "c2", "tool_name": "scan_query", "content": "group g-cookie: cookie signing"},
+                ]),
+            },
+            {
+                "id": "a-plan-fanout",
+                "role": "assistant",
+                "content": "",
+                "tool_calls_json": json.dumps([
+                    {
+                        "id": "c3",
+                        "name": "fanout_plan",
+                        "args": {
+                            "threat_model": {
+                                "context": "Web framework processing untrusted HTTP requests",
+                                "entrypoints": ["src/flask/wrappers.py"],
+                                "trust_boundaries": ["HTTP client -> WSGI request/session"],
+                                "assets": ["session signing key"],
+                                "attacker_goals": ["session forgery"],
+                            },
+                            "legs": [
+                                {
+                                    "id": "leg-1",
+                                    "title": "Audit cookie session signing",
+                                    "role": "security-reviewer",
+                                    "scope": ["src/flask/sessions.py"],
+                                    "scan_refs": ["scan-sast-1"],
+                                    "objectives": ["Verify fallback signing key handling"],
+                                }
+                            ],
+                        },
+                    },
+                    {"id": "c4", "name": "workflow_advance", "args": {}},
+                ]),
+            },
+            {
+                "id": "t-plan-fanout",
+                "role": "tool",
+                "tool_result_json": json.dumps([
+                    {"tool_call_id": "c3", "tool_name": "fanout_plan", "content": "Planned execute/leg-1"},
+                    {"tool_call_id": "c4", "tool_name": "workflow_advance", "content": "Advanced to execute"},
+                ]),
+            },
+            {
+                "id": "a-report-defective",
+                "role": "assistant",
+                "content": "## Security survey\n\nIncomplete report missing claim-1.",
+                "grounding_json": json.dumps({
+                    "traced": True,
+                    "cited_evidence": [{"handle": "scan#1", "verdict": "traced"}],
+                }),
+                "completion_report_json": json.dumps({
+                    "headline": "Incomplete survey",
+                    "rating": {"level": "hardening", "why": "Hardening needed."},
+                    "defects": [{"code": "REPORT_CLAIM_UNREPORTED", "message": "Claim claim-1 is missing from findings."}],
+                }),
+            },
+            {
+                "id": "a-report-clean",
+                "role": "assistant",
+                "content": "## Security survey\n\nAll claims and scan groups accounted for.",
+                "grounding_json": json.dumps({
+                    "traced": True,
+                    "cited_evidence": [{"handle": "scan#1", "path": "src/flask/sessions.py", "line": 42, "verdict": "traced"}],
+                }),
+                "completion_report_json": json.dumps({
+                    "headline": "Session signing requires explicit SECRET_KEY rotation discipline.",
+                    "summary": "Surveyed request and session surfaces.",
+                    "rating": {"level": "hardening", "why": "No exploitable RCE; one session hardening claim survived."},
+                    "findings": [
+                        {
+                            "id": "claim-1",
+                            "title": "Static SECRET_KEY fallback risk",
+                            "claim": "hardening",
+                            "disposition": "act",
+                            "where": [{"handle": "scan#1", "path": "src/flask/sessions.py", "line": 42}],
+                            "Fix": "Enforce non-default SECRET_KEY at startup.",
+                        }
+                    ],
+                    "set_asides": [{"scanner": "lycaon-secrets", "paths": ["tests/**"], "reason": "Test fixtures only"}],
+                    "limits": ["Static analysis only"],
+                    "ask": {"do": "Enforce SECRET_KEY validation", "effort": "small", "why": "Prevent weak signing keys"},
+                }),
+            },
+        ],
+    }
+    worker_session = {
+        "session_id": "sec-worker-1",
+        "parent_session_id": "sec-coord",
+        "root_session": "sec-coord",
+        "workspace": "flask",
+        "archetype": "security_survey",
+        "model": "glm-5.3-flash",
+        "status": "settled",
+        "workflow_id": "security-auto",
+        "messages": [
+            {"id": "u-w1", "role": "user", "content": "Audit cookie session signing in src/flask/sessions.py."},
+            {
+                "id": "a-w1-read",
+                "role": "assistant",
+                "content": "",
+                "tool_calls_json": json.dumps([
+                    {"id": "cw1", "name": "read", "args": {"path": "src/flask/sessions.py", "start_line": 1, "end_line": 80}},
+                ]),
+            },
+            {
+                "id": "t-w1-read",
+                "role": "tool",
+                "tool_result_json": json.dumps([
+                    {"tool_call_id": "cw1", "tool_name": "read", "content": "42: secret_key = app.config['SECRET_KEY']"},
+                ]),
+            },
+            {
+                "id": "a-w1-ungrounded",
+                "role": "assistant",
+                "content": "",
+                "tool_calls_json": json.dumps([
+                    {"id": "cw2", "name": "complete_leg", "args": {"leg_status": "completed", "findings": [{"title": "Weak key"}]}},
+                ]),
+            },
+            {
+                "id": "t-w1-ungrounded",
+                "role": "tool",
+                "tool_result_json": json.dumps([
+                    {
+                        "tool_call_id": "cw2",
+                        "tool_name": "complete_leg",
+                        "is_error": True,
+                        "content": "Status: error\nCode: FINDING_UNGROUNDED\nFindings require path, line, and excerpt.",
+                    },
+                ]),
+            },
+            {
+                "id": "a-w1-repaired",
+                "role": "assistant",
+                "content": "",
+                "tool_calls_json": json.dumps([
+                    {
+                        "id": "cw3",
+                        "name": "complete_leg",
+                        "args": {
+                            "leg_status": "completed",
+                            "summary": "Reviewed session signing.",
+                            "findings": [
+                                {
+                                    "title": "Static SECRET_KEY fallback risk",
+                                    "claim": "hardening",
+                                    "severity": "medium",
+                                    "path": "src/flask/sessions.py",
+                                    "line": 42,
+                                    "excerpt": "secret_key = app.config['SECRET_KEY']",
+                                    "reachable": "Every signed cookie request",
+                                    "attacker": "Remote client holding forged cookie",
+                                    "impact": "Session tampering if key is predictable",
+                                    "remediation": "Require high-entropy key",
+                                }
+                            ],
+                            "objectives_met": ["Verify fallback signing key handling"],
+                            "coverage_gaps": [],
+                        },
+                    },
+                ]),
+            },
+            {
+                "id": "t-w1-repaired",
+                "role": "tool",
+                "tool_result_json": json.dumps([
+                    {"tool_call_id": "cw3", "tool_name": "complete_leg", "content": "Leg execute/leg-1 completed."},
+                ]),
+            },
+        ],
+    }
+
+    tx_path = tmp_path / "sec_tx.jsonl"
+    tx_path.write_text(json.dumps(coord_session) + "\n" + json.dumps(worker_session) + "\n")
+    sft_out = tmp_path / "sec_sft.jsonl"
+    dpo_out = tmp_path / "sec_dpo.jsonl"
+    stats = dpo.extract(tx_path, out_sft=sft_out, out_dpo=dpo_out)
+    assert stats["rejection_codes"] == {"REPORT_CLAIM_UNREPORTED": 1, "FINDING_UNGROUNDED": 1}
+
+    sft_rows = [json.loads(line) for line in sft_out.read_text().splitlines()]
+    # Defective report is excluded from SFT; clean report and clean worker complete_leg are kept.
+    assert len(sft_rows) == 5
+    clean_report_sft = next(r for r in sft_rows if not r["target"]["tool_calls"])
+    assert '"id": "claim-1"' in clean_report_sft["target"]["text"]
+    assert '"disposition": "act"' in clean_report_sft["target"]["text"]
+    assert '"evidence": "scan#1"' in clean_report_sft["target"]["text"]
+
+    # Check shadow divergence rules for security workflow tools, scan accounting, and report document fences.
+    surface = {"surface": {"active_tools": ["scan_summary", "scan_query", "scan_list", "fanout_plan", "workflow_advance", "complete_leg", "submit_verdict"], "loadable": []}, "prompt": []}
+    assert dpo.classify_divergence(
+        surface,
+        {"tool_calls": [{"name": "fanout_plan", "arguments": '{"legs":[{"id":"leg-1","role":"security-reviewer"}],"threat_model":{"context":"web"}}'}, {"name": "workflow_advance", "arguments": "{}"}]},
+        {"tool_calls": [{"name": "scan_summary", "arguments": '{"scan_id":"s1"}'}]},
+    ) == "missed_workflow_verdict_or_plan"
+
+    assert dpo.classify_divergence(
+        surface,
+        {"tool_calls": [{"name": "fanout_plan", "arguments": '{"legs":[{"id":"leg-1","role":"security-reviewer"}],"threat_model":{"context":"web"}}'}]},
+        {"tool_calls": [{"name": "fanout_plan", "arguments": '{"legs":[{"id":"leg-1","role":"skeptic"}],"threat_model":{"context":"web"}}'}]},
+    ) == "malformed_workflow_control_args"
+
+    assert dpo.classify_divergence(
+        surface,
+        {"tool_calls": [{"name": "complete_leg", "arguments": '{"leg_status":"completed","findings":[{"path":"a.py","line":1,"excerpt":"x"}]}'}]},
+        {"tool_calls": [{"name": "complete_leg", "arguments": '{"leg_status":"completed","findings":[{"path":"a.py"}]}'}]},
+    ) == "malformed_workflow_control_args"
+
+    assert dpo.classify_divergence(
+        surface,
+        {"tool_calls": [{"name": "scan_summary", "arguments": '{"scan_id":"s1"}'}, {"name": "scan_query", "arguments": '{"scan_id":"s1","view":"groups"}'}]},
+        {"tool_calls": [{"name": "scan_list", "arguments": "{}"}]},
+    ) == "missed_scan_accounting"
+
+    assert dpo.classify_divergence(
+        surface,
+        {"text": clean_report_sft["target"]["text"], "tool_calls": []},
+        {"text": '## Security survey\n\n```json\n{"headline":"h","rating":{"level":"hardening","why":"w"},"findings":[],"set_asides":[],"ask":{"do":"d","effort":"s","why":"w"},"cited_evidence":[{"evidence":"scan#1"}]}\n```', "tool_calls": []},
+    ) == "closeout_fence_missing_or_malformed"
+
+
+
 

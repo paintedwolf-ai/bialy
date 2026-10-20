@@ -107,10 +107,17 @@ archetypes:
     workflows: {implement-dispatch: 0.4}
     prompt_timeout: 90m
   - id: security
-    per_workspace: 8
-    brief: Ask for a security review of part of the code, to run the project's security/SAST/secret scanners and summarize or query findings, to triage findings from a scan, or to fix a reported vulnerability and compare the scan results before and after the fix to prove the finding is resolved.
-    workflows: {implement-dispatch: 0.2, security-auto: 0.4}
-    prompt_timeout: 90m
+    per_workspace: 6
+    follow_up_rate: 0.45
+    brief: Ask to run the project's security, SAST, and secret scanners on this repository (or a specific package/module) and summarize or query the findings, to triage scanner findings into real exploitable issues versus false positives or test-fixture noise, or to fix a specific vulnerability and compare the scan results before and after the fix to prove the finding is resolved without introducing new issues.
+    workflows: {implement-dispatch: 0.35}
+    prompt_timeout: 120m
+  - id: security_survey
+    per_workspace: 6
+    follow_up_rate: 0.45
+    brief: Ask for a comprehensive security audit and threat-model survey of this repository (or of its untrusted-input boundaries, parser/handler entrypoints, authentication/session logic, file/path handling, or command/network execution surfaces) to identify exploitable vulnerabilities with concrete reachability, attacker control, and impact, separate hardening opportunities and accepted residuals, and account for scanner findings and out-of-scope set-asides—without making code changes during the survey. Follow-ups ask to drill into a specific surviving or refuted claim, explain why a scanner group was set aside, or propose a concrete patch for the highest-risk finding.
+    workflows: {security-auto: 1.0}
+    prompt_timeout: 180m
   - id: secrets_and_auth
     per_workspace: 10
     new_files: true
@@ -166,8 +173,8 @@ archetypes:
   - id: greenfield_auth
     workspace: stack
     per_workspace: 6
-    follow_up_rate: 0.5
-    brief: Ask to build a new service, CLI, or web app on this stack that includes OIDC authentication (discovery, client credentials or authorization-code flow, and JWT/JWKS validation), signed webhook handling, or token-authenticated API endpoints, using generated managed secrets for all client secrets, signing keys, and API tokens without hardcoding or printing raw secret values, and verifying both valid and invalid credentials against the running service.
+    follow_up_rate: 0.55
+    brief: Ask to build a new service, CLI, or web app on this stack that includes OIDC authentication (discovery, client credentials or authorization-code flow, and JWT/JWKS validation), signed webhook handling, or token-authenticated API endpoints, using generated managed secrets for all client secrets, signing keys, and API tokens without hardcoding or printing raw secret values, and verifying both valid and invalid credentials against the running service. Follow-ups ask to run the secret and SAST scanners on the newly created project to confirm zero leaked secrets or injection/auth issues (or fix and re-scan to compare results), rotate a credential, or revoke temporary test secrets.
     prompt_timeout: 120m
   - id: prototype
     workspace: stack
