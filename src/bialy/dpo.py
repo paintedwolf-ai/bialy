@@ -508,12 +508,132 @@ SCAN_ACCOUNTING_TOOLS = {"scan_summary", "scan_query", "scan_run", "scan_compare
 VALID_REPORT_RATINGS = {"clear", "hardening", "elevated", "critical"}
 VALID_FINDING_DISPOSITIONS = {"act", "accept", "held", "unresolved"}
 
+# Retired OAR codes from pre-Language-v1 command surface (P33). Filtering these
+# prevents historical USE_*_NATIVE or COMMAND_NOT_ARGV pairs from penalizing
+# valid Language v1 command programs or pushing the model toward retired schemas.
+RETIRED_COMMAND_REJECTION_PREFIXES = (
+    "USE_READ_NATIVE",
+    "USE_GREP_NATIVE",
+    "USE_FIND_NATIVE",
+    "USE_LIST_DIR_NATIVE",
+    "USE_WRITE_NATIVE",
+    "USE_STAT_NATIVE",
+    "USE_WC_NATIVE",
+    "USE_DIFF_NATIVE",
+    "USE_JQ_NATIVE",
+    "USE_DELETE_NATIVE",
+    "USE_COPY_NATIVE",
+    "USE_MOVE_NATIVE",
+    "USE_MKDIR_NATIVE",
+    "USE_GIT_",
+    "COMMAND_NOT_ARGV",
+)
+
+# Structured domain tools that also expose in-process built-in commands inside `command`.
+COMMAND_BUILTIN_EQUIVALENTS = {
+    "survey_repo": ("repo-map", "survey-repo", "survey_repo"),
+    "summarize": ("summarize", "outline"),
+    "code_rewrite": ("code-rewrite", "code_rewrite"),
+    "jq_edit": ("jq-edit", "jq_edit"),
+}
+
+SHALLOW_CMD_STAGE_RE = re.compile(
+    r"^\s*(?:ls(?:\s+-[a-zA-Z0-9]+)*(?:\s+\S+)?|pwd|find\s+\S+\s+-maxdepth\s+1(?:\s+.*)?)\s*$"
+)
+SCOPED_CMD_READ_RE = re.compile(
+    r"(?:\bsed\s+-n\s+['\"]?\d+,\d+p|\bhead\s+-n\s*\d+|\btail\s+-n\s*[+]?\d+|\boutline\b|\brepo-map\b|\bsurvey-repo\b|\bsummarize\b)"
+)
+UNSCOPED_CMD_CAT_RE = re.compile(r"^\s*(?:cat|nl)\b")
+MUTATING_CMD_RE = re.compile(
+    r"(?:>>?|2>>?|&>>?|\|\s*tee\b|<<-?['\"]?\w+|\bsed\s+(?:-[a-zA-Z]*i|--in-place)\b"
+    r"|\b(?:rm|rmdir|cp|mv|mkdir|touch|chmod|chown|tar|unzip|code-rewrite|jq-edit)\b"
+    r"|\bgit\s+(?:add|commit|restore|checkout|switch|merge|rebase|reset|clean|stash\s+(?:save|push|pop|apply|drop))\b"
+    r"|\b(?:python3?|node)\s+-(?:c|e)\b)"
+)
+EXEC_OR_TEST_CMD_RE = re.compile(
+    r"\b(?:pytest|py\.test|cargo\s+(?:test|check|build|clippy|run)|go\s+(?:test|build|vet|run)"
+    r"|npm\s+(?:test|run)|pnpm\s+(?:test|run)|yarn\s+(?:test|run)|bun\s+(?:test|run)"
+    r"|mvn\s+test|gradle\s+test|dotnet\s+test|bundle\s+exec|rake\b|ctest\b|zig\s+build\s+test|\./task\b|make\b)\b"
+)
+READONLY_ORIENTATION_CMD_RE = re.compile(
+    r"^\s*(?:cat|head|tail|nl|sed\s+-n|grep|rg|find|ls|stat|wc|diff|jq|yq|git\s+(?:status|diff|log|show|blame|rev-parse|branch|stash\s+list))\b"
+)
+
+
+def is_retired_command_rejection(code):
+    """Return True when a rejection code belongs to a retired pre-Language-v1 USE_*_NATIVE or COMMAND_NOT_ARGV rule."""
+    if not code:
+        return False
+    c = str(code).strip()
+    return any(c == p or c.startswith(p) for p in RETIRED_COMMAND_REJECTION_PREFIXES)
+
+
+def _command_program_and_args(call):
+    if call.get("name") != "command":
+        return "", {}
+    try:
+        args = json.loads(call.get("arguments") or "{}")
+    except ValueError:
+        return "", {}
+    if not isinstance(args, dict):
+        return "", {}
+    cmd = str(args.get("command") or args.get("cmd") or "").strip()
+    if not cmd and isinstance(args.get("pipeline"), list):
+        cmd = " | ".join(str(s) for s in args["pipeline"] if s)
+    return cmd, args
+
+
+def _is_mutating_command(call):
+    """Return True when a `command` invocation mutates files, redirects output, or runs mutating Git/process actions."""
+    prog, args = _command_program_and_args(call)
+    if not prog and not args:
+        return False
+    if args.get("stdout_to") or args.get("stderr_to"):
+        return True
+    return bool(MUTATING_CMD_RE.search(prog))
+
+
+def _is_exec_or_test_command(call):
+    """Return True when a `command` invocation runs a build/test suite, verification check, or background job."""
+    prog, args = _command_program_and_args(call)
+    if not prog and not args:
+        return False
+    if args.get("verification") or args.get("background"):
+        return True
+    return bool(EXEC_OR_TEST_CMD_RE.search(prog))
+
+
+def _is_shallow_command(call):
+    """Return True when a `command` invocation only performs top-level directory listing (`ls`, `pwd`, `find -maxdepth 1`)."""
+    prog, _ = _command_program_and_args(call)
+    if not prog or _is_mutating_command(call) or _is_exec_or_test_command(call):
+        return False
+    stages = [s.strip() for s in re.split(r"(?:\|\||&&|[|;\n])", prog) if s.strip()]
+    return bool(stages) and all(bool(SHALLOW_CMD_STAGE_RE.match(s)) for s in stages)
+
+
+def _uses_command_builtin_for(calls, tool_name):
+    """Return True when any `command` call invokes the in-process built-in equivalent of `tool_name`."""
+    builtins = COMMAND_BUILTIN_EQUIVALENTS.get(tool_name) or ()
+    if not builtins:
+        return False
+    for c in calls:
+        prog, _ = _command_program_and_args(c)
+        if not prog:
+            continue
+        for b in builtins:
+            if re.search(r"(?:^|[|;&\n]\s*)%s\b" % re.escape(b), prog):
+                return True
+    return False
+
 
 def synthesized_surface(row, min_score=3, preload_from_judge=True, observed_tools=None):
     """Compute the offered and preloaded tool/skill surface for a turn."""
     obs = set(observed_tools or ())
     if not row:
-        base = sorted({"read", "edit", "write", "command", "request_tools", "skills_read"} | obs)
+        # Preserve legacy schemas only when observed in the session; otherwise default to the Language v1 command floor.
+        legacy = obs & {"read", "write", "edit", "list_dir", "grep", "find_by_name"}
+        base = sorted({"command", "command_output", "command_stop", "summarize", "update_progress", "request_tools", "skills_read"} | legacy | obs)
         return {"floor": base, "active_tools": base, "loadable": [],
                 "preloaded_guides": [], "required_tools": [], "required_skills": []}
     offered = row.get("offered") or {}
@@ -534,6 +654,7 @@ def synthesized_surface(row, min_score=3, preload_from_judge=True, observed_tool
         preloaded = sorted(set(preloaded) | set(required_tools))
     active = sorted(set(floor) | set(preloaded))
     return {
+        "name": row.get("surface") or (row.get("state") or {}).get("surface") or "",
         "floor": floor,
         "active_tools": active,
         "loadable": loadable,
@@ -615,16 +736,36 @@ def _completed_openings(messages):
 
 
 def _is_scoped_read(call):
-    if call.get("name") != "read":
-        return False
-    try:
-        args = json.loads(call.get("arguments") or "{}")
-    except ValueError:
-        return False
-    return bool(isinstance(args, dict) and (set(args) & SCOPED_READ_KEYS))
+    name = call.get("name")
+    if name == "read":
+        try:
+            args = json.loads(call.get("arguments") or "{}")
+        except ValueError:
+            return False
+        return bool(isinstance(args, dict) and (set(args) & SCOPED_READ_KEYS))
+    if name == "command":
+        prog, _ = _command_program_and_args(call)
+        return bool(prog and SCOPED_CMD_READ_RE.search(prog))
+    return False
+
+
+def _is_unscoped_read_call(call):
+    name = call.get("name")
+    if name == "read":
+        return not _is_scoped_read(call)
+    if name == "command":
+        prog, _ = _command_program_and_args(call)
+        return bool(
+            prog
+            and UNSCOPED_CMD_CAT_RE.search(prog)
+            and not SCOPED_CMD_READ_RE.search(prog)
+            and not _is_mutating_command(call)
+        )
+    return False
 
 
 ROUTINE_ORIENTATION_TOOLS = {"read", "grep", "list_dir", "find_by_name", "summarize"}
+MULTI_ROOT_CMD_TOKEN_RE = re.compile(r"(?:^|\s|['\"])@[A-Za-z0-9_.-]+/")
 
 
 def _has_multi_root_path(call):
@@ -634,23 +775,97 @@ def _has_multi_root_path(call):
         return False
     if not isinstance(args, dict):
         return False
-    path = args.get("path")
-    return isinstance(path, str) and path.strip().startswith("@")
+    for key in ("path", "file_path", "cwd", "stdout_to", "stderr_to", "stdin_from"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip().startswith("@"):
+            return True
+    prog, _ = _command_program_and_args(call)
+    return bool(prog and MULTI_ROOT_CMD_TOKEN_RE.search(prog))
 
 
 def _is_routine_orientation_turn(turn, idx, steps_since_opening=1):
-    """Return True when a turn only performs unscoped single-root read/grep/list_dir orientation after the opening step."""
+    """Return True when a turn only performs unscoped single-root read/grep/list_dir or read-only command orientation after the opening step."""
     if idx <= 2 or steps_since_opening <= 0:
         return False
     calls = turn.get("tool_calls") or []
     if not calls:
         return False
     for call in calls:
-        if call.get("name") not in ROUTINE_ORIENTATION_TOOLS:
-            return False
         if _is_scoped_read(call) or _has_multi_root_path(call):
             return False
+        name = call.get("name")
+        if name in ROUTINE_ORIENTATION_TOOLS:
+            continue
+        if name == "command":
+            prog, _ = _command_program_and_args(call)
+            if (
+                not prog
+                or _is_mutating_command(call)
+                or _is_exec_or_test_command(call)
+                or not READONLY_ORIENTATION_CMD_RE.search(prog)
+            ):
+                return False
+            continue
+        return False
     return True
+
+
+def translate_legacy_call_to_command(call):
+    """Translate a legacy pre-Language-v1 floor tool call (`read`, `list_dir`, `grep`, `find_by_name`, `write`) into a Language v1 `command` call."""
+    name = call.get("name")
+    if name not in {"read", "list_dir", "grep", "find_by_name", "write"}:
+        return dict(call)
+    try:
+        args = json.loads(call.get("arguments") or "{}")
+    except ValueError:
+        return dict(call)
+    if not isinstance(args, dict):
+        return dict(call)
+    path = str(args.get("path") or args.get("file_path") or ".").strip() or "."
+    cmd_args = {}
+    if name == "read":
+        ranges = args.get("ranges")
+        start = args.get("start_line")
+        end = args.get("end_line")
+        limit = args.get("limit")
+        if isinstance(ranges, list) and ranges and isinstance(ranges[0], dict):
+            r0 = ranges[0]
+            s = int(r0.get("start_line") or r0.get("start") or 1)
+            e = int(r0.get("end_line") or r0.get("end") or (s + 80))
+            cmd_args["command"] = "sed -n '%d,%dp' %s" % (s, e, path)
+        elif start is not None and end is not None:
+            cmd_args["command"] = "sed -n '%d,%dp' %s" % (int(start), int(end), path)
+        elif start is not None and limit is not None:
+            s = int(start)
+            cmd_args["command"] = "sed -n '%d,%dp' %s" % (s, s + int(limit) - 1, path)
+        elif limit is not None:
+            cmd_args["command"] = "head -n %d %s" % (int(limit), path)
+        else:
+            cmd_args["command"] = "cat -n %s" % path
+    elif name == "list_dir":
+        cmd_args["command"] = "ls -la %s" % path
+    elif name == "grep":
+        pat = str(args.get("pattern") or args.get("query") or "").replace("'", "'\\''")
+        cmd_args["command"] = "grep -rn -- '%s' %s" % (pat, path)
+    elif name == "find_by_name":
+        pat = str(args.get("pattern") or args.get("name") or "*").replace("'", "'\\''")
+        cmd_args["command"] = "find %s -name '%s'" % (path, pat)
+    elif name == "write":
+        content = str(args.get("content") or "")
+        cmd_args["command"] = "cat <<'EOF' > %s\n%s\nEOF" % (path, content.rstrip("\n"))
+    return {
+        "id": call.get("id", ""),
+        "name": "command",
+        "arguments": json.dumps(cmd_args, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def translate_legacy_turn_to_command(turn):
+    """Return a copy of an assistant turn with legacy floor file tools translated to Language v1 `command` calls."""
+    calls = turn.get("tool_calls") or []
+    if not calls:
+        return dict(turn)
+    return dict(turn, tool_calls=[translate_legacy_call_to_command(c) for c in calls])
 
 
 def extract(
@@ -662,13 +877,23 @@ def extract(
     preload_from_judge=True,
     teacher_models=None,
     max_routine_reads_per_session=6,
+    drop_retired_command_rejections=True,
+    translate_legacy_tools=False,
 ):
     """Extract Stage 1 SFT rows and Stage 2 DPO pairs from transcripts and judged rows."""
     by_session, by_opening = load_judged_index(rows_paths)
     teachers = set(teacher_models) if teacher_models else None
     sft_rows = []
     dpo_rows = []
-    stats = {"sessions": 0, "sft_rows": 0, "dpo_rows": 0, "by_source": {}, "rejection_codes": {}, "capped_routine_sft": 0}
+    stats = {
+        "sessions": 0,
+        "sft_rows": 0,
+        "dpo_rows": 0,
+        "by_source": {},
+        "rejection_codes": {},
+        "capped_routine_sft": 0,
+        "dropped_retired_rejections": 0,
+    }
 
     for session in iter_transcripts(transcripts_path):
         stats["sessions"] += 1
@@ -710,6 +935,13 @@ def extract(
             host_user_rej = parse_host_user_rejection(next_msg)
             if not rejections and host_user_rej is not None:
                 rejections = [host_user_rej]
+            if drop_retired_command_rejections and rejections:
+                retired = [r for r in rejections if is_retired_command_rejection(r.get("code"))]
+                if retired:
+                    stats["dropped_retired_rejections"] += len(retired)
+                    rejections = [r for r in rejections if not is_retired_command_rejection(r.get("code"))]
+                    if not rejections:
+                        continue
             turn_text = turn.get("text") or ""
             host_assembled = is_host_assembled_closeout(msg)
             defect_code = report_document_defect_code(msg)
@@ -879,9 +1111,15 @@ def extract(
                 continue
             if surface["required_skills"] and "skills_read" not in called_in_session:
                 continue
-            if surface["required_tools"] and not (set(surface["required_tools"]) & called_in_session):
-                continue
+            if surface["required_tools"]:
+                req_satisfied = bool(set(surface["required_tools"]) & called_in_session) or any(
+                    _uses_command_builtin_for(turn["tool_calls"], req_t) for req_t in surface["required_tools"]
+                )
+                if not req_satisfied:
+                    continue
             adapted = _adapt_turn_for_preloaded(turn, surface["active_tools"], preload_from_judge=preload_from_judge)
+            if translate_legacy_tools:
+                adapted = translate_legacy_turn_to_command(adapted)
             prior_tool_msgs = sum(1 for m in prefix if m.get("role") == "tool")
             if not adapted["tool_calls"] and not (has_grounded_citations and prior_tool_msgs >= 1):
                 continue
@@ -1077,6 +1315,18 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
     prior = _prior_tool_signatures(sft_row.get("prompt") or [])
     if s_calls and all((c.get("name", ""), c.get("arguments", "")) in prior for c in s_calls):
         return "repeated_call"
+    surface_name = str(surface.get("name") or "")
+    is_readonly_surface = (
+        surface_name.startswith("observe_")
+        or surface_name.endswith("_readonly")
+        or bool(surface.get("command_is_readonly"))
+    )
+    if (
+        is_readonly_surface
+        and any(_is_mutating_command(c) for c in s_calls)
+        and not any(_is_mutating_command(c) for c in t_calls)
+    ):
+        return "readonly_command_mutation"
     t_names = {c.get("name") for c in t_calls}
     s_names = {c.get("name") for c in s_calls}
     if "skills_read" in t_names and "skills_read" not in s_names:
@@ -1088,24 +1338,58 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
     if (t_names & SCAN_ACCOUNTING_TOOLS) and not (s_names & (t_names & SCAN_ACCOUNTING_TOOLS)):
         return "missed_scan_accounting"
     if "update_progress" in t_names and "update_progress" not in s_names:
-        if s_names & {"write", "edit", "replace_lines", "command"}:
+        has_edit_or_mutating_cmd = bool(s_names & {"write", "edit", "replace_lines", "code_rewrite", "jq_edit"}) or any(
+            c.get("name") == "command"
+            and (_is_mutating_command(c) or _is_exec_or_test_command(c) or not _command_program_and_args(c)[0])
+            for c in s_calls
+        )
+        if has_edit_or_mutating_cmd:
             return "missing_progress_before_edit"
         return "unclosed_progress_before_closeout"
     if (t_names & {"capture_page", "capture_tui"}) and not (s_names & {"capture_page", "capture_tui"}):
         return "missed_visual_capture"
     req_tools = set(surface.get("required_tools") or [])
-    teacher_req = t_names & req_tools
-    if teacher_req and not (s_names & teacher_req):
-        if "command" in s_names and "command" not in t_names:
+    teacher_req = {t for t in req_tools if t in t_names or _uses_command_builtin_for(t_calls, t)}
+    missing_req = {t for t in teacher_req if t not in s_names and not _uses_command_builtin_for(s_calls, t)}
+    if missing_req:
+        if "command" in s_names and ("command" not in t_names or (missing_req <= {"edit", "replace_lines", "verify"})):
             return "shell_fallback"
         return "missed_loadable_tool"
-    if any(_is_scoped_read(c) for c in t_calls) and any(c.get("name") == "read" for c in s_calls) and not any(_is_scoped_read(c) for c in s_calls):
+    if (
+        any(_is_scoped_read(c) for c in t_calls)
+        and any(_is_unscoped_read_call(c) for c in s_calls)
+        and not any(_is_scoped_read(c) for c in s_calls)
+    ):
         return "unscoped_read"
     if "fetch_url" in t_names and "fetch_url" not in s_names and s_names <= {"web_search"}:
         return "snippet_only_web_research"
     shallow_only = {"list_dir", "summarize"}
-    deep_tools = {"read", "grep", "verify", "command", "task", "fanout_plan", "delegate_dispatch", "web_search", "fetch_url", "http_request"}
-    if (t_names & deep_tools) and s_names and s_names <= shallow_only and not (t_names <= shallow_only):
+    deep_tools = {
+        "read",
+        "grep",
+        "survey_repo",
+        "verify",
+        "command",
+        "task",
+        "fanout_plan",
+        "delegate_dispatch",
+        "web_search",
+        "fetch_url",
+        "http_request",
+    }
+
+    def _is_shallow_call(call):
+        return call.get("name") in shallow_only or (call.get("name") == "command" and _is_shallow_command(call))
+
+    def _is_deep_call(call):
+        return call.get("name") in deep_tools and not _is_shallow_call(call)
+
+    if (
+        any(_is_deep_call(c) for c in t_calls)
+        and s_calls
+        and all(_is_shallow_call(c) for c in s_calls)
+        and not all(_is_shallow_call(c) for c in t_calls)
+    ):
         return "shallow_investigation"
     return None
 
@@ -1245,10 +1529,26 @@ def synthesize_multi_root_pairs(sft_rows, companion_label="spec-reference", max_
 
     When a project has two or more attached roots (e.g. an implementation repo and a
     specification/companion repo), Painted Wolf Code requires @<folder>/ path prefixes
-    in file tools and closeout citations, and expects cross-root audits to inspect both roots.
+    in file tools, `command` working directories/redirections, and closeout citations,
+    and expects cross-root audits to inspect both roots.
     """
     synth_sft = []
     synth_dpo = []
+    file_tools = {
+        "read",
+        "list_dir",
+        "grep",
+        "summarize",
+        "survey_repo",
+        "find_by_name",
+        "edit",
+        "replace_lines",
+        "code_rewrite",
+        "jq_edit",
+        "restore_version",
+        "source_history",
+        "write",
+    }
     for row in sft_rows:
         if len(synth_dpo) >= max_pairs:
             break
@@ -1256,21 +1556,37 @@ def synthesize_multi_root_pairs(sft_rows, companion_label="spec-reference", max_
         ws = (meta.get("workspace") or "primary-repo").strip("@/")
         target = row.get("target") or {}
         calls = target.get("tool_calls") or []
-        file_tools = {"read", "list_dir", "grep", "summarize", "find_by_name", "edit", "write"}
-        if not any(c.get("name") in file_tools for c in calls):
+        if not any(c.get("name") in (file_tools | {"command"}) for c in calls):
             continue
         prefixed_calls = []
         unprefixed_calls = []
         changed = False
         for c in calls:
             unprefixed_calls.append(dict(c))
-            if c.get("name") in file_tools:
+            cname = c.get("name")
+            if cname in file_tools:
                 try:
                     args = json.loads(c.get("arguments") or "{}")
                 except ValueError:
                     args = None
-                if isinstance(args, dict) and isinstance(args.get("path"), str) and not args["path"].startswith("@"):
-                    new_args = dict(args, path=_prefix_path_with_root(args["path"], ws))
+                if isinstance(args, dict):
+                    path_key = "path" if isinstance(args.get("path"), str) else ("file_path" if isinstance(args.get("file_path"), str) else None)
+                    if path_key and not args[path_key].startswith("@"):
+                        new_args = dict(args, **{path_key: _prefix_path_with_root(args[path_key], ws)})
+                        prefixed_calls.append(dict(c, arguments=json.dumps(new_args, ensure_ascii=False, sort_keys=True)))
+                        changed = True
+                        continue
+            elif cname == "command" and not _has_multi_root_path(c):
+                _, args = _command_program_and_args(c)
+                if args:
+                    new_args = dict(args)
+                    if isinstance(new_args.get("cwd"), str) and not new_args["cwd"].startswith("@"):
+                        new_args["cwd"] = _prefix_path_with_root(new_args["cwd"], ws)
+                    else:
+                        new_args["cwd"] = "@%s/" % ws
+                    for rkey in ("stdout_to", "stderr_to", "stdin_from"):
+                        if isinstance(new_args.get(rkey), str) and not new_args[rkey].startswith("@"):
+                            new_args[rkey] = _prefix_path_with_root(new_args[rkey], ws)
                     prefixed_calls.append(dict(c, arguments=json.dumps(new_args, ensure_ascii=False, sort_keys=True)))
                     changed = True
                     continue

@@ -947,3 +947,143 @@ def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(fact
     assert len(factory.repos) == 16 and len(factory.stacks) == 15
     assert repo_per_ws == 216 and stack_per_ws == 50 and total_raw == 4206
 
+
+def test_command_rework_surface_and_legacy_rejection_filtering(tmp_path):
+    # 1. Retired USE_*_NATIVE and COMMAND_NOT_ARGV rejections are filtered by default.
+    tx = {
+        "session_id": "cmd-rework-1",
+        "root_session": "cmd-rework-1",
+        "workspace": "oar-gateway",
+        "prompt_group": "oar-gateway:g1",
+        "archetype": "compliance_audit",
+        "model": "glm-5.3-flash",
+        "status": "settled",
+        "messages": [
+            {"id": "u1", "role": "user", "content": "Inspect crates/oar-engine/src/engine.rs and run cargo test."},
+            {
+                "id": "a1",
+                "role": "assistant",
+                "content": "",
+                "tool_calls_json": json.dumps([
+                    {"id": "c1", "name": "command", "args": {"command": "sed -n '1,80p' crates/oar-engine/src/engine.rs"}},
+                ]),
+            },
+            {
+                "id": "t1",
+                "role": "tool",
+                "tool_result_json": json.dumps([
+                    {
+                        "tool_call_id": "c1",
+                        "tool_name": "command",
+                        "is_error": True,
+                        "content": "Status: error\nCode: USE_READ_NATIVE\nUse native read instead.",
+                    }
+                ]),
+            },
+            {
+                "id": "a2",
+                "role": "assistant",
+                "content": "",
+                "tool_calls_json": json.dumps([
+                    {"id": "c2", "name": "command", "args": {"command": "sed -n '1,80p' crates/oar-engine/src/engine.rs"}},
+                ]),
+            },
+            {
+                "id": "t2",
+                "role": "tool",
+                "tool_result_json": json.dumps([
+                    {"tool_call_id": "c2", "tool_name": "command", "content": "[cmd#1]\n1: pub struct Engine;"}
+                ]),
+            },
+            {
+                "id": "a3",
+                "role": "assistant",
+                "content": "Inspected engine.\n\n```citations\n- cmd#1: crates/oar-engine/src/engine.rs\n```",
+            },
+        ],
+    }
+    tx_path = tmp_path / "cmd_rework.jsonl"
+    tx_path.write_text(json.dumps(tx) + "\n")
+    sft_out = tmp_path / "sft.jsonl"
+    dpo_out = tmp_path / "dpo.jsonl"
+    stats = dpo.extract(tx_path, out_sft=sft_out, out_dpo=dpo_out)
+    assert stats["dropped_retired_rejections"] == 1
+    assert stats["dpo_rows"] == 0
+    assert stats["sft_rows"] == 2
+
+    # 2. classify_divergence works across the Language v1 `split` (`command`-first) surface.
+    split_surface = {
+        "surface": {
+            "name": "verify",
+            "active_tools": ["command", "command_output", "command_stop", "summarize", "survey_repo", "update_progress", "request_tools", "skills_read"],
+            "loadable": ["edit", "replace_lines", "verify"],
+            "required_tools": ["survey_repo"],
+        },
+        "prompt": [],
+    }
+    # Calling `repo-map` inside `command` satisfies `survey_repo` via COMMAND_BUILTIN_EQUIVALENTS.
+    assert dpo.classify_divergence(
+        split_surface,
+        {"tool_calls": [{"name": "survey_repo", "arguments": '{"path":"."}'}]},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"repo-map ."}'}]},
+    ) is None
+
+    # Calling `ls -la` inside `command` when teacher runs `cargo test` or reads code is `shallow_investigation`.
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["command"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"cargo test --workspace"}'}]},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"ls -la"}'}]},
+    ) == "shallow_investigation"
+
+    # Calling unscoped `cat` when teacher uses scoped `sed -n '10,50p'` is `unscoped_read`.
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["command"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"sed -n \'10,50p\' src/engine.rs"}'}]},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"cat src/engine.rs"}'}]},
+    ) == "unscoped_read"
+
+    # Mutating `command` without `update_progress` is `missing_progress_before_edit`; read-only `command` is `unclosed_progress_before_closeout`.
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["command", "update_progress"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "update_progress", "arguments": '{"markdown":"- [ ] Patch file"}'}]},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"sed -i \'s/a/b/\' src/engine.rs"}'}]},
+    ) == "missing_progress_before_edit"
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["command", "update_progress"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "update_progress", "arguments": '{"markdown":"- [x] Done"}'}]},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"cat src/engine.rs"}'}]},
+    ) == "unclosed_progress_before_closeout"
+
+    # Mutating `command` on a read-only surface (`observe_verify` / `worker_readonly`) is `readonly_command_mutation`.
+    assert dpo.classify_divergence(
+        {"surface": {"name": "worker_readonly", "active_tools": ["command"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"grep -rn SECRET_KEY src/"}'}]},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"cat <<\'EOF\' > src/sessions.py\\nx=1\\nEOF"}'}]},
+    ) == "readonly_command_mutation"
+
+    # 3. Multi-root synthesis supports `command` (injecting `@<workspace>/` cwd) and `survey_repo`.
+    sft_rows = [json.loads(line) for line in sft_out.read_text().splitlines()]
+    mr_sft, mr_dpo = dpo.synthesize_multi_root_pairs(sft_rows, companion_label="open-agent-rules")
+    assert len(mr_sft) == 1 and len(mr_dpo) == 1
+    mr_cmd_args = json.loads(mr_sft[0]["target"]["tool_calls"][0]["arguments"])
+    assert mr_cmd_args["cwd"] == "@oar-gateway/"
+
+    # 4. Legacy tool translator converts pre-rework `read`/`list_dir`/`grep`/`write` turns into Language v1 `command` calls.
+    legacy_turn = {
+        "role": "assistant",
+        "text": "",
+        "tool_calls": [
+            {"id": "c1", "name": "read", "arguments": '{"path":"src/app.py","start_line":10,"end_line":30}'},
+            {"id": "c2", "name": "list_dir", "arguments": '{"path":"src"}'},
+            {"id": "c3", "name": "grep", "arguments": '{"path":"src","pattern":"def main"}'},
+            {"id": "c4", "name": "write", "arguments": '{"path":"out.txt","content":"hello"}'},
+        ],
+    }
+    translated = dpo.translate_legacy_turn_to_command(legacy_turn)
+    cmds = [json.loads(c["arguments"])["command"] for c in translated["tool_calls"]]
+    assert cmds[0] == "sed -n '10,30p' src/app.py"
+    assert cmds[1] == "ls -la src"
+    assert cmds[2] == "grep -rn -- 'def main' src"
+    assert cmds[3].startswith("cat <<'EOF' > out.txt\nhello\nEOF")
+
+
