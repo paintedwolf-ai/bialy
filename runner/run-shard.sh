@@ -106,7 +106,7 @@ fi
 # Rows from the sessions this shard drove, and the store they came from, so a
 # later label change can export again without driving anything.
 grep -o '"root_session":"[^"]*"' "$out/manifest.jsonl" | cut -d'"' -f4 >"$out/roots.txt" || true
-/opt/bialy/bin/lycaon-debug decide export --db /cfg/store.db --roots "$out/roots.txt" --out "$out/rows.part" --requests "$out/requests.jsonl"
+/opt/bialy/bin/lycaon-debug decide export --db /cfg/store.db --roots "$out/roots.txt" --out "$out/rows.part" --requests "$out/requests.jsonl" --retention "$out/retention.jsonl"
 sqlite3 /cfg/store.db ".backup '$out/store.db'"
 mv "$out/rows.part" "$out/rows.jsonl"
 echo "shard done $(date -u +%FT%TZ)"

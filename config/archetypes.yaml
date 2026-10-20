@@ -44,6 +44,7 @@ archetypes:
     per_workspace: 16
     attachment_rate: 0.3
     brief: Ask how a specific part of this codebase works, naming a real file, type, or function, so answering means reading code.
+    workflows: {recon-auto: 0.2}
   - id: locate
     per_workspace: 20
     brief: Ask the assistant to find something in the repository for the developer - where a function, type, or constant is defined, which file handles a behaviour, where a value or config option is set, every place something is used or called, which test covers a function, where an error message comes from, or which files match a description. Vary the phrasing from terse ("where's the retry logic?") to detailed.
@@ -51,7 +52,7 @@ archetypes:
     per_workspace: 18
     attachment_rate: 0.2
     brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
-    workflows: {implement-dispatch: 0.2}
+    workflows: {implement-dispatch: 0.2, plan-auto: 0.1}
     prompt_timeout: 150m
   - id: small_change
     per_workspace: 18
@@ -61,7 +62,7 @@ archetypes:
   - id: refactor
     per_workspace: 8
     brief: Ask for a structural refactor across several call sites, or a mechanical rewrite of a pattern throughout the code.
-    workflows: {implement-dispatch: 0.4}
+    workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
     prompt_timeout: 150m
   - id: design_review
     per_workspace: 12
@@ -69,7 +70,7 @@ archetypes:
     follow_up_rate: 0.85
     attachment_rate: 0.35
     brief: Ask for an architectural, maintainability, or design review of part of the codebase—or include feedback/analysis from another engineer or agent—and explicitly instruct the assistant NOT to make code changes yet ("Don't make changes, just give me a report", "Is it worth changing X?", "What would you recommend?"). Then in follow-ups, push back on a tradeoff or clarify scope, and finally ask the assistant to implement what it recommended ("Do as you would recommend", "OK great, add it", "Build this as you recommend now").
-    workflows: {implement-dispatch: 0.25}
+    workflows: {implement-dispatch: 0.15, recon-auto: 0.15, plan-auto: 0.15}
     prompt_timeout: 120m
   - id: run_and_verify
     per_workspace: 16
@@ -100,7 +101,7 @@ archetypes:
   - id: security
     per_workspace: 6
     brief: Ask for a security review of part of the code, to scan the project for vulnerabilities or secrets, or to triage findings from a scan.
-    workflows: {implement-dispatch: 0.3}
+    workflows: {implement-dispatch: 0.2, security-auto: 0.4}
     prompt_timeout: 90m
   - id: multi_part
     per_workspace: 10
@@ -111,7 +112,7 @@ archetypes:
     per_workspace: 8
     new_files: true
     brief: Ask to add a new piece to this codebase that does not exist yet - a subcommand, a middleware, an adapter for another backend, a plugin, an example program, or a small module with its tests. Say where it should live and which existing code it should follow or plug into, or leave that to the assistant; the new files do not exist yet.
-    workflows: {implement-dispatch: 0.4}
+    workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
     prompt_timeout: 150m
   - id: project_setup
     per_workspace: 6
