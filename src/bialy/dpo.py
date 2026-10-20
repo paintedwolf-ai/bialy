@@ -210,6 +210,20 @@ def is_host_assembled_closeout(message):
     return bool(grounding.get("host_assembled")) or (grounding.get("traced") is False)
 
 
+def report_document_defect_code(message):
+    """Return the first fatal defect code from completion_report_json.defects when a run report failed validation."""
+    comp_meta = _parse_json_field(message.get("completion_report_json") or message.get("completion_report"))
+    if not isinstance(comp_meta, dict):
+        return None
+    defects = comp_meta.get("defects")
+    if not isinstance(defects, list) or not defects:
+        return None
+    for d in defects:
+        if isinstance(d, dict) and d.get("code"):
+            return str(d["code"])
+    return "REPORT_DOCUMENT_INVALID"
+
+
 def reconstruct_closeout_fence(message):
     """Reconstruct the trailing ```json closeout fence stripped from messages.content by closeoutWireContent."""
     grounding = _parse_json_field(message.get("grounding_json") or message.get("grounding"))
@@ -387,6 +401,12 @@ def parse_host_user_rejection(message):
             code = "TOOL_ARGS_MALFORMED"
         elif "Markdown answer" in text:
             code = "TURN_CLOSEOUT_FORMAT"
+        elif "complete_leg" in text:
+            code = "WORKER_COMPLETION_REPORT_MISSING"
+        elif "submit_verdict" in text:
+            code = "REVIEW_LOOP_VERDICT_INVALID"
+        elif "fanout_plan" in text or "workflow_advance" in text:
+            code = "WORKFLOW_ADVANCE_REQUIRED"
         else:
             code = "TURN_CLOSEOUT_REJECTED"
         return {"code": code, "details": {}, "content": text[:1000]}
@@ -472,15 +492,31 @@ def load_judged_index(rows_paths):
     return by_session, by_opening
 
 
-def synthesized_surface(row, min_score=3, preload_from_judge=True):
+WORKFLOW_CONTROL_TOOLS = {
+    "fanout_plan",
+    "submit_verdict",
+    "pack_board",
+    "workflow_advance",
+    "complete_leg",
+    "request_decision",
+    "extend_worker_budget",
+    "decline_worker_budget",
+}
+SCAN_ACCOUNTING_TOOLS = {"scan_summary", "scan_query", "scan_run", "scan_compare"}
+VALID_REPORT_RATINGS = {"clear", "hardening", "elevated", "critical"}
+VALID_FINDING_DISPOSITIONS = {"act", "accept", "held", "unresolved"}
+
+
+def synthesized_surface(row, min_score=3, preload_from_judge=True, observed_tools=None):
     """Compute the offered and preloaded tool/skill surface for a turn."""
+    obs = set(observed_tools or ())
     if not row:
-        return {"floor": ["read", "edit", "write", "command", "request_tools", "skills_read"],
-                "active_tools": ["read", "edit", "write", "command", "request_tools", "skills_read"],
-                "loadable": [], "preloaded_guides": [], "required_tools": [], "required_skills": []}
+        base = sorted({"read", "edit", "write", "command", "request_tools", "skills_read"} | obs)
+        return {"floor": base, "active_tools": base, "loadable": [],
+                "preloaded_guides": [], "required_tools": [], "required_skills": []}
     offered = row.get("offered") or {}
-    floor = list(offered.get("floor") or [])
     loadable = list(offered.get("loadable") or [])
+    floor = sorted(set(offered.get("floor") or []) | (obs & (WORKFLOW_CONTROL_TOOLS | {"update_progress"})))
     labels = row.get("labels") or {}
     tool_scores = labels.get("tool_scores") or {}
     skill_scores = labels.get("skill_scores") or {}
@@ -573,7 +609,7 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
             if msg.get("role") != "assistant":
                 continue
             row = by_opening.get((sid, current_opening)) or primary_row
-            surface = synthesized_surface(row, min_score=min_score, preload_from_judge=preload_from_judge)
+            surface = synthesized_surface(row, min_score=min_score, preload_from_judge=preload_from_judge, observed_tools=called_in_session)
             turn = strip_thinking(msg)
             next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
             results = _tool_results_in(next_msg) if (next_msg and next_msg.get("role") == "tool") else []
@@ -583,16 +619,17 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                 rejections = [host_user_rej]
             turn_text = turn.get("text") or ""
             host_assembled = is_host_assembled_closeout(msg)
+            defect_code = report_document_defect_code(msg)
             has_grounded_citations = (
                 "```citations" in turn_text
-                or ("```json" in turn_text and not host_assembled)
+                or ("```json" in turn_text and not host_assembled and not defect_code)
             )
             prefix = _openai_messages(messages[:idx])
 
             # Extract retracted closeout drafts from draft_versions for this message slot.
             slot_drafts = draft_by_slot.get(msg.get("id")) or []
             if slot_drafts:
-                chosen_closeout = turn if (has_grounded_citations or turn["tool_calls"]) and not host_assembled else None
+                chosen_closeout = turn if (has_grounded_citations or turn["tool_calls"]) and not host_assembled and not defect_code else None
                 if chosen_closeout is None and idx + 1 < len(messages):
                     for later in messages[idx + 1:idx + 4]:
                         if later.get("role") == "assistant":
@@ -624,10 +661,12 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                         "meta": meta,
                     })
                     stats["by_source"]["host_rejection"] = stats["by_source"].get("host_rejection", 0) + 1
-            elif host_assembled and not rejections:
+            elif (host_assembled or defect_code) and not rejections:
                 grounding = _parse_json_field(msg.get("grounding_json") or msg.get("grounding")) or {}
-                hint_code = grounding.get("hint_code") or "INVEST_CITATIONS_REQUIRED"
+                comp_meta = _parse_json_field(msg.get("completion_report_json") or msg.get("completion_report")) or {}
+                hint_code = defect_code or grounding.get("hint_code") or "INVEST_CITATIONS_REQUIRED"
                 stats["rejection_codes"][hint_code] = stats["rejection_codes"].get(hint_code, 0) + 1
+                rej_details = {"defects": comp_meta.get("defects")} if defect_code else {"host_assembled": True}
                 dpo_rows.append({
                     "schema": DPO_SCHEMA,
                     "id": "%s:%d:untraced" % (sid, idx),
@@ -636,7 +675,7 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                     "turn_index": idx,
                     "source": "host_rejection",
                     "rejection_code": hint_code,
-                    "rejection_details": {"host_assembled": True},
+                    "rejection_details": rej_details,
                     "surface": surface,
                     "prompt": prefix,
                     "chosen": None,
@@ -663,7 +702,10 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                     if parse_host_user_rejection(later_msg) is not None:
                         later_rejs.append(parse_host_user_rejection(later_msg))
                     cand_text = candidate.get("text") or ""
-                    cand_grounded = ("```citations" in cand_text or ("```json" in cand_text and not is_host_assembled_closeout(candidate_msg)))
+                    cand_grounded = (
+                        "```citations" in cand_text
+                        or ("```json" in cand_text and not is_host_assembled_closeout(candidate_msg) and not report_document_defect_code(candidate_msg))
+                    )
                     if (candidate["tool_calls"] or cand_grounded) and not later_rejs:
                         repaired_turn = candidate
                 # 1. Pre-rejection prevention pair at s_t.
@@ -729,7 +771,7 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                     continue
 
             # Clean turn candidate for Stage 1 SFT warmup.
-            if host_assembled:
+            if host_assembled or defect_code:
                 continue
             task_status = ((row or {}).get("meta") or {}).get("task_status")
             if session.get("status") not in ("settled", "idle", "") or task_status not in (None, "", "settled"):
@@ -829,9 +871,81 @@ def _is_malformed_closeout_fence(teacher_fence, student_text, student_fence):
         return True
     if teacher_fence.get("artifact_ids") and not student_fence.get("artifact_ids"):
         return True
+    if teacher_fence.get("headline") and not str(student_fence.get("headline") or "").strip():
+        return True
+    if teacher_fence.get("rating"):
+        s_rating = student_fence.get("rating")
+        if not isinstance(s_rating, dict) or s_rating.get("level") not in VALID_REPORT_RATINGS or not str(s_rating.get("why") or "").strip():
+            return True
+    if teacher_fence.get("findings"):
+        s_findings = student_fence.get("findings")
+        if not isinstance(s_findings, list) or not s_findings:
+            return True
+        t_claim_ids = {f.get("id") for f in teacher_fence["findings"] if isinstance(f, dict) and f.get("id")}
+        s_claim_ids = set()
+        for f in s_findings:
+            if not isinstance(f, dict):
+                return True
+            if f.get("id"):
+                s_claim_ids.add(f["id"])
+            if f.get("disposition") and f["disposition"] not in VALID_FINDING_DISPOSITIONS:
+                return True
+            if t_claim_ids and not f.get("disposition"):
+                return True
+            for w in f.get("where") or []:
+                if not isinstance(w, dict) or "handle" in w:
+                    return True
+                ev_w = str(w.get("evidence") or "")
+                if ev_w and "#" not in ev_w:
+                    return True
+        if t_claim_ids and not (t_claim_ids <= s_claim_ids):
+            return True
+    if teacher_fence.get("set_asides") and not isinstance(student_fence.get("set_asides"), list):
+        return True
+    if teacher_fence.get("ask") and not isinstance(student_fence.get("ask"), dict):
+        return True
     body_without_fence = TRAILING_FENCE_RE.sub("", student_text or "")
     if teacher_fence.get("artifact_ids") and UUID_RE.search(body_without_fence):
         return True
+    return False
+
+
+def _has_malformed_workflow_control_args(t_calls, s_calls):
+    """Return True when the student calls a workflow/worker control tool with missing required fields or ungrounded findings."""
+    t_by_name = {c.get("name"): c for c in t_calls if c.get("name") in WORKFLOW_CONTROL_TOOLS}
+    for sc in s_calls:
+        name = sc.get("name")
+        if name not in t_by_name:
+            continue
+        try:
+            s_args = json.loads(sc.get("arguments") or "{}")
+            t_args = json.loads(t_by_name[name].get("arguments") or "{}")
+        except ValueError:
+            return True
+        if not isinstance(s_args, dict) or not isinstance(t_args, dict):
+            return True
+        if name == "fanout_plan":
+            if not isinstance(s_args.get("legs"), list) or not s_args["legs"]:
+                return True
+            if t_args.get("threat_model") and not isinstance(s_args.get("threat_model"), dict):
+                return True
+            t_roles = {leg.get("role") for leg in (t_args.get("legs") or []) if isinstance(leg, dict)}
+            s_roles = {leg.get("role") for leg in s_args["legs"] if isinstance(leg, dict)}
+            if t_roles and (s_roles - t_roles) & {"skeptic", "web-researcher"}:
+                return True
+        elif name == "complete_leg":
+            if not s_args.get("leg_status"):
+                return True
+            for finding in s_args.get("findings") or []:
+                if not isinstance(finding, dict):
+                    return True
+                if not finding.get("path") or not finding.get("line") or not finding.get("excerpt"):
+                    return True
+        elif name == "submit_verdict":
+            if not s_args.get("verdict") or (t_args.get("verdict") and s_args.get("verdict") != t_args.get("verdict")):
+                return True
+            if t_args.get("coverage") and not isinstance(s_args.get("coverage"), list):
+                return True
     return False
 
 
@@ -869,6 +983,12 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
     s_names = {c.get("name") for c in s_calls}
     if "skills_read" in t_names and "skills_read" not in s_names:
         return "missed_skill_read"
+    if (t_names & WORKFLOW_CONTROL_TOOLS) and not ((t_names & WORKFLOW_CONTROL_TOOLS) <= s_names):
+        return "missed_workflow_verdict_or_plan"
+    if (t_names & WORKFLOW_CONTROL_TOOLS) and _has_malformed_workflow_control_args(t_calls, s_calls):
+        return "malformed_workflow_control_args"
+    if (t_names & SCAN_ACCOUNTING_TOOLS) and not (s_names & (t_names & SCAN_ACCOUNTING_TOOLS)):
+        return "missed_scan_accounting"
     if "update_progress" in t_names and "update_progress" not in s_names:
         if s_names & {"write", "edit", "replace_lines", "command"}:
             return "missing_progress_before_edit"
