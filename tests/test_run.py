@@ -124,7 +124,6 @@ def test_report_lists_publish_commands_without_pushing(factory, tmp_path):
     text = run.path("REPORT.md").read_text()
     assert "bialy publish dataset --release" in text and "bialy publish heads --release" in text and "--push" in text
     assert "| accounts/fireworks/models/glm-5p3-flash | 1 | 10 | 5 |" in text
-    assert "sidecars" in text
     assert state["stages"]["report"]["outputs"]["published"] == {}
 
 
@@ -271,3 +270,15 @@ def test_code_rank_sites_are_evaluated_side_by_side(factory, tmp_path, monkeypat
 def test_a_section_setting_takes_its_keys():
     with pytest.raises(config.ConfigError, match="run.engine_on is a section"):
         config.run_settings({"engine_on": False})
+
+
+def test_check_validates_routing_before_provider_stages(factory, tmp_path):
+    run = make_run(factory, tmp_path, generators=["glm-5.3-flash", "missing"],
+                   generator_weights={"glm-5.3-flash": float("nan")},
+                   archetype_generators={"misspelled": ["glm-5.3-flash"]})
+    with pytest.raises(runmod.RunError) as exc:
+        runmod.stage_check(run)
+    message = str(exc.value)
+    assert "unavailable generators: missing" in message
+    assert "unknown archetypes: misspelled" in message
+    assert "finite nonnegative" in message

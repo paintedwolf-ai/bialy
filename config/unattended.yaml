@@ -8,9 +8,6 @@ answer: Use your best judgment and continue; nobody is available to answer quest
 max_interventions: 6
 approvals:
   - {subject: secret, decision: approve, rung: task}
-  - {subject: action_set, decision: approve, rung: task}
-  - {subject: action, decision: approve, rung: task}
   - {subject: local_listen, decision: approve, rung: task}
   - {subject: loopback_connect, decision: approve, rung: task}
-  - {subject: destination_set, decision: approve, rung: task}
   - {subject: package_set, decision: approve, rung: task}

@@ -29,7 +29,7 @@ run:
   generator_weights: {}            # optional {model_id: weight} for hybrid local + hosted driving shares
   archetype_generators: {}         # optional {archetype_id: [model_id, ...] or {model_id: weight}}
   local_workers_only: false        # when true, sidecar lite and agent_pool use local served generators
-  judges: []                       # judges to use; empty keeps every judge in models.yaml
+  judges: [deepseek-v4.1-flash, glm-5.3-flash]  # hybrid local runs must explicitly select their local judges
   runners: 4                       # concurrent runner containers on this machine
   spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
   scanner: pinned                  # the checkout's pinned Opengrep for linux/amd64; candidate takes a local build; none runs without one
@@ -53,13 +53,15 @@ run:
     torch_index: null              # a torch wheel index; detected from the accelerator when null
     epochs: null                   # cap for short checks; null keeps each recipe's own
   custom_model:
-    enabled: false                 # extract SFT and DPO datasets for a small coordinator/worker student
+    enabled: false                 # custom-model collection is opt-in
+    diagnostic_only: false         # must explicitly opt in; training export is blocked pending host integration
     student: gemma-4-e4b-it        # student model evaluated in shadow mode with thinking off
-    teacher: gemma-4-31b-it        # teacher model that repairs host rejections and nudges
+    teacher: gemma-4-26b-a4b-it-q4 # teacher model that repairs host rejections and nudges (repair stays off)
     min_score: 3                   # minimum judge score for synthetic engine-on preloading and skill/tool gates
-    preload_from_judge: true       # synthesize engine-on preloaded surface on engine-off transcripts
+    epoch: null                    # explicit collection identity; use a new epoch/run after command rework
+    tool_surface: legacy           # legacy or command-v1; never mix their trajectories
+    host_commit: null              # exact clean Painted Wolf Code commit used by this run
+    preload_from_judge: false      # reconstructed surfaces remain candidates, not training examples
     max_routine_reads_per_session: 6   # cap mid-loop unscoped single-root read/grep/list_dir steps per session in SFT
-    multi_root: true               # synthesize @<folder>/ multi-root SFT and DPO examples
-    multi_root_max_pairs: 200      # maximum synthesized multi-root SFT/DPO pairs
     shadow: false                  # query the student at teacher states to harvest divergence DPO pairs
     repair: false                  # query the teacher at student rejection states that lack a self-repair

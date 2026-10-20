@@ -38,11 +38,11 @@ defaults:
 archetypes:
   - id: question
     per_workspace: 10
-    attachment_rate: 0.2
+    reference_rate: 0.2
     brief: A question about the project that can be answered by explaining, sometimes without opening any file (concepts, design choices, how to use the library, or terse questions like "Tell me about this repo" or "What does this file do?").
   - id: explain_code
     per_workspace: 10
-    attachment_rate: 0.3
+    reference_rate: 0.3
     brief: Ask how a specific part of this codebase works, naming a real file, type, or function, so answering means reading code.
     workflows: {recon-auto: 0.2}
   - id: locate
@@ -50,7 +50,7 @@ archetypes:
     brief: Ask the assistant to find something in the repository for the developer - where a function, type, or constant is defined, which file handles a behaviour, where a value or config option is set, every place something is used or called, which test covers a function, where an error message comes from, or which files match a description. Vary the phrasing from terse ("where's the retry logic?") to detailed.
   - id: bugfix
     per_workspace: 12
-    attachment_rate: 0.2
+    reference_rate: 0.2
     brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
     workflows: {implement-dispatch: 0.2, plan-auto: 0.1}
     prompt_timeout: 180m
@@ -69,14 +69,14 @@ archetypes:
     per_workspace: 10
     new_files: true
     follow_up_rate: 0.85
-    attachment_rate: 0.35
+    reference_rate: 0.35
     brief: Ask for an architectural, maintainability, or design review of part of the codebase—or include feedback/analysis from another engineer or agent—and explicitly instruct the assistant NOT to make code changes yet ("Don't make changes, just give me a report", "Is it worth changing X?", "What would you recommend?"). Then in follow-ups, push back on a tradeoff or clarify scope, and finally ask the assistant to implement what it recommended ("Do as you would recommend", "OK great, add it", "Build this as you recommend now").
-    workflows: {implement-dispatch: 0.15, recon-auto: 0.15, plan-auto: 0.15}
+    workflows: {recon-auto: 0.45}
     prompt_timeout: 240m
   - id: compliance_audit
     per_workspace: 8
     follow_up_rate: 0.6
-    attachment_rate: 0.25
+    reference_rate: 0.25
     brief: Ask the assistant to do a thorough compliance or conformance audit of the repository against its documented specification, architecture rules, RFC/standard, or test contract—requiring it to inspect the actual implementation modules across the codebase (not just top-level docs or directory listings) and run the test or conformance suite to verify behavior before reporting findings. Follow-ups challenge whether it actually read the implementation or ran the tests, or ask to fix a gap uncovered by the audit.
     workflows: {recon-auto: 0.3, implement-dispatch: 0.3}
     prompt_timeout: 240m
@@ -123,7 +123,7 @@ archetypes:
     per_workspace: 10
     new_files: true
     follow_up_rate: 0.55
-    brief: Ask to set up OIDC credentials (such as configuring an OIDC provider/relying-party client, OAuth2 token exchange, JWKS/JWT signing secret, or CI/CD OIDC workload identity configuration), webhook HMAC signature verification (such as Stripe or GitHub webhooks), or authenticated local service/API credentials using managed generated secrets without ever hardcoding, echoing, or logging raw secret values. Ask to wire the generated secret references into configuration or `.env` files, verify both positive authentication and negative rejection (using a second generated test credential) against a local endpoint or test harness, and in follow-ups ask to rotate a credential, revoke temporary test secrets, or confirm the active/revoked secret list.
+    brief: Ask to build a local authentication test fixture with a mock OIDC issuer and relying-party client, OAuth2 token exchange, JWKS/JWT signing, synthetic webhook HMAC verification, or authenticated loopback service/API credentials using managed generated secrets without ever hardcoding, echoing, or logging raw secret values. Ask to wire the generated secret references into configuration or `.env` files, verify both positive authentication and negative rejection (using a second generated test credential) against a local endpoint or test harness, and in follow-ups ask to rotate a credential, revoke temporary test secrets, or confirm the active/revoked secret list. Use only generated test credentials and local mock issuers/webhook senders; never configure a real identity provider, account, deployment, repository secret, or remote credential.
     prompt_timeout: 180m
   - id: multi_part
     per_workspace: 8
@@ -150,7 +150,7 @@ archetypes:
     per_workspace: 6
     new_files: true
     follow_up_rate: 0.5
-    attachment_rate: 0.25
+    reference_rate: 0.25
     brief: Ask to update, critique, or write documentation, a changelog entry, a rendered SVG or HTML diagram of the architecture (rendered and visually inspected to verify layout and legibility), or release notes. Some requests should ask for editorial feedback or narrative signposting advice without making direct changes first, or ask to revise prose while keeping the author's style and not making the document any longer than it is.
     workflows: {implement-dispatch: 0.2}
   - id: chores
@@ -176,7 +176,7 @@ archetypes:
     workspace: stack
     per_workspace: 6
     follow_up_rate: 0.55
-    brief: Ask to build a new service, CLI, or web app on this stack that includes OIDC authentication (discovery, client credentials or authorization-code flow, and JWT/JWKS validation), signed webhook handling, or token-authenticated API endpoints, using generated managed secrets for all client secrets, signing keys, and API tokens without hardcoding or printing raw secret values, and verifying both valid and invalid credentials against the running service. Follow-ups ask to run the secret and SAST scanners on the newly created project to confirm zero leaked secrets or injection/auth issues (or fix and re-scan to compare results), rotate a credential, or revoke temporary test secrets.
+    brief: Ask to build a new local test service, CLI, or web app on this stack that includes OIDC authentication with a mock issuer (discovery, client credentials or authorization-code flow, and JWT/JWKS validation), signed webhook handling, or token-authenticated API endpoints, using generated managed secrets for all client secrets, signing keys, and API tokens without hardcoding or printing raw secret values, and verifying both valid and invalid credentials against the running service. Follow-ups ask to run the secret and SAST scanners on the newly created project to confirm zero leaked secrets or injection/auth issues (or fix and re-scan to compare results), rotate a credential, or revoke temporary test secrets. Keep authentication traffic on loopback with fixture users and synthetic webhook payloads; never configure external accounts, real providers, deployment credentials, or production secrets.
     prompt_timeout: 180m
   - id: prototype
     workspace: stack

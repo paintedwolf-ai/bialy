@@ -3,9 +3,10 @@ import gzip
 import json
 import sqlite3
 
+import pytest
 from conftest import row
 
-from bialy import cli, config, dpo, fleet, split, tasks
+from bialy import cli, config, dpo, fleet, tasks
 from bialy import run as runmod
 
 
@@ -167,7 +168,9 @@ def test_extract_strips_thinking_preloads_judge_tools_and_pairs_rejections(tmp_p
     dpo_rows = [json.loads(line) for line in dpo_out.read_text().splitlines()]
     prevent, recover = dpo_rows
     assert prevent["source"] == "host_rejection" and prevent["rejection_code"] == "outside_roots"
-    assert prevent["chosen"]["tool_calls"][0]["arguments"] == json.dumps({"file_path": "src/flask/ctx.py"})
+    assert prevent["chosen"] is None
+    assert prevent["proposed_chosen"]["tool_calls"][0]["arguments"] == json.dumps({"file_path": "src/flask/ctx.py"})
+    assert not dpo.training_eligible(prevent)
     assert prevent["rejected"]["tool_calls"][0]["arguments"] == json.dumps({"file_path": "../secret.py"})
     assert recover["source"] == "post_rejection_recovery"
     assert any(m["role"] == "tool" and "Code: outside_roots" in m["content"] for m in recover["prompt"])
@@ -196,7 +199,9 @@ def test_shadow_harvests_divergences_with_thinking_off_and_resumes(factory, tmp_
     monkeypatch.setattr(config.Factory, "chats", lambda self, model: [student_chat])
     shadow_out = tmp_path / "shadow.jsonl"
     report = dpo.shadow(factory, sft_out, shadow_out, student_id="gemma-4-e4b-it", workers=2, seed=7)
-    assert report["evaluated"] == 4 and report["pairs"] >= 2
+    assert report["evaluated"] == 0 and report["pairs"] == 0
+    assert report["skipped_missing_capture"] == 4
+    assert not student_chat.calls
     assert all(c["thinking"] is False and c["temperature"] == 0.0 for c in student_chat.calls)
 
     # Re-running with the same signature reuses the partial file without making new LLM calls.
@@ -204,11 +209,6 @@ def test_shadow_harvests_divergences_with_thinking_off_and_resumes(factory, tmp_
     report_again = dpo.shadow(factory, sft_out, shadow_out, student_id="gemma-4-e4b-it", workers=2, seed=7)
     assert len(student_chat.calls) == calls_before and report_again["pairs"] == report["pairs"]
 
-    # Splitting shadow pairs preserves held-out workspace isolation.
-    split_counts = split.split(factory, [str(shadow_out)], tmp_path / "dpo_split")
-    assert split_counts["holdout"]["rows"] >= 1
-    holdout_workspaces = {json.loads(line)["meta"]["workspace"] for line in (tmp_path / "dpo_split" / "holdout.jsonl").read_text().splitlines()}
-    assert holdout_workspaces == {"zod"}
 
 
 def test_repair_fills_missing_chosen_from_teacher(factory, tmp_path, monkeypatch):
@@ -231,10 +231,10 @@ def test_repair_fills_missing_chosen_from_teacher(factory, tmp_path, monkeypatch
     monkeypatch.setattr(config.Factory, "chats", lambda self, model: [teacher_chat])
     repaired_out = tmp_path / "dpo.repaired.jsonl"
     rep = dpo.repair(factory, dpo_raw, repaired_out, teacher_id="gemma-4-31b-it", workers=1, seed=7)
-    assert rep == {"input_rows": 1, "repaired": 1, "completed_pairs": 1}
+    assert rep == {"input_rows": 1, "queried": 0, "proposed": 0, "skipped_missing_capture": 1, "completed_pairs": 0}
     repaired_row = json.loads(repaired_out.read_text())
-    assert repaired_row["chosen"]["tool_calls"][0]["name"] == "edit"
-    assert teacher_chat.calls[0]["thinking"] is False
+    assert repaired_row["chosen"] is None
+    assert not teacher_chat.calls
 
 
 def test_export_transcripts_from_shard_sqlite_store(tmp_path):
@@ -318,14 +318,11 @@ def test_compact_prompt_preserves_head_tail_and_read_receipts():
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "edit", "arguments": '{"path":"status.py"}'}}]},
         {"role": "tool", "tool_call_id": "c3", "name": "edit", "content": "⟦D⟧Rejected:\n⟦D⟧Code: PROGRESS_MISSING"},
     ]
-    compacted = dpo.compact_prompt(msgs, max_chars=800)
-    assert len(compacted) == len(msgs)
-    assert compacted[0]["content"] == "system prompt with tool rules"
-    assert "file already read in transcript" in compacted[3]["content"]
-    # Recent tail turns and rejection cards are never compacted.
-    assert compacted[-1]["content"] == "⟦D⟧Rejected:\n⟦D⟧Code: PROGRESS_MISSING"
-    rej = dpo.parse_rejection({"content": compacted[-1]["content"], "is_error": True})
-    assert rej["code"] == "PROGRESS_MISSING"
+    with pytest.raises(ValueError, match="recapture host compaction"):
+        dpo.compact_prompt(msgs, max_chars=800)
+    intact = dpo.compact_prompt(msgs, max_chars=20000)
+    assert intact == msgs and intact is not msgs
+    assert "file already read in transcript" not in json.dumps(intact)
 
 
 def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, tmp_path):
@@ -357,13 +354,14 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     assert stats["sft_rows"] == 2
     assert stats["rejection_codes"] == {"TURN_CLOSEOUT_PENDING_PROGRESS": 1}
     dpo_rows = [json.loads(line) for line in dpo_out.read_text().splitlines()]
-    assert {r["source"] for r in dpo_rows} == {"host_rejection", "post_rejection_recovery"}
+    assert {r["source"] for r in dpo_rows} == {"host_rejection"}
     prevent = next(r for r in dpo_rows if r["source"] == "host_rejection")
-    assert prevent["rejected"]["tool_calls"] == [] and prevent["chosen"]["tool_calls"][0]["name"] == "update_progress"
+    assert prevent["rejected"]["tool_calls"] == [] and prevent["chosen"] is None
+    assert prevent["proposed_chosen"] is None  # No matching success receipt was exported.
 
-    # 2. design_review archetype and Den attachment block generation.
+    # 2. design_review archetype and explicit path references.
     arch_by_id = {a.id: a for a in factory.archetypes}
-    assert "design_review" in arch_by_id and arch_by_id["design_review"].attachment_rate > 0
+    assert "design_review" in arch_by_id and arch_by_id["design_review"].reference_rate > 0
     files = ["src/flask/ctx.py", "src/flask/app.py", "README.md"]
     raw = [{
         "prompt": "Don't make changes yet. Review src/flask/ctx.py and tell me how we should restructure it.",
@@ -372,11 +370,11 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
         "lang": "en",
         "author": "m",
     }]
-    forced = dataclasses.replace(factory, archetypes=[dataclasses.replace(a, attachment_rate=1.0, follow_up_rate=1.0) for a in factory.archetypes])
+    forced = dataclasses.replace(factory, archetypes=[dataclasses.replace(a, reference_rate=1.0, follow_up_rate=1.0) for a in factory.archetypes])
     tasks.finalize(forced, forced.repos[0], raw, files, tmp_path / "design.jsonl", seed=7)
     [task] = [json.loads(line) for line in (tmp_path / "design.jsonl").read_text().splitlines()]
-    assert '```attachment filename="ctx.py"' in task["prompt"]
-    assert "[User attached file: src/flask/ctx.py]" in task["prompt"]
+    assert "existing file `src/flask/ctx.py`" in task["prompt"]
+    assert "```attachment" not in task["prompt"] and "[User attached" not in task["prompt"]
     assert len(task["follow_ups"]) == 3
 
     # 3. Citation-grounding repair, AMBIENT_UNGROUNDED_COMPLETION extraction, and shallow_investigation divergence.
@@ -410,7 +408,8 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     assert any("```citations" in (r["target"].get("text") or "") for r in cit_sft_rows)
     cit_dpo_rows = [json.loads(line) for line in cit_dpo.read_text().splitlines()]
     cit_recover = next(r for r in cit_dpo_rows if r["source"] == "post_rejection_recovery")
-    assert '"read#1"' in cit_recover["chosen"]["text"]
+    assert cit_recover["chosen"] is None
+    assert '"read#1"' in cit_recover["proposed_chosen"]["text"]
 
     div = dpo.classify_divergence(
         {"surface": {"active_tools": ["list_dir", "summarize", "read", "verify"], "loadable": []}, "prompt": []},
@@ -498,7 +497,8 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
 
     co_dpo_rows = [json.loads(line) for line in co_dpo.read_text().splitlines()]
     assert len(co_dpo_rows) == 2
-    assert all(r["chosen"]["text"] == final_sft["target"]["text"] for r in co_dpo_rows)
+    assert all(r["chosen"] is None for r in co_dpo_rows)
+    assert all("draft_original_request_unavailable" in r["qualification"]["reasons"] for r in co_dpo_rows)
 
     # 5. Progress, visual capture, and closeout fence divergence rules + multi-root synthesis.
     assert dpo.classify_divergence(
@@ -525,10 +525,8 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
         {"text": 'Done.\n\n```json\n{"cited_evidence": [{"handle": "write#1"}]}\n```', "tool_calls": []},
     ) == "closeout_fence_missing_or_malformed"
 
-    mr_sft, mr_dpo = dpo.synthesize_multi_root_pairs(co_sft_rows, companion_label="open-agent-rules")
-    assert len(mr_sft) >= 1 and len(mr_dpo) >= 1
-    assert "@oar-gateway/index.html" in mr_sft[0]["target"]["tool_calls"][0]["arguments"]
-    assert mr_dpo[0]["rejection_code"] == "multi_root_prefix_missing"
+    with pytest.raises(ValueError, match="real attached-root trajectories"):
+        dpo.synthesize_multi_root_pairs(co_sft_rows, companion_label="open-agent-rules")
 
 
 def test_security_survey_workflow_and_report_document_defects(factory, tmp_path):
@@ -734,7 +732,7 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
                 "id": "t-w1-repaired",
                 "role": "tool",
                 "tool_result_json": json.dumps([
-                    {"tool_call_id": "cw3", "tool_name": "complete_leg", "content": "Leg execute/leg-1 completed."},
+                    {"tool_call_id": "cw3", "tool_name": "complete_leg", "content": "Leg execute/leg-1 completed.", "is_error": False},
                 ]),
             },
         ],
@@ -810,7 +808,7 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
 def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(factory, tmp_path):
     # Build a long session with:
     # - 1 opening read (step 0 -> always kept)
-    # - 10 mid-loop unscoped reads (capped at max_routine_reads_per_session=3)
+    # - 10 novel mid-loop unscoped reads (always kept)
     # - 1 mid-loop scoped read with start_line/end_line (always kept)
     # - 1 mid-loop multi-root @repo/ read (always kept)
     # - 1 mid-loop verify tool call (always kept)
@@ -898,47 +896,17 @@ def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(fact
     tx_path.write_text(json.dumps(session) + "\n")
     sft_capped = tmp_path / "sft_capped.jsonl"
     stats = dpo.extract(tx_path, out_sft=sft_capped, max_routine_reads_per_session=3)
-    assert stats["capped_routine_sft"] == 7
-    # Kept: 1 opening + 3 mid-loop routine + 1 scoped + 1 multi-root + 1 verify + 1 closeout = 8 SFT rows.
-    assert stats["sft_rows"] == 8
+    assert stats["capped_routine_sft"] == 0
+    # Novel evidence is not discarded merely because all calls use read.
+    assert stats["sft_rows"] == 15
 
-    # Verify stage_custom_model integrates multi_root synthesis and splits both SFT and DPO.
+    # Stored archives without pinned collection lineage cannot be silently reused.
     import dataclasses
 
     f = dataclasses.replace(factory, root=tmp_path)
-    run = runmod.Run(
-        factory=f,
-        name="cm-test",
-        settings=runmod.settings_for(
-            f,
-            {
-                "custom_model": {
-                    "enabled": True,
-                    "student": "gemma-4-e4b-it",
-                    "teacher": "gemma-4-31b-it",
-                    "min_score": 3,
-                    "preload_from_judge": True,
-                    "max_routine_reads_per_session": 3,
-                    "multi_root": True,
-                    "multi_root_max_pairs": 10,
-                    "shadow": False,
-                    "repair": False,
-                }
-            },
-        ),
-    )
-    cm_dir = run.path("custom_model")
-    cm_dir.mkdir(parents=True, exist_ok=True)
-    import gzip
-
-    with gzip.open(cm_dir / "transcripts.jsonl.gz", "wt", encoding="utf-8") as gz:
-        gz.write(json.dumps(session) + "\n")
-    cm_stats = runmod.stage_custom_model(run)
-    assert cm_stats["sft_rows"] == 8
-    assert cm_stats["multi_root"]["sft_rows"] >= 1
-    assert cm_stats["multi_root"]["dpo_rows"] >= 1
-    assert (cm_dir / "sft" / "train.jsonl").exists()
-    assert (cm_dir / "dpo" / "train.jsonl").exists()
+    run = runmod.Run(factory=f, name="cm-test", settings=runmod.settings_for(f, {"custom_model.enabled": True}))
+    with pytest.raises(ValueError, match="epoch must name"):
+        runmod.stage_custom_model(run)
 
     # Verify right-sized total raw task count across all 31 workspaces (16 repos + 15 stacks).
     repo_per_ws = sum(a.per_workspace for a in factory.archetypes if a.workspace == "repository")
@@ -949,7 +917,7 @@ def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(fact
 
 
 def test_command_rework_surface_and_legacy_rejection_filtering(tmp_path):
-    # 1. Retired USE_*_NATIVE and COMMAND_NOT_ARGV rejections are filtered by default.
+    # 1. Historical rejections remain evidence in their original epoch by default.
     tx = {
         "session_id": "cmd-rework-1",
         "root_session": "cmd-rework-1",
@@ -1007,8 +975,8 @@ def test_command_rework_surface_and_legacy_rejection_filtering(tmp_path):
     sft_out = tmp_path / "sft.jsonl"
     dpo_out = tmp_path / "dpo.jsonl"
     stats = dpo.extract(tx_path, out_sft=sft_out, out_dpo=dpo_out)
-    assert stats["dropped_retired_rejections"] == 1
-    assert stats["dpo_rows"] == 0
+    assert stats["dropped_retired_rejections"] == 0
+    assert stats["dpo_rows"] == 1
     assert stats["sft_rows"] == 2
 
     # 2. classify_divergence works across the Language v1 `split` (`command`-first) surface.
@@ -1061,30 +1029,14 @@ def test_command_rework_surface_and_legacy_rejection_filtering(tmp_path):
         {"tool_calls": [{"name": "command", "arguments": '{"command":"cat <<\'EOF\' > src/sessions.py\\nx=1\\nEOF"}'}]},
     ) == "readonly_command_mutation"
 
-    # 3. Multi-root synthesis supports `command` (injecting `@<workspace>/` cwd) and `survey_repo`.
+    # Historical translation and synthetic attached-root negatives cannot qualify.
     sft_rows = [json.loads(line) for line in sft_out.read_text().splitlines()]
-    mr_sft, mr_dpo = dpo.synthesize_multi_root_pairs(sft_rows, companion_label="open-agent-rules")
-    assert len(mr_sft) == 1 and len(mr_dpo) == 1
-    mr_cmd_args = json.loads(mr_sft[0]["target"]["tool_calls"][0]["arguments"])
-    assert mr_cmd_args["cwd"] == "@oar-gateway/"
-
-    # 4. Legacy tool translator converts pre-rework `read`/`list_dir`/`grep`/`write` turns into Language v1 `command` calls.
-    legacy_turn = {
-        "role": "assistant",
-        "text": "",
-        "tool_calls": [
-            {"id": "c1", "name": "read", "arguments": '{"path":"src/app.py","start_line":10,"end_line":30}'},
-            {"id": "c2", "name": "list_dir", "arguments": '{"path":"src"}'},
-            {"id": "c3", "name": "grep", "arguments": '{"path":"src","pattern":"def main"}'},
-            {"id": "c4", "name": "write", "arguments": '{"path":"out.txt","content":"hello"}'},
-        ],
-    }
-    translated = dpo.translate_legacy_turn_to_command(legacy_turn)
-    cmds = [json.loads(c["arguments"])["command"] for c in translated["tool_calls"]]
-    assert cmds[0] == "sed -n '10,30p' src/app.py"
-    assert cmds[1] == "ls -la src"
-    assert cmds[2] == "grep -rn -- 'def main' src"
-    assert cmds[3].startswith("cat <<'EOF' > out.txt\nhello\nEOF")
+    with pytest.raises(ValueError, match="real attached-root trajectories"):
+        dpo.synthesize_multi_root_pairs(sft_rows, companion_label="open-agent-rules")
+    with pytest.raises(ValueError, match="fresh command-surface run"):
+        dpo.translate_legacy_turn_to_command({"tool_calls": []})
+    with pytest.raises(ValueError, match="fresh command-surface run"):
+        dpo.extract(tx_path, translate_legacy_tools=True)
 
 
 def test_supported_44_language_matrix_coverage():

@@ -38,3 +38,29 @@ def test_rows_without_a_known_workspace_are_refused(factory, tmp_path):
     rows.write_text(json.dumps({"project": "mystery", "root_session": "s", "meta": {"workspace": "mystery", "prompt_group": "g"}}) + "\n")
     with pytest.raises(ValueError, match="unknown workspace"):
         split.split(factory, [rows], tmp_path / "out")
+
+
+@pytest.mark.parametrize("non_holdout_split", ["train", "val"])
+def test_cross_workspace_group_leakage_does_not_publish_splits(factory, tmp_path, non_holdout_split):
+    group = next("g%d" % i for i in range(1000)
+                 if split.side("g%d" % i, factory.split["seed"], factory.split["val_fraction"]) == non_holdout_split)
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text("".join(json.dumps({"meta": {"workspace": workspace, "prompt_group": group}}) + "\n"
+                            for workspace in ("flask", "zod")))
+    out = tmp_path / "out"
+    out.mkdir()
+    for name in ("train", "val", "holdout"):
+        (out / (name + ".jsonl")).write_text("previous accepted dataset\n")
+    with pytest.raises(ValueError, match="appears in both"):
+        split.split(factory, [rows], out)
+    assert {p.name for p in out.iterdir()} == {"train.jsonl", "val.jsonl", "holdout.jsonl"}
+    assert all(p.read_text() == "previous accepted dataset\n" for p in out.iterdir())
+
+
+def test_late_invalid_input_does_not_publish_partial_dataset(factory, tmp_path):
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"meta": {"workspace": "flask", "prompt_group": "good"}}) + "\n{invalid json\n")
+    out = tmp_path / "out"
+    with pytest.raises(json.JSONDecodeError):
+        split.split(factory, [rows], out)
+    assert list(out.iterdir()) == []

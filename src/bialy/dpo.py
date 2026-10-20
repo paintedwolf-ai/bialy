@@ -14,6 +14,7 @@ released transcript archives joined with cross-family judge labels:
 """
 
 import concurrent.futures
+import copy
 import gzip
 import hashlib
 import json
@@ -23,6 +24,7 @@ import threading
 from pathlib import Path
 
 from . import provenance
+from .dpo_qualification import capture_reasons, qualification, training_eligible
 
 SFT_SCHEMA = "pw-custom-sft/1"
 DPO_SCHEMA = "pw-custom-dpo/1"
@@ -37,30 +39,16 @@ def is_coordinator_feedback(text):
 
 
 def compact_prompt(messages, max_chars=24000):
-    """Compact older tool outputs while preserving system instructions, read-file receipts, and recent turns.
+    """Enforce a character bound without inventing model observations.
 
-    Unlike raw token-slice truncation (p_ids[:head] + p_ids[-tail:]), this never severs
-    the <tools> declaration header or erases which files have already been read.
+    A training tokenizer must separately measure the complete serialized request
+    and response. Oversized requests need host-generated compaction and a newly
+    captured/validated response, not a summary substituted into an old prompt.
     """
     total = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
-    if total <= max_chars or len(messages) <= 6:
-        return list(messages)
-    head = []
-    idx = 0
-    while idx < len(messages) and messages[idx].get("role") in ("system", "user") and idx < 2:
-        head.append(messages[idx])
-        idx += 1
-    tail = list(messages[-4:])
-    middle = messages[idx:-4]
-    compacted_mid = []
-    for m in middle:
-        if m.get("role") == "tool":
-            content = str(m.get("content") or "")
-            if len(content) > 320 and not STATUS_ERROR_RE.search(content) and not REJECTION_CODE_RE.search(content):
-                first_line = content.splitlines()[0] if content.splitlines() else ""
-                m = dict(m, content="%s\n[...compacted %d chars; file already read in transcript...]" % (first_line[:160], len(content)))
-        compacted_mid.append(m)
-    return head + compacted_mid + tail
+    if total > max_chars:
+        raise ValueError("request exceeds character budget; recapture host compaction or exclude the row")
+    return copy.deepcopy(messages)
 
 
 
@@ -99,7 +87,7 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                     entry = json.loads(line)
                     if entry.get("root_session"):
                         by_root[entry["root_session"]] = (entry, specs.get(entry["task_id"], {}))
-                conn = sqlite3.connect(str(db_path))
+                conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
                 conn.row_factory = sqlite3.Row
                 try:
                     sess_rows = conn.execute("SELECT id, parent_session_id, title, workflow_id FROM sessions ORDER BY created_at, id").fetchall()
@@ -161,6 +149,7 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                             ).fetchall()
                             draft_versions = [dict(d) for d in drows]
                         record = {
+                            "pass": pass_dir.name,
                             "shard": shard.name,
                             "session_id": sid,
                             "parent_session_id": srow["parent_session_id"],
@@ -360,14 +349,11 @@ def parse_rejection(result_block):
     """Extract structured rejection Code and paintedwolf.* details from a tool result entry."""
     content = str(result_block.get("content") or "")
     details = result_block.get("details") if isinstance(result_block.get("details"), dict) else {}
-    is_error = bool(result_block.get("is_error")) or bool(STATUS_ERROR_RE.search(content))
+    is_error = result_block.get("is_error") is True
+    if not is_error and not details.get("code"):
+        return None
     code_match = REJECTION_CODE_RE.search(content)
-    code = code_match.group(1) if code_match else details.get("code")
-    if not code and is_error:
-        if "no progress checklist yet" in content:
-            code = "PROGRESS_REQUIRED_BEFORE_EDIT"
-        elif "Shell file-writing redirection" in content or "stream piping targeting" in content:
-            code = "SHELL_FILE_WRITE_FORBIDDEN"
+    code = details.get("code") or (code_match.group(1) if code_match else None)
     if not is_error and not code:
         return None
     return {
@@ -382,6 +368,8 @@ def parse_rejection(result_block):
 def parse_host_user_rejection(message):
     """Extract structured turn-level host rejections or coordinator nudges delivered as user-role messages."""
     if not message or message.get("role") != "user":
+        return None
+    if message.get("origin") not in (None, "", "host"):
         return None
     raw = message.get("content")
     text = (message.get("text") or (raw if isinstance(raw, str) else "") or "").strip()
@@ -449,10 +437,10 @@ def _openai_messages(prefix):
     out = []
     for msg in prefix:
         role = msg.get("role")
-        if role == "user":
+        if role in ("system", "developer", "user"):
             raw_c = msg.get("content")
             text = msg.get("text") or (raw_c if isinstance(raw_c, str) else "")
-            out.append({"role": "user", "content": text})
+            out.append({"role": role, "content": text})
         elif role == "assistant":
             clean = strip_thinking(msg)
             entry = {"role": "assistant", "content": clean["text"] or ""}
@@ -719,17 +707,12 @@ def _session_meta(session, row=None):
 
 def _completed_openings(messages):
     """Return opening user message ids that settled cleanly before any later timeout."""
-    openings = []
     completed = set()
     cur = None
     for idx, msg in enumerate(messages):
         if msg.get("role") == "user":
             if parse_host_user_rejection(msg) is None and msg.get("origin") != "host":
-                if cur is not None:
-                    completed.add(cur)
                 cur = msg.get("id")
-                if cur:
-                    openings.append(cur)
             continue
         if msg.get("role") != "assistant" or not cur:
             continue
@@ -742,7 +725,7 @@ def _completed_openings(messages):
         if rejs:
             continue
         call_names = {c.get("name") for c in turn["tool_calls"]}
-        if "complete_leg" in call_names:
+        if "complete_leg" in call_names and _calls_succeeded(turn, results):
             completed.add(cur)
             continue
         turn_text = turn.get("text") or ""
@@ -752,6 +735,16 @@ def _completed_openings(messages):
         ):
             completed.add(cur)
     return completed
+
+
+def _calls_succeeded(turn, results):
+    """Require an explicit, matching successful result for every proposed call."""
+    calls = turn.get("tool_calls") or []
+    by_id = {r.get("tool_call_id"): r for r in results if r.get("tool_call_id")}
+    return bool(calls) and all(
+        call.get("id") in by_id and by_id[call["id"]].get("is_error") is False
+        for call in calls
+    )
 
 
 def _is_scoped_read(call):
@@ -783,7 +776,7 @@ def _is_unscoped_read_call(call):
     return False
 
 
-ROUTINE_ORIENTATION_TOOLS = {"read", "grep", "list_dir", "find_by_name", "summarize"}
+ROUTINE_ORIENTATION_TOOLS = {"read", "grep", "list_dir", "find_by_name"}
 MULTI_ROOT_CMD_TOKEN_RE = re.compile(r"(?:^|\s|['\"])@[A-Za-z0-9_.-]+/")
 
 
@@ -803,7 +796,7 @@ def _has_multi_root_path(call):
 
 
 def _is_routine_orientation_turn(turn, idx, steps_since_opening=1):
-    """Return True when a turn only performs unscoped single-root read/grep/list_dir or read-only command orientation after the opening step."""
+    """Select native orientation candidates; command effects need typed host facts."""
     if idx <= 2 or steps_since_opening <= 0:
         return False
     calls = turn.get("tool_calls") or []
@@ -815,76 +808,13 @@ def _is_routine_orientation_turn(turn, idx, steps_since_opening=1):
         name = call.get("name")
         if name in ROUTINE_ORIENTATION_TOOLS:
             continue
-        if name == "command":
-            prog, _ = _command_program_and_args(call)
-            if (
-                not prog
-                or _is_mutating_command(call)
-                or _is_exec_or_test_command(call)
-                or not READONLY_ORIENTATION_CMD_RE.search(prog)
-            ):
-                return False
-            continue
         return False
     return True
 
 
-def translate_legacy_call_to_command(call):
-    """Translate a legacy pre-Language-v1 floor tool call (`read`, `list_dir`, `grep`, `find_by_name`, `write`) into a Language v1 `command` call."""
-    name = call.get("name")
-    if name not in {"read", "list_dir", "grep", "find_by_name", "write"}:
-        return dict(call)
-    try:
-        args = json.loads(call.get("arguments") or "{}")
-    except ValueError:
-        return dict(call)
-    if not isinstance(args, dict):
-        return dict(call)
-    path = str(args.get("path") or args.get("file_path") or ".").strip() or "."
-    cmd_args = {}
-    if name == "read":
-        ranges = args.get("ranges")
-        start = args.get("start_line")
-        end = args.get("end_line")
-        limit = args.get("limit")
-        if isinstance(ranges, list) and ranges and isinstance(ranges[0], dict):
-            r0 = ranges[0]
-            s = int(r0.get("start_line") or r0.get("start") or 1)
-            e = int(r0.get("end_line") or r0.get("end") or (s + 80))
-            cmd_args["command"] = "sed -n '%d,%dp' %s" % (s, e, path)
-        elif start is not None and end is not None:
-            cmd_args["command"] = "sed -n '%d,%dp' %s" % (int(start), int(end), path)
-        elif start is not None and limit is not None:
-            s = int(start)
-            cmd_args["command"] = "sed -n '%d,%dp' %s" % (s, s + int(limit) - 1, path)
-        elif limit is not None:
-            cmd_args["command"] = "head -n %d %s" % (int(limit), path)
-        else:
-            cmd_args["command"] = "cat -n %s" % path
-    elif name == "list_dir":
-        cmd_args["command"] = "ls -la %s" % path
-    elif name == "grep":
-        pat = str(args.get("pattern") or args.get("query") or "").replace("'", "'\\''")
-        cmd_args["command"] = "grep -rn -- '%s' %s" % (pat, path)
-    elif name == "find_by_name":
-        pat = str(args.get("pattern") or args.get("name") or "*").replace("'", "'\\''")
-        cmd_args["command"] = "find %s -name '%s'" % (path, pat)
-    elif name == "write":
-        content = str(args.get("content") or "")
-        cmd_args["command"] = "cat <<'EOF' > %s\n%s\nEOF" % (path, content.rstrip("\n"))
-    return {
-        "id": call.get("id", ""),
-        "name": "command",
-        "arguments": json.dumps(cmd_args, ensure_ascii=False, sort_keys=True),
-    }
-
-
 def translate_legacy_turn_to_command(turn):
-    """Return a copy of an assistant turn with legacy floor file tools translated to Language v1 `command` calls."""
-    calls = turn.get("tool_calls") or []
-    if not calls:
-        return dict(turn)
-    return dict(turn, tool_calls=[translate_legacy_call_to_command(c) for c in calls])
+    """Historical requests cannot establish authority or outcomes on a new surface."""
+    raise ValueError("legacy translation is not training evidence; collect a fresh command-surface run")
 
 
 def extract(
@@ -893,13 +823,15 @@ def extract(
     out_sft=None,
     out_dpo=None,
     min_score=3,
-    preload_from_judge=True,
+    preload_from_judge=False,
     teacher_models=None,
     max_routine_reads_per_session=6,
-    drop_retired_command_rejections=True,
+    drop_retired_command_rejections=False,
     translate_legacy_tools=False,
 ):
     """Extract Stage 1 SFT rows and Stage 2 DPO pairs from transcripts and judged rows."""
+    if translate_legacy_tools:
+        raise ValueError("legacy trajectories cannot be translated into a different host state; collect a fresh command-surface run")
     by_session, by_opening = load_judged_index(rows_paths)
     teachers = set(teacher_models) if teacher_models else None
     sft_rows = []
@@ -912,9 +844,12 @@ def extract(
         "rejection_codes": {},
         "capped_routine_sft": 0,
         "dropped_retired_rejections": 0,
+        "qualified_sft_rows": 0,
+        "qualified_dpo_rows": 0,
     }
 
     for session in iter_transcripts(transcripts_path):
+        session_sft_start, session_dpo_start = len(sft_rows), len(dpo_rows)
         stats["sessions"] += 1
         sid = session.get("session_id") or session.get("id")
         sess_rows = by_session.get(sid) or []
@@ -935,6 +870,7 @@ def extract(
         current_opening = None
         steps_since_opening = 0
         routine_reads_kept = 0
+        routine_seen = set()
         for idx, msg in enumerate(messages):
             if msg.get("role") == "user":
                 if parse_host_user_rejection(msg) is None and msg.get("origin") != "host":
@@ -969,18 +905,14 @@ def extract(
                 or ("```json" in turn_text and not host_assembled and not defect_code)
             )
             prefix = _openai_messages(messages[:idx])
+            captures = session.get("model_requests") or {}
+            capture = captures.get(msg.get("id")) if isinstance(captures, dict) else None
+            if isinstance(capture, dict) and isinstance(capture.get("messages"), list):
+                prefix = copy.deepcopy(capture["messages"])
 
             # Extract retracted closeout drafts from draft_versions for this message slot.
             slot_drafts = draft_by_slot.get(msg.get("id")) or []
             if slot_drafts:
-                chosen_closeout = turn if (has_grounded_citations or turn["tool_calls"]) and not host_assembled and not defect_code else None
-                if chosen_closeout is None and idx + 1 < len(messages):
-                    for later in messages[idx + 1:idx + 4]:
-                        if later.get("role") == "assistant":
-                            cand = strip_thinking(later)
-                            if any(c.get("name") == "update_progress" for c in cand["tool_calls"]):
-                                chosen_closeout = cand
-                                break
                 for dv_idx, dv in enumerate(slot_drafts):
                     dv_code = dv.get("outcome_code") or "TURN_CLOSEOUT_REJECTED"
                     stats["rejection_codes"][dv_code] = stats["rejection_codes"].get(dv_code, 0) + 1
@@ -1000,7 +932,8 @@ def extract(
                         "rejection_details": {"slot_id": msg.get("id", ""), "version_index": dv.get("version_index", dv_idx)},
                         "surface": surface,
                         "prompt": prefix,
-                        "chosen": chosen_closeout,
+                        "chosen": None,
+                        "candidate_reasons": ["draft_original_request_unavailable"],
                         "rejected": rej_turn,
                         "meta": meta,
                     })
@@ -1050,7 +983,7 @@ def extract(
                         "```citations" in cand_text
                         or ("```json" in cand_text and not is_host_assembled_closeout(candidate_msg) and not report_document_defect_code(candidate_msg))
                     )
-                    if (candidate["tool_calls"] or cand_grounded) and not later_rejs:
+                    if (_calls_succeeded(candidate, later_results) or cand_grounded) and not later_rejs:
                         repaired_turn = candidate
                 # 1. Pre-rejection prevention pair at s_t.
                 dpo_rows.append({
@@ -1064,7 +997,9 @@ def extract(
                     "rejection_details": rej["details"],
                     "surface": surface,
                     "prompt": prefix,
-                    "chosen": repaired_turn,
+                    "chosen": None,
+                    "proposed_chosen": repaired_turn,
+                    "candidate_reasons": ["recovery_observed_at_different_state"],
                     "rejected": turn,
                     "meta": meta,
                 })
@@ -1083,36 +1018,14 @@ def extract(
                         "rejection_details": rej["details"],
                         "surface": surface,
                         "prompt": recovery_prefix,
-                        "chosen": repaired_turn,
+                        "chosen": None,
+                        "proposed_chosen": repaired_turn,
+                        "candidate_reasons": ["repeated_action_not_validated_at_recovery_state"],
                         "rejected": turn,
                         "meta": meta,
                     })
                     stats["by_source"]["post_rejection_recovery"] = stats["by_source"].get("post_rejection_recovery", 0) + 1
                 continue
-
-            # Check for dropped request_tools follow-through on this turn.
-            call_names = [c["name"] for c in turn["tool_calls"]]
-            if "request_tools" in call_names and row:
-                reqs = (row.get("labels") or {}).get("requests") or []
-                dropped = [r for r in reqs if not (r.get("after") or [])]
-                if dropped:
-                    dpo_rows.append({
-                        "schema": DPO_SCHEMA,
-                        "id": "%s:%d:followup" % (sid, idx),
-                        "session": sid,
-                        "root_session": session.get("root_session") or sid,
-                        "turn_index": idx,
-                        "source": "dropped_request_followup",
-                        "rejection_code": "dropped_request_followup",
-                        "rejection_details": {"need": dropped[0].get("need", "")},
-                        "surface": surface,
-                        "prompt": prefix,
-                        "chosen": None,
-                        "rejected": turn,
-                        "meta": meta,
-                    })
-                    stats["by_source"]["dropped_request_followup"] = stats["by_source"].get("dropped_request_followup", 0) + 1
-                    continue
 
             # Clean turn candidate for Stage 1 SFT warmup.
             if host_assembled or defect_code:
@@ -1136,9 +1049,7 @@ def extract(
                 )
                 if not req_satisfied:
                     continue
-            adapted = _adapt_turn_for_preloaded(turn, surface["active_tools"], preload_from_judge=preload_from_judge)
-            if translate_legacy_tools:
-                adapted = translate_legacy_turn_to_command(adapted)
+            adapted = turn if capture else _adapt_turn_for_preloaded(turn, surface["active_tools"], preload_from_judge=preload_from_judge)
             prior_tool_msgs = sum(1 for m in prefix if m.get("role") == "tool")
             if not adapted["tool_calls"] and not (has_grounded_citations and prior_tool_msgs >= 1):
                 continue
@@ -1147,10 +1058,21 @@ def extract(
                 and max_routine_reads_per_session > 0
                 and _is_routine_orientation_turn(adapted, idx, steps_since_opening=step_offset)
             ):
-                if routine_reads_kept >= max_routine_reads_per_session:
-                    stats["capped_routine_sft"] += 1
-                    continue
-                routine_reads_kept += 1
+                by_call = {r.get("tool_call_id"): r for r in results}
+                signature = json.dumps([
+                    [c.get("name"), c.get("arguments"), by_call.get(c.get("id"), {}).get("content")]
+                    for c in adapted["tool_calls"]
+                ], sort_keys=True)
+                previous = messages[idx - 1] if idx else {}
+                recovery = parse_host_user_rejection(previous) or any(
+                    parse_rejection(r) for r in _tool_results_in(previous)
+                )
+                if signature in routine_seen and not recovery:
+                    if routine_reads_kept >= max_routine_reads_per_session:
+                        stats["capped_routine_sft"] += 1
+                        continue
+                    routine_reads_kept += 1
+                routine_seen.add(signature)
             sft_rows.append({
                 "schema": SFT_SCHEMA,
                 "id": "%s:%d:sft" % (sid, idx),
@@ -1163,8 +1085,30 @@ def extract(
                 "meta": meta,
             })
 
+        for candidate in sft_rows[session_sft_start:] + dpo_rows[session_dpo_start:]:
+            message = messages[candidate["turn_index"]]
+            candidate["message_id"] = message.get("id")
+            captures = session.get("model_requests")
+            capture = captures.get(candidate["message_id"]) if isinstance(captures, dict) else None
+            if isinstance(capture, dict):
+                candidate["request_capture"] = copy.deepcopy(capture)
+                candidate["prompt"] = copy.deepcopy(capture.get("messages", candidate["prompt"]))
+                validations = session.get("training_validations")
+                if isinstance(validations, dict) and candidate["schema"] == SFT_SCHEMA:
+                    candidate["validation"] = copy.deepcopy(validations.get(candidate["message_id"]))
+                tools = capture.get("tools")
+                if isinstance(tools, list):
+                    active = [
+                        t["function"]["name"] for t in tools
+                        if isinstance(t, dict) and isinstance(t.get("function"), dict) and t["function"].get("name")
+                    ]
+                    candidate["surface"] = dict(candidate["surface"], active_tools=active, captured=True)
+            candidate["qualification"] = qualification(candidate)
+
     stats["sft_rows"] = len(sft_rows)
     stats["dpo_rows"] = len(dpo_rows)
+    stats["qualified_sft_rows"] = sum(training_eligible(r) for r in sft_rows)
+    stats["qualified_dpo_rows"] = sum(training_eligible(r) for r in dpo_rows)
     if out_sft:
         Path(out_sft).parent.mkdir(parents=True, exist_ok=True)
         with open(out_sft, "w", encoding="utf-8") as fh:
@@ -1305,9 +1249,9 @@ def _has_malformed_workflow_control_args(t_calls, s_calls):
 
 
 def classify_divergence(sft_row, teacher_turn, student_turn):
-    """Return a structured divergence code when the student's non-thinking turn is inferior to the teacher's."""
+    """Return an analysis hypothesis, never a host outcome or preference label."""
     surface = sft_row.get("surface") or {}
-    allowed_tools = set(surface.get("active_tools") or []) | set(surface.get("loadable") or [])
+    allowed_tools = set(surface.get("active_tools") or [])
     t_calls = teacher_turn.get("tool_calls") or []
     s_calls = student_turn.get("tool_calls") or []
     t_text = teacher_turn.get("text") or ""
@@ -1413,28 +1357,35 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
     return None
 
 
-def _tool_schemas_for(surface):
-    names = sorted(set(surface.get("active_tools") or []) | set(surface.get("loadable") or []))
-    return [{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}} for name in names]
+def _tool_schemas_for(row):
+    reasons = capture_reasons(row)
+    if reasons:
+        raise ValueError("exact request unavailable: %s" % ", ".join(reasons))
+    return copy.deepcopy(row["request_capture"]["tools"])
 
 
 def shadow_signature(sft_path, student_id, seed):
-    return {"sft_sha256": provenance.file_sha256(sft_path), "student": student_id, "seed": seed}
+    return {"format": "candidate-shadow/2", "sft_sha256": provenance.file_sha256(sft_path), "student": student_id, "seed": seed}
 
 
 def shadow(factory, sft_path, out_path, student_id="gemma-4-e4b-it", workers=16, seed=7):
-    """Query the student model (thinking=False) at teacher SFT states and write shadow_divergence DPO pairs."""
+    """Query exact captured requests and retain divergences for independent validation."""
     sft_path, out_path = Path(sft_path), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = Path(str(out_path) + ".partial.jsonl")
     manifest = Path(str(out_path) + ".manifest.json")
     sig = shadow_signature(sft_path, student_id, seed)
+    student = factory.model(student_id)
+    sig["model_revision"] = student.revision
+    sig["model_hf"] = student.hf
     if manifest.exists():
         try:
             if json.loads(manifest.read_text(encoding="utf-8")).get("signature") != sig:
                 partial.unlink(missing_ok=True)
         except ValueError:
             partial.unlink(missing_ok=True)
+    else:
+        partial.unlink(missing_ok=True)
     manifest.write_text(json.dumps({"signature": sig}, indent=2) + "\n", encoding="utf-8")
 
     done_ids = set()
@@ -1448,9 +1399,9 @@ def shadow(factory, sft_path, out_path, student_id="gemma-4-e4b-it", workers=16,
                     kept.append(rec["pair"])
 
     sft_rows = [json.loads(line) for line in sft_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    todo = [r for r in sft_rows if r["id"] not in done_ids]
-    student = factory.model(student_id)
-    chats = factory.chats(student)
+    replayable = [r for r in sft_rows if not capture_reasons(r)]
+    todo = [r for r in replayable if r["id"] not in done_ids]
+    chats = factory.chats(student) if todo else []
     lock = threading.Lock()
     counts = {}
 
@@ -1458,7 +1409,7 @@ def shadow(factory, sft_path, out_path, student_id="gemma-4-e4b-it", workers=16,
         idx, row = index_row
         chat = chats[idx % len(chats)]
         row_seed = int(hashlib.sha256(("%s:%s" % (seed, row["id"])).encode()).hexdigest()[:8], 16)
-        tools = _tool_schemas_for(row.get("surface") or {})
+        tools = _tool_schemas_for(row)
         student_turn = chat.turn(row["prompt"], tools=tools, temperature=0.0, seed=row_seed, thinking=False)
         student_turn["role"] = "assistant"
         code = classify_divergence(row, row["target"], student_turn)
@@ -1470,15 +1421,20 @@ def shadow(factory, sft_path, out_path, student_id="gemma-4-e4b-it", workers=16,
                 "session": row["session"],
                 "root_session": row["root_session"],
                 "turn_index": row["turn_index"],
+                "message_id": row.get("message_id"),
                 "source": "shadow_divergence",
                 "rejection_code": code,
                 "rejection_details": {"student": student_id, "teacher": row.get("meta", {}).get("model", "")},
                 "surface": row["surface"],
                 "prompt": row["prompt"],
-                "chosen": row["target"],
+                "chosen": None,
+                "proposed_chosen": row["target"],
                 "rejected": student_turn,
                 "meta": row["meta"],
+                "request_capture": row["request_capture"],
+                "candidate_reasons": ["divergence_is_not_a_validated_preference"],
             }
+            pair["qualification"] = qualification(pair)
         return {"sft_id": row["id"], "pair": pair, "code": code}
 
     with open(partial, "a", encoding="utf-8") as fh, concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1495,15 +1451,17 @@ def shadow(factory, sft_path, out_path, student_id="gemma-4-e4b-it", workers=16,
     with open(out_path, "w", encoding="utf-8") as fh:
         for pair in kept:
             fh.write(json.dumps(pair, ensure_ascii=False) + "\n")
-    return {"evaluated": len(sft_rows), "pairs": len(kept), "by_code": counts}
+    return {"evaluated": len(replayable), "skipped_missing_capture": len(sft_rows) - len(replayable),
+            "pairs": len(kept), "qualified_pairs": sum(training_eligible(r) for r in kept), "by_code": counts}
 
 
 def repair(factory, dpo_path, out_path, teacher_id="gemma-4-31b-it", workers=16, seed=7):
-    """Fill missing `chosen` turns in extracted DPO rows by querying the teacher model with thinking=False."""
+    """Collect teacher proposals at exact requests; host validation remains separate."""
     dpo_path, out_path = Path(dpo_path), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [json.loads(line) for line in dpo_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    need_repair = [(i, r) for i, r in enumerate(rows) if not r.get("chosen")]
+    need_repair = [(i, r) for i, r in enumerate(rows) if not r.get("chosen") and not capture_reasons(r)]
+    proposed = 0
     if need_repair:
         teacher = factory.model(teacher_id)
         chats = factory.chats(teacher)
@@ -1512,146 +1470,29 @@ def repair(factory, dpo_path, out_path, teacher_id="gemma-4-31b-it", workers=16,
             idx, row = item
             chat = chats[idx % len(chats)]
             row_seed = int(hashlib.sha256(("%s:%s" % (seed, row["id"])).encode()).hexdigest()[:8], 16)
-            tools = _tool_schemas_for(row.get("surface") or {})
+            tools = _tool_schemas_for(row)
             turn = chat.turn(row["prompt"], tools=tools, temperature=0.0, seed=row_seed, thinking=False)
             turn["role"] = "assistant"
-            rej_calls = [(c.get("name"), c.get("arguments")) for c in (row.get("rejected") or {}).get("tool_calls") or []]
-            new_calls = [(c.get("name"), c.get("arguments")) for c in turn.get("tool_calls") or []]
-            if not new_calls or new_calls == rej_calls:
+            if turn == row.get("rejected") or not (turn.get("tool_calls") or turn.get("text")):
                 return idx, None
             return idx, turn
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            for idx, chosen in pool.map(repair_one, need_repair):
-                rows[idx]["chosen"] = chosen
+            for idx, proposal in pool.map(repair_one, need_repair):
+                rows[idx]["proposed_chosen"] = proposal
+                if proposal:
+                    proposed += 1
+                    rows[idx]["candidate_reasons"] = sorted(set(rows[idx].get("candidate_reasons") or []) | {"teacher_proposal_requires_host_validation"})
 
-    completed = [r for r in rows if r.get("chosen") and (r["chosen"].get("tool_calls") or r["chosen"].get("text"))]
     with open(out_path, "w", encoding="utf-8") as fh:
-        for r in completed:
+        for r in rows:
+            r["qualification"] = qualification(r)
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-    return {"input_rows": len(rows), "repaired": len(need_repair), "completed_pairs": len(completed)}
-
-
-def _prefix_path_with_root(path_val, root_label):
-    if not isinstance(path_val, str) or not path_val.strip():
-        return path_val
-    p = path_val.strip()
-    if p.startswith("@"):
-        return p
-    if p == ".":
-        return "@%s/" % root_label
-    return "@%s/%s" % (root_label, p.lstrip("./"))
+    return {"input_rows": len(rows), "queried": len(need_repair), "proposed": proposed,
+            "skipped_missing_capture": sum(bool(capture_reasons(r)) for r in rows),
+            "completed_pairs": sum(training_eligible(r) for r in rows)}
 
 
 def synthesize_multi_root_pairs(sft_rows, companion_label="spec-reference", max_pairs=200):
-    """Synthesize multi-root @<folder>/ SFT and DPO examples from single-root trajectories.
-
-    When a project has two or more attached roots (e.g. an implementation repo and a
-    specification/companion repo), Painted Wolf Code requires @<folder>/ path prefixes
-    in file tools, `command` working directories/redirections, and closeout citations,
-    and expects cross-root audits to inspect both roots.
-    """
-    synth_sft = []
-    synth_dpo = []
-    file_tools = {
-        "read",
-        "list_dir",
-        "grep",
-        "summarize",
-        "survey_repo",
-        "find_by_name",
-        "edit",
-        "replace_lines",
-        "code_rewrite",
-        "jq_edit",
-        "restore_version",
-        "source_history",
-        "write",
-    }
-    for row in sft_rows:
-        if len(synth_dpo) >= max_pairs:
-            break
-        meta = dict(row.get("meta") or {})
-        ws = (meta.get("workspace") or "primary-repo").strip("@/")
-        target = row.get("target") or {}
-        calls = target.get("tool_calls") or []
-        if not any(c.get("name") in (file_tools | {"command"}) for c in calls):
-            continue
-        prefixed_calls = []
-        unprefixed_calls = []
-        changed = False
-        for c in calls:
-            unprefixed_calls.append(dict(c))
-            cname = c.get("name")
-            if cname in file_tools:
-                try:
-                    args = json.loads(c.get("arguments") or "{}")
-                except ValueError:
-                    args = None
-                if isinstance(args, dict):
-                    path_key = "path" if isinstance(args.get("path"), str) else ("file_path" if isinstance(args.get("file_path"), str) else None)
-                    if path_key and not args[path_key].startswith("@"):
-                        new_args = dict(args, **{path_key: _prefix_path_with_root(args[path_key], ws)})
-                        prefixed_calls.append(dict(c, arguments=json.dumps(new_args, ensure_ascii=False, sort_keys=True)))
-                        changed = True
-                        continue
-            elif cname == "command" and not _has_multi_root_path(c):
-                _, args = _command_program_and_args(c)
-                if args:
-                    new_args = dict(args)
-                    if isinstance(new_args.get("cwd"), str) and not new_args["cwd"].startswith("@"):
-                        new_args["cwd"] = _prefix_path_with_root(new_args["cwd"], ws)
-                    else:
-                        new_args["cwd"] = "@%s/" % ws
-                    for rkey in ("stdout_to", "stderr_to", "stdin_from"):
-                        if isinstance(new_args.get(rkey), str) and not new_args[rkey].startswith("@"):
-                            new_args[rkey] = _prefix_path_with_root(new_args[rkey], ws)
-                    prefixed_calls.append(dict(c, arguments=json.dumps(new_args, ensure_ascii=False, sort_keys=True)))
-                    changed = True
-                    continue
-            prefixed_calls.append(dict(c))
-        if not changed:
-            continue
-        prompt = []
-        injected = False
-        for m in row.get("prompt") or []:
-            mc = dict(m)
-            if mc.get("role") == "user" and not injected:
-                mc["content"] = (
-                    "[Workspace roots attached: @%s/ (primary), @%s/ (companion). "
-                    "Use @<folder>/ path prefixes for all file tools and citations.]\n\n%s"
-                    % (ws, companion_label, mc.get("content") or "")
-                )
-                injected = True
-            prompt.append(mc)
-        if not injected:
-            continue
-        chosen_turn = {"role": "assistant", "text": target.get("text") or "", "tool_calls": prefixed_calls}
-        rejected_turn = {"role": "assistant", "text": target.get("text") or "", "tool_calls": unprefixed_calls}
-        synth_sft.append({
-            "schema": SFT_SCHEMA,
-            "id": "%s:multiroot:sft" % row["id"],
-            "session": row["session"],
-            "root_session": row.get("root_session") or row["session"],
-            "turn_index": row["turn_index"],
-            "surface": row["surface"],
-            "prompt": prompt,
-            "target": chosen_turn,
-            "meta": dict(meta, multi_root=True),
-        })
-        synth_dpo.append({
-            "schema": DPO_SCHEMA,
-            "id": "%s:multiroot:dpo" % row["id"],
-            "session": row["session"],
-            "root_session": row.get("root_session") or row["session"],
-            "turn_index": row["turn_index"],
-            "source": "shadow_divergence",
-            "rejection_code": "multi_root_prefix_missing",
-            "rejection_details": {"primary_root": ws, "companion_root": companion_label},
-            "surface": row["surface"],
-            "prompt": prompt,
-            "chosen": chosen_turn,
-            "rejected": rejected_turn,
-            "meta": dict(meta, multi_root=True),
-        })
-    return synth_sft, synth_dpo
+    """Require real attached roots; bare session-root paths are legal."""
+    raise ValueError("multi-root training requires real attached-root trajectories; synthetic prefix negatives are invalid")

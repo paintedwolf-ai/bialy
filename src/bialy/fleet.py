@@ -183,7 +183,7 @@ def sidecar_files(factory, decide_env, lane):
         ports = m.ports()
         port = ports[lane % len(ports)]
         chosen[m.id] = endpoint_provider(factory, m, port)
-        wire_model[m.id] = m.id
+        wire_model[m.id] = m.wire_model
         providers += ["  - id: %s" % chosen[m.id], "    kind: openai-compatible",
                       "    base_url: %s" % factory.base_url(m, port), "    reasoning_wire: reasoning_content",
                       "    models: [{id: %s}]" % m.id]
@@ -191,7 +191,9 @@ def sidecar_files(factory, decide_env, lane):
     first = gens[0]
     local_only = bool((getattr(factory, "run", None) or {}).get("local_workers_only"))
     local_gens = [m for m in gens if not m.hosted]
-    worker_gens = local_gens if (local_only and local_gens) else gens
+    if local_only and not local_gens:
+        raise config.ConfigError("local_workers_only requires at least one local generator")
+    worker_gens = local_gens if local_only else gens
     lite_model = worker_gens[0]
     policy = ["coordinator: {provider_id: %s, model: %s}" % (chosen[first.id], wire_model[first.id]),
               "lite: {provider_id: %s, model: %s}" % (chosen[lite_model.id], wire_model[lite_model.id]),
@@ -395,10 +397,10 @@ def container_args(factory, run_name, shard, extra_mounts, image=None):
     for key_env in sorted({m.hosted["key_env"] for m in factory.generators() if m.hosted}):
         if os.environ.get(key_env):
             args += ["-e", key_env]
-    # Optional rate-limit tokens for the default direct search seed channels (GitHub, GitLab, StackExchange).
-    for opt_env in ("GITHUB_SEARCH_API_KEY", "GITLAB_SEARCH_API_KEY", "STACKEXCHANGE_API_KEY"):
-        if os.environ.get(opt_env):
-            args += ["-e", opt_env]
+    # The setup shell transfers optional search credentials into the sidecar vault.
+    for key_env in ("GITHUB_SEARCH_API_KEY", "GITLAB_SEARCH_API_KEY", "STACKEXCHANGE_API_KEY"):
+        if os.environ.get(key_env):
+            args += ["-e", key_env]
     return name, work, args + [image or fleet["image"]]
 
 
@@ -671,10 +673,8 @@ def collect(run_dir, pass_name, tasks_dir):
                 for line in retention_path.read_text(encoding="utf-8").splitlines():
                     if line.strip():
                         retention_out.append(line)
-    if requests_out:
-        (run_dir / "requests.jsonl").write_text("\n".join(requests_out) + "\n", encoding="utf-8")
-    if retention_out:
-        (run_dir / "retention.jsonl").write_text("\n".join(retention_out) + "\n", encoding="utf-8")
+    for name, lines in (("requests.jsonl", requests_out), ("retention.jsonl", retention_out)):
+        (run_dir / name).write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     with open(run_dir / "tasks-driven.jsonl", "w", encoding="utf-8") as fh:
         for task in driven:
             fh.write(json.dumps(task, ensure_ascii=False) + "\n")

@@ -66,11 +66,20 @@ def engine(factory, bin_dir=None):
     return out
 
 
+def _serve_record(serve):
+    """The durable part of a serve block: an external server's tunnel describes where
+    a run happened, not how to reproduce it."""
+    external = (serve or {}).get("external")
+    if not external:
+        return serve
+    return dict(serve, external={k: external[k] for k in ("model", "artifact", "artifact_sha256")})
+
+
 def serving(factory):
     version = _run(str(factory.root / "venvs/vllm/bin/python"), "-c", "import vllm; print(vllm.__version__)")
     gpus = _run("nvidia-smi", "--query-gpu=name", "--format=csv,noheader").splitlines()
     return {"vllm": version, "gpus": gpus,
-            "models": [{"id": m.id, "hf": m.hf, "revision": m.revision, "license": m.license, "serve": m.serve,
+            "models": [{"id": m.id, "hf": m.hf, "revision": m.revision, "license": m.license, "serve": _serve_record(m.serve),
                         "replicas": len(m.replicas), "hosted": {k: v for k, v in (m.hosted or {}).items() if k != "key_env"} or None}
                        for m in factory.models]}
 
