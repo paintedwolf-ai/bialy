@@ -238,7 +238,8 @@ RUN_DEFAULTS = {
     "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
     "custom_model": {"enabled": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
-                     "preload_from_judge": True, "shadow": False, "repair": False},
+                     "preload_from_judge": True, "max_routine_reads_per_session": 6, "multi_root": True,
+                     "multi_root_max_pairs": 200, "shadow": False, "repair": False},
 }
 
 # Map-valued run settings whose inner keys are model or archetype ids, not fixed setting names.

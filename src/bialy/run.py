@@ -494,14 +494,14 @@ def stage_custom_model(run):
     base.mkdir(parents=True, exist_ok=True)
     transcripts_path = base / "transcripts.jsonl.gz"
     if not transcripts_path.exists():
-        for pass_dir in (run.path("fleet-on"), run.path("fleet-off")):
-            if (pass_dir / "shards").exists():
-                dpo.export_transcripts(pass_dir, run.path("tasks"), transcripts_path)
-                break
+        pass_dirs = [p for p in (run.path("fleet-off"), run.path("fleet-on")) if (p / "shards").exists()]
+        if pass_dirs:
+            dpo.export_transcripts(pass_dirs, run.path("tasks"), transcripts_path)
     if not transcripts_path.exists():
         return {"skipped": "no transcripts archive or shard stores found"}
     sft_raw = base / "sft.raw.jsonl"
     dpo_raw = base / "dpo.raw.jsonl"
+    max_routine = cfg.get("max_routine_reads_per_session", 6)
     stats = dpo.extract(
         transcripts_path,
         rows_paths=judged_files(run),
@@ -509,7 +509,9 @@ def stage_custom_model(run):
         out_dpo=dpo_raw,
         min_score=int(cfg.get("min_score", 3)),
         preload_from_judge=bool(cfg.get("preload_from_judge", True)),
+        max_routine_reads_per_session=int(max_routine) if max_routine is not None else None,
     )
+    sft_inputs = [str(sft_raw)]
     dpo_inputs = [str(dpo_raw)]
     workers = int(run.setting("workers", 16))
     seed = int(run.setting("seed", 7))
@@ -522,8 +524,24 @@ def stage_custom_model(run):
         stats["shadow"] = dpo.shadow(run.factory, sft_raw, shadow_out, student_id=cfg.get("student", "gemma-4-e4b-it"), workers=workers, seed=seed)
         if shadow_out.exists() and shadow_out.stat().st_size > 0:
             dpo_inputs.append(str(shadow_out))
-    if sft_raw.exists() and sft_raw.stat().st_size > 0:
-        stats["sft_splits"] = split.split(run.factory, [str(sft_raw)], base / "sft")
+    if cfg.get("multi_root", True) and sft_raw.exists() and sft_raw.stat().st_size > 0:
+        raw_sft_rows = [json.loads(line) for line in sft_raw.read_text(encoding="utf-8").splitlines() if line.strip()]
+        synth_sft, synth_dpo = dpo.synthesize_multi_root_pairs(
+            raw_sft_rows,
+            max_pairs=int(cfg.get("multi_root_max_pairs", 200)),
+        )
+        if synth_sft:
+            multi_sft = base / "sft.multiroot.jsonl"
+            multi_sft.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in synth_sft), encoding="utf-8")
+            sft_inputs.append(str(multi_sft))
+        if synth_dpo:
+            multi_dpo = base / "dpo.multiroot.jsonl"
+            multi_dpo.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in synth_dpo), encoding="utf-8")
+            dpo_inputs.append(str(multi_dpo))
+        stats["multi_root"] = {"sft_rows": len(synth_sft), "dpo_rows": len(synth_dpo)}
+    existing_sft = [p for p in sft_inputs if Path(p).exists() and Path(p).stat().st_size > 0]
+    if existing_sft:
+        stats["sft_splits"] = split.split(run.factory, existing_sft, base / "sft")
     existing_dpo = [p for p in dpo_inputs if Path(p).exists() and Path(p).stat().st_size > 0]
     if existing_dpo:
         stats["dpo_splits"] = split.split(run.factory, existing_dpo, base / "dpo")

@@ -37,25 +37,25 @@ defaults:
 
 archetypes:
   - id: question
-    per_workspace: 14
+    per_workspace: 10
     attachment_rate: 0.2
     brief: A question about the project that can be answered by explaining, sometimes without opening any file (concepts, design choices, how to use the library, or terse questions like "Tell me about this repo" or "What does this file do?").
   - id: explain_code
-    per_workspace: 16
+    per_workspace: 10
     attachment_rate: 0.3
     brief: Ask how a specific part of this codebase works, naming a real file, type, or function, so answering means reading code.
     workflows: {recon-auto: 0.2}
   - id: locate
-    per_workspace: 20
+    per_workspace: 12
     brief: Ask the assistant to find something in the repository for the developer - where a function, type, or constant is defined, which file handles a behaviour, where a value or config option is set, every place something is used or called, which test covers a function, where an error message comes from, or which files match a description. Vary the phrasing from terse ("where's the retry logic?") to detailed.
   - id: bugfix
-    per_workspace: 18
+    per_workspace: 12
     attachment_rate: 0.2
     brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
     workflows: {implement-dispatch: 0.2, plan-auto: 0.1}
     prompt_timeout: 180m
   - id: small_change
-    per_workspace: 18
+    per_workspace: 12
     new_files: true
     follow_up_rate: 0.45
     brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one. Often ask to follow existing patterns in sibling packages. Some follow-ups should ask to inspect the session's file version history or line authorship for the edited file, compare the current file to its pre-edit version, or roll the file back to its previous version and try an alternative edit.
@@ -66,7 +66,7 @@ archetypes:
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
     prompt_timeout: 180m
   - id: design_review
-    per_workspace: 12
+    per_workspace: 10
     new_files: true
     follow_up_rate: 0.85
     attachment_rate: 0.35
@@ -81,24 +81,24 @@ archetypes:
     workflows: {recon-auto: 0.3, implement-dispatch: 0.3}
     prompt_timeout: 240m
   - id: run_and_verify
-    per_workspace: 16
+    per_workspace: 10
     brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running background processes or interactive terminal REPL/CLI prompts that wait for interactive input.
     prompt_timeout: 180m
   - id: git_history
-    per_workspace: 10
+    per_workspace: 8
     brief: Ask about history - who changed something and why, what changed between two points, show a commit, blame a line, list branches, compare two refs, or inspect uncommitted file version effects and line attribution in the working tree.
   - id: commit
-    per_workspace: 14
+    per_workspace: 10
     follow_up_rate: 0.65
     brief: Ask to make two or three small, distinct edits across files and then check in all uncommitted work in logical groups (or ask for the edits first and, as a follow-up, ask to split what is uncommitted into logical commits with clear commit messages), or ask to create or switch a branch, amend the last commit, revert a commit, or stash and restore work in progress.
   - id: data_files
-    per_workspace: 8
+    per_workspace: 6
     brief: Ask to inspect or edit structured files in the repo (JSON, YAML, TOML, package manifests, lockfiles), count or measure things, or extract an archive the task provides.
   - id: web
     per_workspace: 8
     brief: Ask something that needs the live web or browser inspection - a CVE, an HTTP endpoint's live response, a status page, or opening a page in the browser to capture a screenshot, measure element layout/bounding boxes, or review accessibility.
   - id: docs_online
-    per_workspace: 14
+    per_workspace: 10
     brief: Ask to look something up in documentation online - how a dependency's API or config option works per its official docs, what a framework's guide recommends, the latest published version of a package, a migration guide between versions, what an error message means according to the project that raises it, or to research online and compare the best current libraries/dependencies for a specific task in this language and recommend one with fetched evidence.
     workflows: {implement-dispatch: 0.25}
   - id: dependencies
@@ -125,7 +125,7 @@ archetypes:
     brief: Ask to set up OIDC credentials (such as configuring an OIDC provider/relying-party client, OAuth2 token exchange, JWKS/JWT signing secret, or CI/CD OIDC workload identity configuration), webhook HMAC signature verification (such as Stripe or GitHub webhooks), or authenticated local service/API credentials using managed generated secrets without ever hardcoding, echoing, or logging raw secret values. Ask to wire the generated secret references into configuration or `.env` files, verify both positive authentication and negative rejection (using a second generated test credential) against a local endpoint or test harness, and in follow-ups ask to rotate a credential, revoke temporary test secrets, or confirm the active/revoked secret list.
     prompt_timeout: 180m
   - id: multi_part
-    per_workspace: 10
+    per_workspace: 8
     brief: Ask for a broad piece of work with several independent parts that a lead engineer would split among helpers. Mix the kinds of part - some need an external library's or standard's documentation looked up online, some need the codebase investigated to find how or where something is done, and some are changes to make (for example, check what the upstream docs recommend for X, find every place we do Y, then update Z and its tests).
     workflows: {implement-dispatch: 0.7}
     prompt_timeout: 240m
@@ -153,7 +153,7 @@ archetypes:
     brief: Ask to update, critique, or write documentation, a changelog entry, a rendered SVG or HTML diagram of the architecture (rendered and visually inspected to verify layout and legibility), or release notes. Some requests should ask for editorial feedback or narrative signposting advice without making direct changes first, or ask to revise prose while keeping the author's style and not making the document any longer than it is.
     workflows: {implement-dispatch: 0.2}
   - id: chores
-    per_workspace: 14
+    per_workspace: 8
     brief: Ask for a routine chore - format the code, run the linter and fix what it reports, bump the version number, add an entry to .gitignore, find all TODO comments, clean build artifacts, rename a file and update its references, show what changed today, count lines of code, or check that the project builds.
     prompt_timeout: 150m
   - id: ops
@@ -166,7 +166,7 @@ archetypes:
   # repository facts.
   - id: new_project
     workspace: stack
-    per_workspace: 24
+    per_workspace: 16
     follow_up_rate: 0.65
     brief: Ask the assistant to build something new from scratch in this empty directory - a small application, playable browser or terminal game, tool, service, or site for the idea given. Some requests spell out the framework, the files, and the features; others only describe what it should do and leave every choice to the assistant. For web or graphical apps, often ask to start the app locally, open it in the built-in browser to verify that it renders and responds to clicks/input, measure layout or check accessibility, and capture a screenshot or surface note. Follow-ups ask for the next feature, report that the page loads blank or an interaction did not work when they tried it, ask to show a screenshot of the working UI, or ask for polish, tests, containerization, or a README.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.15}
@@ -179,7 +179,7 @@ archetypes:
     prompt_timeout: 180m
   - id: prototype
     workspace: stack
-    per_workspace: 10
+    per_workspace: 8
     brief: Ask for a quick spike or proof of concept before committing to an approach - research online to find the best current library or dependency on this stack for a specific task, compare the top candidates with fetched documentation/package evidence, and build and run a small spike with the chosen library to report whether it works.
     workflows: {implement-dispatch: 0.25}
     prompt_timeout: 150m
@@ -192,11 +192,11 @@ archetypes:
     prompt_timeout: 180m
   - id: scaffold
     workspace: stack
-    per_workspace: 8
+    per_workspace: 6
     brief: Ask to set up a project skeleton for the idea given before much code exists - the folder layout, package or build configuration, a test runner with one passing test, a linter or formatter, a .gitignore, a README with how to run it, and a git repository with a first commit.
     prompt_timeout: 150m
   - id: port
     workspace: stack
-    per_workspace: 8
+    per_workspace: 6
     brief: Paste a short program, script, or function written in another language or framework (include its code in the request, ten to sixty lines) and ask to rewrite it as a working project on this stack, keeping its behaviour, and to show that it runs.
     prompt_timeout: 180m
