@@ -29,7 +29,7 @@ models:
     license: Apache-2.0
     outputs_trainable: true
     reviewed: "2026-09-27: Apache-2.0 model card; no terms on outputs"
-    roles: [generator]
+    roles: [generator, teacher]
     serve:
       gpu: 1
       port: 8002

@@ -31,7 +31,7 @@ STYLE = """You write realistic requests that developers type to an AI coding ass
 Write each request the way a busy engineer would: some terse, some detailed, some with pasted error output, some polite, some blunt.
 Never tell the assistant which tool or command to use to do the work unless a developer naturally would ("run the tests", "check git blame").
 When reporting bugs, test failures, or asking for fixes, describe the observed symptom, error message, or failing test behavior rather than revealing the exact root-cause file and line number."""
-REPLY = """Reply with one JSON object only: {"tasks": [{"prompt": "...", "follow_ups": ["..."]}]}. follow_ups is a list of zero to two later messages in the same conversation."""
+REPLY = """Reply with one JSON object only: {"tasks": [{"prompt": "...", "follow_ups": ["..."]}]}. follow_ups is a list of zero to three later messages in the same conversation."""
 # What the request may refer to depends on where its session starts.
 WORKSPACE_RULES = {
     ("repository", False): """The assistant is working in the developer's repository, described by the facts you are given.
@@ -53,7 +53,7 @@ REPLY_SCHEMA = {
     "type": "object", "required": ["tasks"], "additionalProperties": False,
     "properties": {"tasks": {"type": "array", "items": {
         "type": "object", "required": ["prompt", "follow_ups"], "additionalProperties": False,
-        "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": 2}}}}},
+        "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": 3}}}}},
 }
 
 PATHLIKE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:py|go|js|ts|tsx|rs|rb|java|kt|php|md|toml|yaml|yml|json|lock|cfg|ini|txt))(?![\w/])")
@@ -152,7 +152,7 @@ def generate_batch(chat, workspace, facts, archetype, count, language, seed):
     out = []
     for t in tasks or []:
         if isinstance(t, dict) and isinstance(t.get("prompt"), str):
-            follow = [clean(f) for f in t.get("follow_ups") or [] if isinstance(f, str) and f.strip()][:2]
+            follow = [clean(f) for f in t.get("follow_ups") or [] if isinstance(f, str) and f.strip()][:3]
             out.append({"prompt": clean(t["prompt"]), "follow_ups": follow})
     return out
 
@@ -258,11 +258,43 @@ def pick_generator(factory, archetype_id, generators, rng):
     return rng.choices(candidates, weights=weights, k=1)[0]
 
 
+def format_attachment(path, is_dir=False):
+    """Format a Den file or folder attachment fence matching real interactive user sessions."""
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    kind = "folder" if is_dir else "file"
+    return '```attachment filename="%s" mime="text/plain" truncated="false"\n[User attached %s: %s]\n```' % (name, kind, path)
+
+
+def maybe_attach(prompt, files, attachment_rate, rng):
+    """Append a realistic Den file or folder attachment block on `attachment_rate` share of prompts."""
+    if attachment_rate <= 0 or not files or "```attachment" in prompt or rng.random() >= attachment_rate:
+        return prompt
+    file_set = set(files)
+    by_base = {f.rsplit("/", 1)[-1]: f for f in files}
+    dirs = sorted({f.rsplit("/", 1)[0] for f in files if "/" in f})
+    matched_files = []
+    for token in PATHLIKE.findall(prompt):
+        clean_tok = token.strip("./")
+        if clean_tok in file_set:
+            matched_files.append(clean_tok)
+        elif clean_tok in by_base:
+            matched_files.append(by_base[clean_tok])
+    if matched_files:
+        chosen = matched_files[0]
+        return "%s\n\n%s" % (prompt, format_attachment(chosen, is_dir=False))
+    if dirs and rng.random() < 0.25:
+        chosen_dir = rng.choice(dirs)
+        return "%s\n\n%s" % (prompt, format_attachment(chosen_dir, is_dir=True))
+    chosen_file = rng.choice(files)
+    return "%s\n\n%s" % (prompt, format_attachment(chosen_file, is_dir=False))
+
+
 def finalize(factory, workspace, raw, files, out_path, seed):
     """Validate, group, and assign one workspace's tasks, then write them. `files` lists a
     repository's files; a stack's workspace starts empty."""
     versions = workflow_versions(factory)
     rng = random.Random("%s:assign:%s" % (seed, workspace.name))
+    attach_rng = random.Random("%s:attach:%s" % (seed, workspace.name))
     archetypes = {a.id: a for a in factory.archetypes}
 
     def usable(text, arch):
@@ -288,12 +320,13 @@ def finalize(factory, workspace, raw, files, out_path, seed):
         follow = t["follow_ups"] if rng.random() < arch.follow_up_rate else []
         tid = hashlib.sha1(("%s\n%s" % (workspace.name, t["prompt"])).encode()).hexdigest()[:16]
         model = pick_generator(factory, arch.id, generators, rng)
+        prompt_text = maybe_attach(t["prompt"], files, getattr(arch, "attachment_rate", 0.0), attach_rng) if len(files) > 1 else t["prompt"]
         meta = {"task_id": tid, "workspace": workspace.name, "workspace_kind": workspace.kind, "split": workspace.split,
                 "archetype": arch.id, "prompt_group": group_key, "lang": t["lang"], "author_model": t["author"], "workflow": pick,
                 "prompt_timeout": arch.timeout(pick)}
         if t.get("seed"):
             meta["seed"] = t["seed"]
-        task = {"id": tid, "prompt": t["prompt"], "follow_ups": [{"prompt": f} for f in follow],
+        task = {"id": tid, "prompt": prompt_text, "follow_ups": [{"prompt": f} for f in follow],
                 "provider_id": factory.provider_id(factory.model(model)), "model": model, "meta": meta}
         if pick:
             task["workflow"] = pick

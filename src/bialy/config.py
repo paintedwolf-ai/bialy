@@ -107,6 +107,7 @@ class Archetype:
     prompt_timeout: str
     workflow_prompt_timeout: str
     new_files: bool = False
+    attachment_rate: float = 0.0
 
     def timeout(self, workflow):
         """The per-prompt budget for one of this archetype's tasks."""
@@ -334,7 +335,8 @@ def load():
                                         per_workspace=int(raw["per_workspace"]), workflows=workflows,
                                         follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"])),
                                         prompt_timeout=timeout, workflow_prompt_timeout=max(timeout, workflow_timeout, key=minutes),
-                                        new_files=workspace == "stack" or bool(raw.get("new_files", False))))
+                                        new_files=workspace == "stack" or bool(raw.get("new_files", False)),
+                                        attachment_rate=float(raw.get("attachment_rate", 0.0))))
     names = [w.name for w in out.workspaces()]
     if len(set(names)) != len(names):
         raise ConfigError("repository and stack names must be unique together: a workspace's name is its rows' identity")

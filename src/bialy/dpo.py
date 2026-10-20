@@ -27,9 +27,9 @@ from . import provenance
 SFT_SCHEMA = "pw-custom-sft/1"
 DPO_SCHEMA = "pw-custom-dpo/1"
 
-REJECTION_CODE_RE = re.compile(r"(?:^|\n)(?:⟦D⟧)?Code:\s*(\S+)", re.MULTILINE)
+REJECTION_CODE_RE = re.compile(r"(?:^|\n)(?:⟦D⟧)?Code:\s*([^\s,]+)", re.MULTILINE)
 STATUS_ERROR_RE = re.compile(r"(?:^|\n)(?:Status:\s*error|(?:⟦D⟧)?Rejected:)", re.MULTILINE)
-SCOPED_READ_KEYS = {"symbol", "start_line", "end_line", "offset", "limit"}
+SCOPED_READ_KEYS = {"ranges", "symbol", "start_line", "end_line", "offset", "limit"}
 
 
 def is_coordinator_feedback(text):
@@ -111,6 +111,7 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                         cur = parent_of[cur]
                     return cur
 
+                msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
                 for srow in sess_rows:
                     sid = srow["id"]
                     root = root_of(sid)
@@ -118,24 +119,32 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                         continue
                     mentry, spec = by_root[root]
                     meta = spec.get("meta") or mentry.get("meta") or {}
-                    msgs = conn.execute(
-                        "SELECT id, role, turn_kind, text, content_json, created_at FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
-                        (sid,),
-                    ).fetchall()
-                    messages = []
-                    for m in msgs:
-                        try:
-                            content = json.loads(m["content_json"]) if m["content_json"] else []
-                        except ValueError:
-                            content = []
-                        messages.append({
-                            "id": m["id"],
-                            "role": m["role"],
-                            "turn_kind": m["turn_kind"],
-                            "text": m["text"] or "",
-                            "content": content,
-                            "created_at": m["created_at"],
-                        })
+                    if "tool_calls_json" in msg_cols:
+                        msgs = conn.execute(
+                            "SELECT id, role, content, kind, visibility, seq, ord, ts, tool_calls_json, tool_result_json, reasoning_json "
+                            "FROM messages WHERE session_id = ? ORDER BY seq, ord, rowid",
+                            (sid,),
+                        ).fetchall()
+                        messages = [dict(m) for m in msgs]
+                    else:
+                        msgs = conn.execute(
+                            "SELECT id, role, turn_kind, text, content_json, created_at FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
+                            (sid,),
+                        ).fetchall()
+                        messages = []
+                        for m in msgs:
+                            try:
+                                content = json.loads(m["content_json"]) if m["content_json"] else []
+                            except ValueError:
+                                content = []
+                            messages.append({
+                                "id": m["id"],
+                                "role": m["role"],
+                                "turn_kind": m["turn_kind"],
+                                "text": m["text"] or "",
+                                "content": content,
+                                "created_at": m["created_at"],
+                            })
                     record = {
                         "shard": shard.name,
                         "session_id": sid,
@@ -170,22 +179,43 @@ def strip_thinking(message):
     """Return an assistant turn with reasoning blocks removed and text + tool_calls normalized."""
     text_parts = []
     tool_calls = []
-    for block in message.get("content") or []:
-        btype = block.get("type")
-        if btype == "reasoning":
-            continue
-        if btype == "text" and block.get("text"):
-            text_parts.append(block["text"].strip())
-        elif btype == "tool_calls":
-            for i, call in enumerate(block.get("calls") or []):
-                args = call.get("arguments", "{}")
-                if not isinstance(args, str):
-                    args = json.dumps(args, ensure_ascii=False, sort_keys=True)
-                tool_calls.append({
-                    "id": call.get("id") or ("call_%d" % i),
-                    "name": call.get("name", ""),
-                    "arguments": args,
-                })
+    raw_content = message.get("content")
+    if isinstance(raw_content, list):
+        for block in raw_content:
+            btype = block.get("type")
+            if btype == "reasoning":
+                continue
+            if btype == "text" and block.get("text"):
+                text_parts.append(block["text"].strip())
+            elif btype == "tool_calls":
+                for i, call in enumerate(block.get("calls") or []):
+                    args = call.get("arguments", call.get("args", "{}"))
+                    if not isinstance(args, str):
+                        args = json.dumps(args, ensure_ascii=False, sort_keys=True)
+                    tool_calls.append({
+                        "id": call.get("id") or ("call_%d" % i),
+                        "name": call.get("name", ""),
+                        "arguments": args,
+                    })
+    elif isinstance(raw_content, str) and raw_content.strip():
+        text_parts.append(raw_content.strip())
+    tc_json = message.get("tool_calls_json")
+    if tc_json and not tool_calls:
+        try:
+            parsed_calls = json.loads(tc_json) if isinstance(tc_json, str) else tc_json
+        except ValueError:
+            parsed_calls = []
+        for i, call in enumerate(parsed_calls or []):
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            name = call.get("name") or fn.get("name") or ""
+            args = call.get("args") if "args" in call else call.get("arguments", fn.get("arguments", "{}"))
+            if not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False, sort_keys=True)
+            tool_calls.append({
+                "id": call.get("id") or ("call_%d" % i),
+                "name": name,
+                "arguments": args,
+            })
     text = "\n\n".join(p for p in text_parts if p) or (message.get("text") or "").strip()
     return {"role": "assistant", "text": text, "tool_calls": tool_calls}
 
@@ -208,11 +238,55 @@ def parse_rejection(result_block):
     }
 
 
+def parse_host_user_rejection(message):
+    """Extract structured turn-level host rejections or coordinator nudges delivered as user-role messages."""
+    if not message or message.get("role") != "user":
+        return None
+    raw = message.get("content")
+    text = (message.get("text") or (raw if isinstance(raw, str) else "") or "").strip()
+    if not text:
+        return None
+    if text.startswith(">>> Tool feedback"):
+        return {"code": "COORDINATOR_FEEDBACK", "details": {}, "content": text[:1000]}
+    if text.startswith("Rejected:"):
+        if "progress steps" in text:
+            code = "TURN_CLOSEOUT_PENDING_PROGRESS"
+        elif "could not parse the arguments" in text:
+            code = "TOOL_ARGS_MALFORMED"
+        elif "Markdown answer" in text:
+            code = "TURN_CLOSEOUT_FORMAT"
+        else:
+            code = "TURN_CLOSEOUT_REJECTED"
+        return {"code": code, "details": {}, "content": text[:1000]}
+    if text.startswith("[host:coordinator-survey-streak]"):
+        return {"code": "COORDINATOR_SURVEY_STREAK", "details": {}, "content": text[:1000]}
+    if text.startswith("[host:coordinator-progress-missing]"):
+        return {"code": "COORDINATOR_PROGRESS_MISSING", "details": {}, "content": text[:1000]}
+    return None
+
+
 def _tool_results_in(message):
     out = []
-    for block in message.get("content") or []:
-        if block.get("type") == "tool_results":
-            out.extend(block.get("results") or [])
+    raw_content = message.get("content")
+    if isinstance(raw_content, list):
+        for block in raw_content:
+            if block.get("type") == "tool_results":
+                out.extend(block.get("results") or [])
+        return out
+    tr_json = message.get("tool_result_json")
+    if tr_json:
+        try:
+            parsed = json.loads(tr_json) if isinstance(tr_json, str) else tr_json
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            if "content" not in parsed and isinstance(raw_content, str):
+                parsed = dict(parsed, content=raw_content)
+            return [parsed]
+        if isinstance(parsed, list):
+            return [r for r in parsed if isinstance(r, dict)]
+    if isinstance(raw_content, str) and raw_content:
+        return [{"content": raw_content}]
     return out
 
 
@@ -222,7 +296,9 @@ def _openai_messages(prefix):
     for msg in prefix:
         role = msg.get("role")
         if role == "user":
-            out.append({"role": "user", "content": msg.get("text") or ""})
+            raw_c = msg.get("content")
+            text = msg.get("text") or (raw_c if isinstance(raw_c, str) else "")
+            out.append({"role": "user", "content": text})
         elif role == "assistant":
             clean = strip_thinking(msg)
             entry = {"role": "assistant", "content": clean["text"] or ""}
@@ -237,7 +313,7 @@ def _openai_messages(prefix):
                 out.append({
                     "role": "tool",
                     "tool_call_id": res.get("tool_call_id") or "call_0",
-                    "name": res.get("tool_name") or "",
+                    "name": res.get("tool_name") or res.get("name") or "",
                     "content": str(res.get("content") or ""),
                 })
     return out
@@ -318,8 +394,9 @@ def _adapt_turn_for_preloaded(turn, active_tools, preload_from_judge=True):
 
 def _session_meta(session, row=None):
     row_meta = (row or {}).get("meta") or {}
-    workspace = session.get("workspace") or row_meta.get("workspace") or (row or {}).get("project") or "unknown"
-    task_id = session.get("task_id") or row_meta.get("task_id") or session.get("root_session") or session.get("session_id")
+    sid = session.get("session_id") or session.get("id") or ""
+    workspace = session.get("workspace") or row_meta.get("workspace") or row_meta.get("repo") or (row or {}).get("project") or "unknown"
+    task_id = session.get("task_id") or row_meta.get("task_id") or session.get("root_session") or sid
     prompt_group = session.get("prompt_group") or row_meta.get("prompt_group") or ("%s:%s" % (workspace, task_id))
     return {
         "workspace": workspace,
@@ -340,7 +417,7 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
 
     for session in iter_transcripts(transcripts_path):
         stats["sessions"] += 1
-        sid = session.get("session_id")
+        sid = session.get("session_id") or session.get("id")
         sess_rows = by_session.get(sid) or []
         primary_row = sess_rows[0] if sess_rows else None
         meta = _session_meta(session, primary_row)
@@ -348,24 +425,27 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
         called_in_session = {
             call.get("name")
             for msg in messages if msg.get("role") == "assistant"
-            for block in (msg.get("content") or []) if block.get("type") == "tool_calls"
-            for call in (block.get("calls") or []) if call.get("name")
+            for call in strip_thinking(msg)["tool_calls"] if call.get("name")
         }
         current_opening = None
         for idx, msg in enumerate(messages):
             if msg.get("role") == "user":
-                current_opening = msg.get("id")
+                if parse_host_user_rejection(msg) is None and msg.get("origin") != "host":
+                    current_opening = msg.get("id")
                 continue
             if msg.get("role") != "assistant":
                 continue
             row = by_opening.get((sid, current_opening)) or primary_row
             surface = synthesized_surface(row, min_score=min_score, preload_from_judge=preload_from_judge)
             turn = strip_thinking(msg)
-            if not turn["tool_calls"]:
-                continue
             next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
             results = _tool_results_in(next_msg) if (next_msg and next_msg.get("role") == "tool") else []
             rejections = [r for r in (parse_rejection(res) for res in results) if r is not None]
+            host_user_rej = parse_host_user_rejection(next_msg)
+            if not rejections and host_user_rej is not None:
+                rejections = [host_user_rej]
+            if not turn["tool_calls"] and not rejections:
+                continue
             prefix = _openai_messages(messages[:idx])
 
             if rejections:
@@ -378,6 +458,8 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                     later_msg = messages[idx + 3] if idx + 3 < len(messages) else None
                     later_results = _tool_results_in(later_msg) if (later_msg and later_msg.get("role") == "tool") else []
                     later_rejs = [r for r in (parse_rejection(res) for res in later_results) if r is not None]
+                    if parse_host_user_rejection(later_msg) is not None:
+                        later_rejs.append(parse_host_user_rejection(later_msg))
                     if candidate["tool_calls"] and not later_rejs:
                         repaired_turn = candidate
                 # 1. Pre-rejection prevention pair at s_t.
@@ -443,7 +525,8 @@ def extract(transcripts_path, rows_paths=(), out_sft=None, out_dpo=None, min_sco
                     continue
 
             # Clean turn candidate for Stage 1 SFT warmup.
-            if session.get("status") not in ("settled", ""):
+            task_status = ((row or {}).get("meta") or {}).get("task_status")
+            if session.get("status") not in ("settled", "idle", "") or task_status not in (None, "", "settled"):
                 continue
             if teachers and meta["model"] and meta["model"] not in teachers:
                 continue
