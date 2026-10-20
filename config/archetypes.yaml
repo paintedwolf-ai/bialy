@@ -38,15 +38,18 @@ defaults:
 archetypes:
   - id: question
     per_workspace: 14
-    brief: A question about the project that can be answered by explaining, sometimes without opening any file (concepts, design choices, how to use the library).
+    attachment_rate: 0.2
+    brief: A question about the project that can be answered by explaining, sometimes without opening any file (concepts, design choices, how to use the library, or terse questions like "Tell me about this repo" or "What does this file do?").
   - id: explain_code
     per_workspace: 16
+    attachment_rate: 0.3
     brief: Ask how a specific part of this codebase works, naming a real file, type, or function, so answering means reading code.
   - id: locate
     per_workspace: 20
     brief: Ask the assistant to find something in the repository for the developer - where a function, type, or constant is defined, which file handles a behaviour, where a value or config option is set, every place something is used or called, which test covers a function, where an error message comes from, or which files match a description. Vary the phrasing from terse ("where's the retry logic?") to detailed.
   - id: bugfix
     per_workspace: 18
+    attachment_rate: 0.2
     brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
     workflows: {implement-dispatch: 0.2}
     prompt_timeout: 150m
@@ -60,6 +63,14 @@ archetypes:
     brief: Ask for a structural refactor across several call sites, or a mechanical rewrite of a pattern throughout the code.
     workflows: {implement-dispatch: 0.4}
     prompt_timeout: 150m
+  - id: design_review
+    per_workspace: 12
+    new_files: true
+    follow_up_rate: 0.85
+    attachment_rate: 0.35
+    brief: Ask for an architectural, maintainability, or design review of part of the codebase—or include feedback/analysis from another engineer or agent—and explicitly instruct the assistant NOT to make code changes yet ("Don't make changes, just give me a report", "Is it worth changing X?", "What would you recommend?"). Then in follow-ups, push back on a tradeoff or clarify scope, and finally ask the assistant to implement what it recommended ("Do as you would recommend", "OK great, add it", "Build this as you recommend now").
+    workflows: {implement-dispatch: 0.25}
+    prompt_timeout: 120m
   - id: run_and_verify
     per_workspace: 16
     brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running or background processes.
@@ -69,8 +80,8 @@ archetypes:
     brief: Ask about history - who changed something and why, what changed between two points, show a commit, blame a line, list branches, or compare two refs.
   - id: commit
     per_workspace: 14
-    follow_up_rate: 0.6
-    brief: Ask to commit work - commit my changes, split what is uncommitted into logical commits, write a good commit message, create or switch a branch, amend the last commit, revert a commit, stash or restore work in progress. Some requests should first ask for a small edit and then, as a follow-up, ask to commit it.
+    follow_up_rate: 0.65
+    brief: Ask to make two or three small, distinct edits across files and then check in all uncommitted work in logical groups (or ask for the edits first and, as a follow-up, ask to split what is uncommitted into logical commits with clear commit messages), or ask to create or switch a branch, amend the last commit, revert a commit, or stash and restore work in progress.
   - id: data_files
     per_workspace: 8
     brief: Ask to inspect or edit structured files in the repo (JSON, YAML, TOML, package manifests, lockfiles), count or measure things, or extract an archive the task provides.
@@ -115,7 +126,9 @@ archetypes:
   - id: docs
     per_workspace: 6
     new_files: true
-    brief: Ask to update or write documentation, a changelog entry, a diagram of the architecture, or release notes.
+    follow_up_rate: 0.5
+    attachment_rate: 0.25
+    brief: Ask to update, critique, or write documentation, a changelog entry, a diagram of the architecture, or release notes. Some requests should ask for editorial feedback or narrative signposting advice without making direct changes first, or ask to revise prose while keeping the author's style and not making the document any longer than it is.
     workflows: {implement-dispatch: 0.2}
   - id: chores
     per_workspace: 14
@@ -123,7 +136,7 @@ archetypes:
     prompt_timeout: 90m
   - id: ops
     per_workspace: 6
-    brief: Ask to generate a secret or token for local development, inspect or stop running processes, open an interactive terminal session, or wait for something to become ready.
+    brief: Ask to generate a secret or token for local development without hardcoding credentials, start or containerize a local service, wait for a process, port, or HTTP endpoint to become ready, inspect or stop running processes, or open an interactive terminal session.
 
   # Greenfield: each stack's sessions start in an empty directory. The generator
   # gets the stack and a drawn project idea and scale (stacks.yaml), not
@@ -131,8 +144,8 @@ archetypes:
   - id: new_project
     workspace: stack
     per_workspace: 24
-    follow_up_rate: 0.6
-    brief: Ask the assistant to build something new from scratch in this empty directory - a small application, game, tool, service, or site for the idea given. Some requests spell out the framework, the files, and the features; others only describe what it should do and leave every choice to the assistant. Follow-ups ask for the next feature, report that something did not work when they tried it, or ask for polish, tests, or a README.
+    follow_up_rate: 0.65
+    brief: Ask the assistant to build something new from scratch in this empty directory - a small application, playable browser or terminal game, tool, service, or site for the idea given. Some requests spell out the framework, the files, and the features; others only describe what it should do and leave every choice to the assistant. For web or graphical apps, often ask to start the app locally, open it in the built-in browser to verify that it renders and responds to clicks/input, and capture a screenshot or surface note. Follow-ups ask for the next feature, report that the page loads blank or an interaction did not work when they tried it, ask to show a screenshot of the working UI, or ask for polish, tests, containerization, or a README.
     workflows: {implement-dispatch: 0.3}
     prompt_timeout: 150m
   - id: prototype

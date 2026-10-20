@@ -327,3 +327,56 @@ def test_compact_prompt_preserves_head_tail_and_read_receipts():
     rej = dpo.parse_rejection({"content": compacted[-1]["content"], "is_error": True})
     assert rej["code"] == "PROGRESS_MISSING"
 
+
+def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, tmp_path):
+    # 1. Real store.db / sessions/transcripts.jsonl.gz schema with tool_calls_json and turn-level host rejection.
+    transcript = {
+        "id": "sess-real-1",
+        "parent_session_id": None,
+        "status": "idle",
+        "model": "gemma-4-26b-a4b-it",
+        "messages": [
+            {"id": "u1", "role": "user", "origin": "user", "content": "Don't make changes. Tell me how ctx.py works."},
+            {"id": "a1", "role": "assistant", "origin": "model", "content": "",
+             "tool_calls_json": json.dumps([{"name": "read", "id": "c1", "args": {"path": "src/flask/ctx.py", "ranges": [{"start_line": 1, "end_line": 40}]}}])},
+            {"id": "t1", "role": "tool", "origin": "tool", "content": "[read#1]\ndef push(): pass",
+             "tool_result_json": json.dumps({"content": "[read#1]\ndef push(): pass"})},
+            {"id": "a2", "role": "assistant", "origin": "model", "content": "Done, everything is complete.", "tool_calls_json": None},
+            {"id": "u2", "role": "user", "origin": "host",
+             "content": "Rejected: This tool-free response would end the turn with 2 progress steps still pending.\n\nCause: Work remains unfinished."},
+            {"id": "a3", "role": "assistant", "origin": "model", "content": "",
+             "tool_calls_json": json.dumps([{"name": "update_progress", "id": "c2", "args": {"content": "## Progress\n- [x] Done"}}])},
+            {"id": "t2", "role": "tool", "origin": "tool", "content": "Updated progress.", "tool_result_json": json.dumps({"content": "Updated progress."})},
+        ],
+    }
+    tpath = tmp_path / "real_transcripts.jsonl"
+    tpath.write_text(json.dumps(transcript) + "\n")
+    sft_out = tmp_path / "sft.jsonl"
+    dpo_out = tmp_path / "dpo.jsonl"
+    stats = dpo.extract(tpath, out_sft=sft_out, out_dpo=dpo_out)
+    assert stats["sft_rows"] == 2
+    assert stats["rejection_codes"] == {"TURN_CLOSEOUT_PENDING_PROGRESS": 1}
+    dpo_rows = [json.loads(line) for line in dpo_out.read_text().splitlines()]
+    assert {r["source"] for r in dpo_rows} == {"host_rejection", "post_rejection_recovery"}
+    prevent = next(r for r in dpo_rows if r["source"] == "host_rejection")
+    assert prevent["rejected"]["tool_calls"] == [] and prevent["chosen"]["tool_calls"][0]["name"] == "update_progress"
+
+    # 2. design_review archetype and Den attachment block generation.
+    arch_by_id = {a.id: a for a in factory.archetypes}
+    assert "design_review" in arch_by_id and arch_by_id["design_review"].attachment_rate > 0
+    files = ["src/flask/ctx.py", "src/flask/app.py", "README.md"]
+    raw = [{
+        "prompt": "Don't make changes yet. Review src/flask/ctx.py and tell me how we should restructure it.",
+        "follow_ups": ["What if we keep the existing signature?", "Do as you would recommend.", "Now commit the changes."],
+        "archetype": "design_review",
+        "lang": "en",
+        "author": "m",
+    }]
+    forced = dataclasses.replace(factory, archetypes=[dataclasses.replace(a, attachment_rate=1.0, follow_up_rate=1.0) for a in factory.archetypes])
+    tasks.finalize(forced, forced.repos[0], raw, files, tmp_path / "design.jsonl", seed=7)
+    [task] = [json.loads(line) for line in (tmp_path / "design.jsonl").read_text().splitlines()]
+    assert '```attachment filename="ctx.py"' in task["prompt"]
+    assert "[User attached file: src/flask/ctx.py]" in task["prompt"]
+    assert len(task["follow_ups"]) == 3
+
+
