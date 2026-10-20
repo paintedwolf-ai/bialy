@@ -57,11 +57,12 @@ archetypes:
   - id: small_change
     per_workspace: 18
     new_files: true
-    brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one. Often ask to follow existing patterns in sibling packages.
+    follow_up_rate: 0.45
+    brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one. Often ask to follow existing patterns in sibling packages. Some follow-ups should ask to inspect the session's file version history or line authorship for the edited file, compare the current file to its pre-edit version, or roll the file back to its previous version and try an alternative edit.
     prompt_timeout: 90m
   - id: refactor
     per_workspace: 8
-    brief: Ask for a structural refactor across several call sites, or a mechanical rewrite of a pattern throughout the code.
+    brief: Ask for a structural refactor across several call sites, or a mechanical AST/pattern rewrite of a construct throughout the code.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
     prompt_timeout: 150m
   - id: design_review
@@ -74,11 +75,11 @@ archetypes:
     prompt_timeout: 120m
   - id: run_and_verify
     per_workspace: 16
-    brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running or background processes.
+    brief: Ask to build, run the tests, run one test, run a linter or benchmark, start the program, or check that a change works; some should involve long-running background processes or interactive terminal REPL/CLI prompts that wait for interactive input.
     prompt_timeout: 120m
   - id: git_history
     per_workspace: 10
-    brief: Ask about history - who changed something and why, what changed between two points, show a commit, blame a line, list branches, or compare two refs.
+    brief: Ask about history - who changed something and why, what changed between two points, show a commit, blame a line, list branches, compare two refs, or inspect uncommitted file version effects and line attribution in the working tree.
   - id: commit
     per_workspace: 14
     follow_up_rate: 0.65
@@ -88,7 +89,7 @@ archetypes:
     brief: Ask to inspect or edit structured files in the repo (JSON, YAML, TOML, package manifests, lockfiles), count or measure things, or extract an archive the task provides.
   - id: web
     per_workspace: 8
-    brief: Ask something that needs the live web - a CVE, an HTTP endpoint's live response, a status page, or a screenshot of a web page.
+    brief: Ask something that needs the live web or browser inspection - a CVE, an HTTP endpoint's live response, a status page, or opening a page in the browser to capture a screenshot, measure element layout/bounding boxes, or review accessibility.
   - id: docs_online
     per_workspace: 14
     brief: Ask to look something up in documentation online - how a dependency's API or config option works per its official docs, what a framework's guide recommends, the latest published version of a package, a migration guide between versions, or what an error message means according to the project that raises it.
@@ -99,10 +100,16 @@ archetypes:
     workflows: {implement-dispatch: 0.4}
     prompt_timeout: 90m
   - id: security
-    per_workspace: 6
-    brief: Ask for a security review of part of the code, to scan the project for vulnerabilities or secrets, or to triage findings from a scan.
+    per_workspace: 8
+    brief: Ask for a security review of part of the code, to run the project's security/SAST/secret scanners and summarize or query findings, to triage findings from a scan, or to fix a reported vulnerability and compare the scan results before and after the fix to prove the finding is resolved.
     workflows: {implement-dispatch: 0.2, security-auto: 0.4}
     prompt_timeout: 90m
+  - id: secrets_and_auth
+    per_workspace: 10
+    new_files: true
+    follow_up_rate: 0.55
+    brief: Ask to set up OIDC credentials (such as configuring an OIDC provider/relying-party client, OAuth2 token exchange, JWKS/JWT signing secret, or CI/CD OIDC workload identity configuration), webhook HMAC signature verification (such as Stripe or GitHub webhooks), or authenticated local service/API credentials using managed generated secrets without ever hardcoding, echoing, or logging raw secret values. Ask to wire the generated secret references into configuration or `.env` files, verify both positive authentication and negative rejection (using a second generated test credential) against a local endpoint or test harness, and in follow-ups ask to rotate a credential, revoke temporary test secrets, or confirm the active/revoked secret list.
+    prompt_timeout: 120m
   - id: multi_part
     per_workspace: 10
     brief: Ask for a broad piece of work with several independent parts that a lead engineer would split among helpers. Mix the kinds of part - some need an external library's or standard's documentation looked up online, some need the codebase investigated to find how or where something is done, and some are changes to make (for example, check what the upstream docs recommend for X, find every place we do Y, then update Z and its tests).
@@ -115,9 +122,9 @@ archetypes:
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
     prompt_timeout: 150m
   - id: project_setup
-    per_workspace: 6
+    per_workspace: 8
     new_files: true
-    brief: Ask to add project infrastructure the repository lacks or to replace what it has - a CI workflow, a Dockerfile or dev container, a Makefile or task runner, a linter or formatter configuration, a pre-commit hook, a benchmark harness, or an issue template - and make it work with how the project builds and tests today.
+    brief: Ask to add project infrastructure or assistant customization the repository lacks - a CI workflow (including OIDC cloud deployment trust), a Dockerfile or dev container, a Makefile or task runner, a linter or formatter configuration, a pre-commit hook, a benchmark harness, or project-level `.paintedwolf/` customizations such as a custom multi-phase workflow (`workflow.yaml`), a reusable project skill (`SKILL.md`), or a Sigma security detection pack (`pack.yaml`, `rules/*.yml`, and `fixtures.yaml`).
     prompt_timeout: 90m
   - id: research_change
     per_workspace: 8
@@ -129,7 +136,7 @@ archetypes:
     new_files: true
     follow_up_rate: 0.5
     attachment_rate: 0.25
-    brief: Ask to update, critique, or write documentation, a changelog entry, a diagram of the architecture, or release notes. Some requests should ask for editorial feedback or narrative signposting advice without making direct changes first, or ask to revise prose while keeping the author's style and not making the document any longer than it is.
+    brief: Ask to update, critique, or write documentation, a changelog entry, a rendered SVG or HTML diagram of the architecture (rendered and visually inspected to verify layout and legibility), or release notes. Some requests should ask for editorial feedback or narrative signposting advice without making direct changes first, or ask to revise prose while keeping the author's style and not making the document any longer than it is.
     workflows: {implement-dispatch: 0.2}
   - id: chores
     per_workspace: 14
@@ -137,7 +144,7 @@ archetypes:
     prompt_timeout: 90m
   - id: ops
     per_workspace: 6
-    brief: Ask to generate a secret or token for local development without hardcoding credentials, start or containerize a local service, wait for a process, port, or HTTP endpoint to become ready, inspect or stop running processes, or open an interactive terminal session.
+    brief: Ask to start or containerize a local service, wait for a process, port, or HTTP endpoint to become ready, inspect or signal running processes, or open an interactive PTY terminal session to drive an interactive CLI or REPL and capture a terminal snapshot.
 
   # Greenfield: each stack's sessions start in an empty directory. The generator
   # gets the stack and a drawn project idea and scale (stacks.yaml), not
@@ -146,9 +153,15 @@ archetypes:
     workspace: stack
     per_workspace: 24
     follow_up_rate: 0.65
-    brief: Ask the assistant to build something new from scratch in this empty directory - a small application, playable browser or terminal game, tool, service, or site for the idea given. Some requests spell out the framework, the files, and the features; others only describe what it should do and leave every choice to the assistant. For web or graphical apps, often ask to start the app locally, open it in the built-in browser to verify that it renders and responds to clicks/input, and capture a screenshot or surface note. Follow-ups ask for the next feature, report that the page loads blank or an interaction did not work when they tried it, ask to show a screenshot of the working UI, or ask for polish, tests, containerization, or a README.
-    workflows: {implement-dispatch: 0.3}
+    brief: Ask the assistant to build something new from scratch in this empty directory - a small application, playable browser or terminal game, tool, service, or site for the idea given. Some requests spell out the framework, the files, and the features; others only describe what it should do and leave every choice to the assistant. For web or graphical apps, often ask to start the app locally, open it in the built-in browser to verify that it renders and responds to clicks/input, measure layout or check accessibility, and capture a screenshot or surface note. Follow-ups ask for the next feature, report that the page loads blank or an interaction did not work when they tried it, ask to show a screenshot of the working UI, or ask for polish, tests, containerization, or a README.
+    workflows: {implement-dispatch: 0.3, plan-auto: 0.15}
     prompt_timeout: 150m
+  - id: greenfield_auth
+    workspace: stack
+    per_workspace: 6
+    follow_up_rate: 0.5
+    brief: Ask to build a new service, CLI, or web app on this stack that includes OIDC authentication (discovery, client credentials or authorization-code flow, and JWT/JWKS validation), signed webhook handling, or token-authenticated API endpoints, using generated managed secrets for all client secrets, signing keys, and API tokens without hardcoding or printing raw secret values, and verifying both valid and invalid credentials against the running service.
+    prompt_timeout: 120m
   - id: prototype
     workspace: stack
     per_workspace: 10
