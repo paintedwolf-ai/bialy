@@ -56,7 +56,7 @@ REPLY_SCHEMA = {
         "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": 3}}}}},
 }
 
-PATHLIKE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:py|go|js|ts|tsx|rs|rb|java|kt|php|md|toml|yaml|yml|json|lock|cfg|ini|txt))(?![\w/])")
+PATHLIKE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:py|go|js|jsx|ts|tsx|rs|rb|java|kt|php|c|h|cpp|hpp|cc|cs|sh|sql|html|css|vue|svelte|md|toml|yaml|yml|json|lock|cfg|ini|txt))(?![\w/])")
 LANGUAGE_NAMES = {"es": "Spanish", "de": "German", "fr": "French", "pt": "Portuguese", "ja": "Japanese", "zh": "Chinese", "ko": "Korean", "it": "Italian"}
 
 
