@@ -427,4 +427,108 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     assert web_div == "snippet_only_web_research"
     assert "public_api_cli" in arch_by_id and arch_by_id["public_api_cli"].workspace == "stack"
 
+    # 4. Reconstructed closeout fence from grounding_json/artifact_ids_json + draft_versions extraction.
+    closeout_tx = {
+        "id": "sess-closeout-1",
+        "parent_session_id": None,
+        "status": "settled",
+        "workspace": "oar-gateway",
+        "model": "claude-sonnet-4-6",
+        "messages": [
+            {"id": "u1", "role": "user", "origin": "user", "content": "Build tic tac toe and verify it."},
+            {"id": "a1", "role": "assistant", "origin": "model", "content": "",
+             "tool_calls_json": json.dumps([{"name": "write", "id": "c1", "args": {"path": "index.html", "content": "<html></html>"}}])},
+            {"id": "t1", "role": "tool", "origin": "tool", "content": "[write#1]\nWrote index.html"},
+            {"id": "a2", "role": "assistant", "origin": "model", "content": "",
+             "tool_calls_json": json.dumps([{"name": "capture_page", "id": "c2", "args": {"path": "index.html", "capture": "screenshot"}}])},
+            {"id": "t2", "role": "tool", "origin": "tool", "content": '[page#1]\n{"artifact_id":"9823b977-2c86-4057-9fcb-ef92acbbc97d"}'},
+            {
+                "id": "slot-final",
+                "role": "assistant",
+                "origin": "model",
+                "kind": "completion_report",
+                "content": "Built and verified the game in index.html.",
+                "grounding_json": json.dumps({
+                    "traced": True,
+                    "cited_evidence": [
+                        {"handle": "write#1", "path": "index.html", "verdict": "traced"},
+                        {"handle": "page#1", "verdict": "traced"},
+                    ],
+                    "verification": {"method": "targeted", "reason": "Captured and played the board in a headless browser."},
+                }),
+                "artifact_ids_json": json.dumps(["9823b977-2c86-4057-9fcb-ef92acbbc97d"]),
+            },
+        ],
+        "draft_versions": [
+            {
+                "slot_id": "slot-final",
+                "version_index": 0,
+                "outcome_code": "INVEST_HANDLE_NOT_OBSERVED",
+                "body": json.dumps({
+                    "synthesis": "Built and verified the game in index.html.",
+                    "cited_evidence": [{"evidence": "index.html"}],
+                }),
+            },
+            {
+                "slot_id": "slot-final",
+                "version_index": 1,
+                "outcome_code": "PRESENT_MARKDOWN_EMBED",
+                "body": json.dumps({
+                    "synthesis": "Built the game: ![shot](9823b977-2c86-4057-9fcb-ef92acbbc97d)",
+                    "cited_evidence": [{"evidence": "write#1"}],
+                }),
+            },
+        ],
+    }
+    co_path = tmp_path / "closeout_tx.jsonl"
+    co_path.write_text(json.dumps(closeout_tx) + "\n")
+    co_sft = tmp_path / "co_sft.jsonl"
+    co_dpo = tmp_path / "co_dpo.jsonl"
+    co_stats = dpo.extract(co_path, out_sft=co_sft, out_dpo=co_dpo)
+    assert co_stats["rejection_codes"] == {"INVEST_HANDLE_NOT_OBSERVED": 1, "PRESENT_MARKDOWN_EMBED": 1}
+    co_sft_rows = [json.loads(line) for line in co_sft.read_text().splitlines()]
+    assert len(co_sft_rows) == 3
+    final_sft = co_sft_rows[-1]
+    assert final_sft["target"]["tool_calls"] == []
+    assert "```json" in final_sft["target"]["text"]
+    assert '"evidence": "write#1"' in final_sft["target"]["text"]
+    assert '"handle"' not in final_sft["target"]["text"]
+    assert '"artifact_ids": ["9823b977-2c86-4057-9fcb-ef92acbbc97d"]' in final_sft["target"]["text"]
+    assert '"method": "targeted"' in final_sft["target"]["text"]
+
+    co_dpo_rows = [json.loads(line) for line in co_dpo.read_text().splitlines()]
+    assert len(co_dpo_rows) == 2
+    assert all(r["chosen"]["text"] == final_sft["target"]["text"] for r in co_dpo_rows)
+
+    # 5. Progress, visual capture, and closeout fence divergence rules + multi-root synthesis.
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["update_progress", "write"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "update_progress", "arguments": '{"markdown":"- [ ] Build app"}'}]},
+        {"tool_calls": [{"name": "write", "arguments": '{"path":"index.html","content":"x"}'}]},
+    ) == "missing_progress_before_edit"
+
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["capture_page", "command"], "loadable": []}, "prompt": []},
+        {"tool_calls": [{"name": "capture_page", "arguments": '{"path":"index.html"}'}]},
+        {"tool_calls": [{"name": "command", "arguments": '{"command":"python3 -m http.server 8080"}'}]},
+    ) == "missed_visual_capture"
+
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["read"], "loadable": []}, "prompt": []},
+        {"text": final_sft["target"]["text"], "tool_calls": []},
+        {"text": "Built and verified the game in index.html.", "tool_calls": []},
+    ) == "closeout_fence_missing_or_malformed"
+
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["read"], "loadable": []}, "prompt": []},
+        {"text": final_sft["target"]["text"], "tool_calls": []},
+        {"text": 'Done.\n\n```json\n{"cited_evidence": [{"handle": "write#1"}]}\n```', "tool_calls": []},
+    ) == "closeout_fence_missing_or_malformed"
+
+    mr_sft, mr_dpo = dpo.synthesize_multi_root_pairs(co_sft_rows, companion_label="open-agent-rules")
+    assert len(mr_sft) >= 1 and len(mr_dpo) >= 1
+    assert "@oar-gateway/index.html" in mr_sft[0]["target"]["tool_calls"][0]["arguments"]
+    assert mr_dpo[0]["rejection_code"] == "multi_root_prefix_missing"
+
+
 
