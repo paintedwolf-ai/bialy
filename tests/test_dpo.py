@@ -926,7 +926,7 @@ def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(fact
     stack_per_ws = sum(a.per_workspace for a in factory.archetypes if a.workspace == "stack")
     total_raw = len(factory.repos) * repo_per_ws + len(factory.stacks) * stack_per_ws
     assert len(factory.repos) == 16 and len(factory.stacks) == 15
-    assert repo_per_ws == 216 and stack_per_ws == 50 and total_raw == 4206
+    assert repo_per_ws == 222 and stack_per_ws == 50 and total_raw == 4302
 
 
 def test_command_rework_surface_and_legacy_rejection_filtering(tmp_path):
