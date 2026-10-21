@@ -182,6 +182,8 @@ def main(argv=None):
     p.add_argument("--push", action="store_true", help="publish the dataset and heads at the end")
     p.add_argument("--rebuild-image", action="store_true")
     p.add_argument("--task-cap", type=int, help="at most this many tasks per archetype per workspace")
+    p.add_argument("--task-share", type=float, help="this fraction of every archetype's tasks, keeping the configured mix")
+    p.add_argument("--heads", help="released head .safetensors directory: drive only the engine-on pass with these heads")
     p.add_argument("--workspace", action="append", help="only these repositories or stacks (repeatable)")
     p.add_argument("--runners", type=int)
     p.add_argument("--epochs", type=int, help="cap every recipe's epochs, for a short check of the training stages")
@@ -220,8 +222,9 @@ def main(argv=None):
         print(json.dumps(dpo.repair(factory, args.dpo, args.out, teacher_id=args.teacher, workers=args.workers, seed=args.seed), indent=2))
         return 0
     if args.cmd in ("run", "run-status"):
-        overrides = {} if args.cmd == "run-status" else {"task_cap": args.task_cap, "workspaces": args.workspace, "runners": args.runners,
-                                                          "train.epochs": args.epochs, "engine_on.enabled": False if args.no_engine_on else None}
+        overrides = {} if args.cmd == "run-status" else {"task_cap": args.task_cap, "task_share": args.task_share, "workspaces": args.workspace,
+                                                          "runners": args.runners, "train.epochs": args.epochs, "engine_on.heads": args.heads,
+                                                          "engine_on.enabled": False if args.no_engine_on else None}
         run = runmod.Run(factory=factory, name=args.run, settings=runmod.settings_for(factory, overrides),
                          push=getattr(args, "push", False), rebuild_image=getattr(args, "rebuild_image", False),
                          until=getattr(args, "until", None))

@@ -107,6 +107,11 @@ class Run:
     def engine_on(self):
         return bool(self.setting("engine_on", {}).get("enabled"))
 
+    @property
+    def engine_on_only(self):
+        """The engine-on pass drives with released heads, so no engine-off pass or pilot training runs."""
+        return self.engine_on and bool(self.setting("engine_on", {}).get("heads"))
+
     def image(self, pass_name):
         return "%s:%s-%s" % (self.factory.fleet["image"], self.name, pass_name)
 
@@ -166,9 +171,13 @@ def roster(run):
 def scaled_factory(run):
     """The factory with generation limited to the run's cap, roster, and workspaces."""
     f = run.factory
-    cap = run.setting("task_cap")
+    cap, share = run.setting("task_cap"), run.setting("task_share")
+    if share is not None and not 0 < float(share) <= 1:
+        raise RunError("run.task_share is a fraction of every archetype's tasks, above 0 and at most 1")
     models = roster(run)
-    archetypes = [dataclasses.replace(a, per_workspace=min(a.per_workspace, int(cap))) if cap else a for a in f.archetypes]
+    # A share keeps the configured mix at a smaller volume; a cap flattens it to at most n per archetype.
+    archetypes = [dataclasses.replace(a, per_workspace=max(1, round(a.per_workspace * float(share)))) if share else a for a in f.archetypes]
+    archetypes = [dataclasses.replace(a, per_workspace=min(a.per_workspace, int(cap))) if cap else a for a in archetypes]
     names = set(run.setting("workspaces") or [])
     return dataclasses.replace(f, models=models, archetypes=archetypes, repos=[r for r in f.repos if not names or r.name in names],
                                stacks=[s for s in f.stacks if not names or s.name in names], run=run.settings)
@@ -439,20 +448,26 @@ def judge_rows(run, rows_in, out, units=judge.UNITS):
     return {"judged": str(out), "report": report}
 
 
+def engine_off_or_skip(run):
+    if run.engine_on_only:
+        return {"skipped": "run.engine_on.heads drives the engine-on pass only"}
+    return None
+
+
 def stage_plan(run):
-    return plan_pass(run, "off", None)
+    return engine_off_or_skip(run) or plan_pass(run, "off", None)
 
 
 def stage_drive(run):
-    return drive_pass(run, "off", None)
+    return engine_off_or_skip(run) or drive_pass(run, "off", None)
 
 
 def stage_collect(run):
-    return collect_pass(run, "off")
+    return engine_off_or_skip(run) or collect_pass(run, "off")
 
 
 def stage_judge(run):
-    return judge_rows(run, run.path("fleet-off", "rows.jsonl"), run.path("judged-off.jsonl"))
+    return engine_off_or_skip(run) or judge_rows(run, run.path("fleet-off", "rows.jsonl"), run.path("judged-off.jsonl"))
 
 
 def stage_judge_skillreq(run):
@@ -466,12 +481,23 @@ def engine_on_or_skip(run):
 
 
 def stage_split_pilot(run):
-    return engine_on_or_skip(run) or {"split": str(run.path("split-pilot")),
+    return engine_on_or_skip(run) or engine_off_or_skip(run) or {"split": str(run.path("split-pilot")),
                                        "counts": split.split(run.factory, [str(run.path("judged-off.jsonl"))], run.path("split-pilot"))}
 
 
 def stage_train_pilot(run):
-    return engine_on_or_skip(run) or train_heads(run, run.path("split-pilot"), run.path("pilot-heads"), "pilot")
+    return engine_on_or_skip(run) or engine_off_or_skip(run) or train_heads(run, run.path("split-pilot"), run.path("pilot-heads"), "pilot")
+
+
+def pilot_heads_dir(run):
+    """The heads the engine-on runners decide with: released heads when configured, else this run's pilot."""
+    heads = run.setting("engine_on", {}).get("heads")
+    if not heads:
+        return run.path("pilot-heads")
+    path = Path(heads)
+    if not path.is_dir() or not any(path.glob("*.safetensors")):
+        raise RunError("run.engine_on.heads must be a directory of released head .safetensors files: %s" % heads)
+    return path
 
 
 def stage_engine(run):
@@ -486,7 +512,7 @@ def stage_pilot(run):
     if not run.engine_on:
         return {"skipped": "run.engine_on is off"}
     engine_bin = run.path("build", "runner-engine", "bialy") if not build.host_is_runner_platform() else run.path("build", "host-engine", "bialy")
-    report = build.pilot(engine_bin, model_dir(run), run.path("pilot-heads"), run.path("build", "pilot"))
+    report = build.pilot(engine_bin, model_dir(run), pilot_heads_dir(run), run.path("build", "pilot"))
     deadline = int(run.setting("engine_on", {}).get("deadline_ms") or 0)
     tag = run.image("on")
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0

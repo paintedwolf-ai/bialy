@@ -50,6 +50,7 @@ archetypes:
     brief: Ask the assistant to find something in the repository for the developer - where a function, type, or constant is defined, which file handles a behaviour, where a value or config option is set, every place something is used or called, which test covers a function, where an error message comes from, or which files match a description. Vary the phrasing from terse ("where's the retry logic?") to detailed.
   - id: bugfix
     per_workspace: 12
+    follow_up_rate: 0.6
     reference_rate: 0.2
     brief: Report a plausible bug, failing test, unhandled exception, or unexpected behaviour and ask for a fix. Often describe the symptom, error output, or stack trace rather than naming the exact file or line of the root cause, so fixing it requires searching or diagnosing first.
     workflows: {implement-dispatch: 0.2, plan-auto: 0.1}
@@ -57,11 +58,12 @@ archetypes:
   - id: small_change
     per_workspace: 12
     new_files: true
-    follow_up_rate: 0.45
+    follow_up_rate: 0.55
     brief: Ask for a small, well-scoped edit - add a parameter, rename something across files, add a test case, tweak an error message, create a new file, delete or move one. Often ask to follow existing patterns in sibling packages. Some follow-ups should ask to inspect the session's file version history or line authorship for the edited file, compare the current file to its pre-edit version, or roll the file back to its previous version and try an alternative edit.
     prompt_timeout: 150m
   - id: refactor
     per_workspace: 8
+    follow_up_rate: 0.6
     brief: Ask for a structural refactor across several call sites, or a mechanical AST/pattern rewrite of a construct (such as function/method declarations, call expressions, or type definitions) throughout the code in the project's language.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
     prompt_timeout: 180m
@@ -82,6 +84,7 @@ archetypes:
     prompt_timeout: 240m
   - id: run_and_verify
     per_workspace: 10
+    follow_up_rate: 0.5
     brief: Ask to build, run the project's test suite (using its native ecosystem runner such as pytest/unittest, cargo test, go test, vitest/jest, mvn/gradle/sbt, bundle exec rspec/rake, phpunit, ctest/cmake/make, mix test, dart test, swift test, dotnet test, prove, busted, or dune runtest), run a single targeted test, run a linter/typechecker or benchmark, start the program, or check that a change works; some should involve long-running background processes or interactive terminal REPL/CLI prompts that wait for interactive input.
     prompt_timeout: 180m
   - id: git_history
@@ -127,11 +130,13 @@ archetypes:
     prompt_timeout: 180m
   - id: multi_part
     per_workspace: 8
+    follow_up_rate: 0.6
     brief: Ask for a broad piece of work with several independent parts that a lead engineer would split among helpers. Mix the kinds of part - some need an external library's or standard's documentation looked up online, some need the codebase investigated to find how or where something is done, and some are changes to make (for example, check what the upstream docs recommend for X, find every place we do Y, then update Z and its tests).
     workflows: {implement-dispatch: 0.7}
     prompt_timeout: 240m
   - id: new_module
     per_workspace: 8
+    follow_up_rate: 0.5
     new_files: true
     brief: Ask to add a new piece to this codebase that does not exist yet - a subcommand, a middleware, an adapter for another backend, a plugin, an example program, or a small module with its tests. Say where it should live and which existing code it should follow or plug into, or leave that to the assistant; the new files do not exist yet.
     workflows: {implement-dispatch: 0.3, plan-auto: 0.2}
@@ -143,6 +148,7 @@ archetypes:
     prompt_timeout: 150m
   - id: research_change
     per_workspace: 8
+    follow_up_rate: 0.5
     brief: Ask to find out how something should be done from an external source - a library's official documentation, a migration guide, a specification or RFC, or a well-known project's approach - and then apply it in this codebase, checking where the code currently differs.
     workflows: {implement-dispatch: 0.7}
     prompt_timeout: 240m

@@ -78,11 +78,18 @@ def binding(run):
     return identity
 
 
+def passes_for(run):
+    """The fleet passes whose captures this collection consumes."""
+    if run.engine_on_only:
+        return ["on"]
+    return ["off", "on"] if run.engine_on else ["off"]
+
+
 def input_manifest(run, identity):
     """Hash completed stores and their task/judge lineage, including SQLite WAL bytes."""
     state = run.load_state().get("stages") or {}
     files = [run.path("corpus.json"), run.bin_dir / "BUILD.json", run.bin_dir / "lycaon", run.bin_dir / "lycaon-debug"]
-    passes = ["off", "on"] if run.engine_on else ["off"]
+    passes = passes_for(run)
     for name in passes:
         suffix = "" if name == "off" else "_on"
         for stage in ("drive", "collect", "judge"):
