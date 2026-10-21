@@ -513,6 +513,19 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
         {"tool_calls": [{"name": "command", "arguments": '{"command":"python3 -m http.server 8080"}'}]},
     ) == "missed_visual_capture"
 
+    # A user who asked to see a proposed screen gets a rendered mockup, not the code for it.
+    mockup = {"name": "render_view", "arguments": '{"mime":"html","markup":"<main>Dashboard</main>","caption":"Proposed dashboard"}'}
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["render_view", "write"], "loadable": []}, "prompt": []},
+        {"tool_calls": [mockup]},
+        {"tool_calls": [{"name": "write", "arguments": '{"path":"dashboard.html","content":"<main/>"}'}]},
+    ) == "missed_visual_capture"
+    assert dpo.classify_divergence(
+        {"surface": {"active_tools": ["render_view", "capture_page"], "loadable": []}, "prompt": []},
+        {"tool_calls": [mockup]},
+        {"tool_calls": [{"name": "capture_page", "arguments": '{"path":"index.html"}'}]},
+    ) != "missed_visual_capture"
+
     assert dpo.classify_divergence(
         {"surface": {"active_tools": ["read"], "loadable": []}, "prompt": []},
         {"text": final_sft["target"]["text"], "tool_calls": []},

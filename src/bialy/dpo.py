@@ -1309,7 +1309,10 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
         if has_edit_or_mutating_cmd:
             return "missing_progress_before_edit"
         return "unclosed_progress_before_closeout"
-    if (t_names & {"capture_page", "capture_tui"}) and not (s_names & {"capture_page", "capture_tui"}):
+    # A rendered mockup, a page capture and a terminal capture are the visual evidence
+    # a user asked to see; prose or code in their place is the divergence.
+    visual = {"capture_page", "capture_tui", "render_view"}
+    if (t_names & visual) and not (s_names & visual):
         return "missed_visual_capture"
     req_tools = set(surface.get("required_tools") or [])
     teacher_req = {t for t in req_tools if t in t_names or _uses_command_builtin_for(t_calls, t)}
