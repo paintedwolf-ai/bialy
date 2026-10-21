@@ -127,6 +127,12 @@ def test_released_heads_drive_the_engine_on_pass_only(factory, tmp_path):
     plain = make_run(factory, tmp_path)
     assert not plain.engine_on_only and custom_model_run.passes_for(plain) == ["off", "on"]
     assert runmod.pilot_heads_dir(plain) == plain.path("pilot-heads")
+    # A two-pass run may feed the student from its engine-on captures alone.
+    on_only = make_run(factory, tmp_path, custom_model={"passes": ["on"]})
+    assert custom_model_run.passes_for(on_only) == ["on"]
+    with pytest.raises(custom_model_run.DatasetError, match="passes"):
+        custom_model_run.passes_for(make_run(factory, tmp_path, engine_on={"enabled": False, "deadline_ms": 1, "heads": None},
+                                             custom_model={"passes": ["on"]}))
 
 
 def test_report_lists_publish_commands_without_pushing(factory, tmp_path):

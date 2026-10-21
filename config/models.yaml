@@ -79,7 +79,7 @@ models:
     license: MIT
     outputs_trainable: true
     reviewed: "2026-10-01: MIT license on the model card; no terms on outputs (Chris Beckman)"
-    roles: [judge]
+    roles: [generator, judge]
     hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4p1-flash, key_env: FIREWORKS_API_KEY,
              price_per_million: {input: 0.30, output: 1.20}, reasoning_effort: none}
   - id: gemma-4-31b-it
