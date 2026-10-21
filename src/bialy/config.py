@@ -240,9 +240,9 @@ def local_deployment():
 
 RUN_DEFAULTS = {
     "lycaon_checkout": "../paintedwolf-code", "generators": [], "generator_weights": {}, "archetype_generators": {},
-    "local_workers_only": False, "judges": [], "workspaces": [], "task_cap": None, "seed": 7, "workers": 16,
+    "local_workers_only": False, "judges": [], "workspaces": [], "task_cap": None, "task_share": None, "seed": 7, "workers": 16,
     "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
-    "engine_on": {"enabled": True, "deadline_ms": 60000},
+    "engine_on": {"enabled": True, "deadline_ms": 60000, "heads": None},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
     "coderank": {"per_repo": 40},
     "evaluate": {"rows": 500},
