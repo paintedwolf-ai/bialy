@@ -249,7 +249,7 @@ RUN_DEFAULTS = {
     "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
     "custom_model": {"enabled": False, "diagnostic_only": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
-                     "epoch": None, "tool_surface": "legacy", "host_commit": None, "quality_reports": None, "quality_judge": False,
+                     "epoch": None, "tool_surface": "legacy", "host_commit": None, "quality_reports": None, "quality_judge": False, "passes": None,
                      "preload_from_judge": False, "max_routine_reads_per_session": 6, "shadow": False, "repair": False},
 }
 

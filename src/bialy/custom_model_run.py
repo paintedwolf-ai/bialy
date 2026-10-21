@@ -79,10 +79,16 @@ def binding(run):
 
 
 def passes_for(run):
-    """The fleet passes whose captures this collection consumes."""
-    if run.engine_on_only:
-        return ["on"]
-    return ["off", "on"] if run.engine_on else ["off"]
+    """The fleet passes whose captures this collection consumes: every pass the run
+    drives, or the subset custom_model.passes names (engine-on only, say, so the
+    student never learns the engine-off habit of loading every tool itself)."""
+    driven = ["on"] if run.engine_on_only else (["off", "on"] if run.engine_on else ["off"])
+    chosen = (run.setting("custom_model") or {}).get("passes")
+    if not chosen:
+        return driven
+    if not isinstance(chosen, list) or not chosen or any(p not in driven for p in chosen):
+        raise DatasetError("run.custom_model.passes must name passes this run drives: %s" % ", ".join(driven))
+    return [p for p in driven if p in chosen]
 
 
 def input_manifest(run, identity):
