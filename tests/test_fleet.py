@@ -145,6 +145,21 @@ def test_the_scanner_can_be_declined_but_nothing_else(tmp_path):
     fleet.check_engine(tmp_path, scanner=False)
 
 
+def test_the_staged_release_layout_satisfies_the_scanner(tmp_path):
+    for rel in fleet.ENGINE_PAYLOAD:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    release = tmp_path / "bundled/opengrep-1.30.0+paintedwolf.40"
+    release.mkdir(parents=True)
+    for name in fleet.SCANNER_FILES[:-1]:
+        (release / name).write_text("x")
+    with pytest.raises(ValueError, match="scanner"):
+        fleet.check_engine(tmp_path)
+    (release / fleet.SCANNER_FILES[-1]).write_text("x")
+    fleet.check_engine(tmp_path)
+    assert fleet.scanner_dirs(tmp_path) == [release]
+
+
 def test_pilot_env_names_the_heads_the_pilot_carries(tmp_path):
     assert fleet.pilot_env(None) == {"LYCAON_DECIDE_DISABLED": "1"}
     (tmp_path / "heads").mkdir()

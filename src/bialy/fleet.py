@@ -63,7 +63,10 @@ def raise_decision_deadlines(config_dir, engine_dir, deadline_ms):
 # produce rows, from failing tools, so the image refuses to build. Only the scanner can
 # be declined, and the sidecar then reports it unavailable.
 ENGINE_PAYLOAD = ("schemas", "gitengine/bin/git", "browser/chrome-headless-shell")
-SCANNER_PAYLOAD = ("opengrep/opengrep", "opengrep/provenance.json", "opengrep/source-lock.json")
+# The checkout stages its pinned release at bundled/opengrep-<version>/, where the sidecar
+# finds it under LYCAON_ENGINE_ROOT; a development candidate sits at opengrep/.
+SCANNER_FILES = ("opengrep", "provenance.json", "source-lock.json")
+SCANNER_PAYLOAD = tuple("opengrep/" + f for f in SCANNER_FILES)
 
 
 PILOT_MOUNT = "/opt/decide"
@@ -81,9 +84,18 @@ def pilot_env(pilot):
             "LYCAON_DECIDE_HEADS": ",".join("%s=%s/heads/%s.safetensors" % (h, PILOT_MOUNT, h) for h in heads)}
 
 
+def scanner_dirs(engine_dir):
+    """Scanner directories in the payload that carry every scanner file: staged releases,
+    then a development candidate."""
+    engine_dir = Path(engine_dir)
+    found = sorted(engine_dir.glob("bundled/opengrep-*")) + [engine_dir / "opengrep"]
+    return [d for d in found if all((d / f).is_file() for f in SCANNER_FILES)]
+
+
 def check_engine(engine_dir, scanner=True):
-    wanted = ENGINE_PAYLOAD + (SCANNER_PAYLOAD if scanner else ())
-    missing = [rel for rel in wanted if not (Path(engine_dir) / rel).exists()]
+    missing = [rel for rel in ENGINE_PAYLOAD if not (Path(engine_dir) / rel).exists()]
+    if scanner and not scanner_dirs(engine_dir):
+        missing += ["a scanner (bundled/opengrep-<version>/ or %s)" % ", ".join(SCANNER_PAYLOAD)]
     if missing:
         raise ValueError("engine payload %s lacks %s; see README (engine/)" % (engine_dir, ", ".join(missing)))
 
