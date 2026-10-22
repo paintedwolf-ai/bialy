@@ -23,12 +23,30 @@ import sys
 import time
 from pathlib import Path
 
-from . import anchor, build, coderank, config, custom_model_run, fleet, heads, judge, provenance, publishing, release, repos, skillreq, split, tasks, training
+from . import (
+    anchor,
+    build,
+    coderank,
+    config,
+    custom_model_run,
+    fleet,
+    heads,
+    judge,
+    preflight,
+    provenance,
+    publishing,
+    release,
+    repos,
+    skillreq,
+    split,
+    tasks,
+    training,
+)
 
-STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "plan", "drive", "collect", "judge",
-          "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "plan_on", "drive_on", "collect_on", "judge_on",
+STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
+          "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "judge_on",
           "split", "custom_model", "coderank", "release", "train", "evaluate", "release_heads", "report")
-ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "plan_on", "drive_on", "collect_on", "judge_on")
+ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "judge_on")
 
 
 class RunError(RuntimeError):
@@ -407,9 +425,10 @@ def plan_pass(run, pass_name, pilot):
 
 
 def drive_pass(run, pass_name, pilot):
+    preflight.require(run, pass_name)
     fleet.ensure_network(run.factory)
     mounts = [(str(pilot), fleet.PILOT_MOUNT)] if pilot else []
-    done, failed = fleet.run(run.factory, run.path("fleet-" + pass_name), int(run.setting("runners") or run.factory.fleet["runners"]),
+    done, failed = fleet.run(scaled_factory(run), run.path("fleet-" + pass_name), int(run.setting("runners") or run.factory.fleet["runners"]),
                              mounts, run.image(pass_name))
     if not done:
         raise RunError("no shard produced rows (%d failed)" % failed)
@@ -469,6 +488,14 @@ def engine_off_or_skip(run):
     if run.engine_on_only:
         return {"skipped": "run.engine_on.heads drives the engine-on pass only"}
     return None
+
+
+def stage_preflight(run):
+    return engine_off_or_skip(run) or preflight.qualify(dataclasses.replace(run, factory=scaled_factory(run)), "off")
+
+
+def stage_preflight_on(run):
+    return engine_on_or_skip(run) or preflight.qualify(dataclasses.replace(run, factory=scaled_factory(run)), "on", run.path("build", "pilot"))
 
 
 def stage_plan(run):

@@ -188,6 +188,8 @@ def main(argv=None):
     p.add_argument("--runners", type=int)
     p.add_argument("--epochs", type=int, help="cap every recipe's epochs, for a short check of the training stages")
     p.add_argument("--no-engine-on", action="store_true", help="skip the second pass that drives with the pilot heads")
+    p = sub.add_parser("run-faults")
+    p.add_argument("--run", required=True)
     p = sub.add_parser("run-status")
     p.add_argument("--run", required=True)
     args = ap.parse_args(argv)
@@ -220,6 +222,14 @@ def main(argv=None):
         if not (args.dpo and args.out):
             ap.error("dpo repair needs --dpo and --out")
         print(json.dumps(dpo.repair(factory, args.dpo, args.out, teacher_id=args.teacher, workers=args.workers, seed=args.seed), indent=2))
+        return 0
+    if args.cmd == "run-faults":
+        from . import faults
+        directory = runs / args.run
+        containers = {}
+        for pass_dir in sorted(directory.glob("fleet-*")):
+            containers.update({str(pass_dir / "shards" / shard): name for shard, name in fleet.running_containers(pass_dir).items()})
+        print(json.dumps(faults.run_snapshot(directory, containers), indent=2))
         return 0
     if args.cmd in ("run", "run-status"):
         overrides = {} if args.cmd == "run-status" else {"task_cap": args.task_cap, "task_share": args.task_share, "workspaces": args.workspace,

@@ -27,6 +27,46 @@ gets the full budget). It keeps what it drove: its finished sessions and the
 finished turns of the one it cut off; tasks it never reached are listed as
 overdue, and the shard is not driven again.
 
+## Preflight and live faults
+
+Before driving, `preflight` checks the engine-off image and `preflight_on` checks
+its engine-on peer. Engine-on probes require the host's decision-engine readiness
+fact and a CPU-pinned engine. Both dispatch the pinned scanner over a small fixture.
+Custom-model runs also drive a local OpenAI-compatible fixture through the real
+adapter, require a committed capture rendered for the declared student, and compare
+the image's compaction window with the student's live budget. The host mock marks
+its replies scripted, so the capture check uses a separate fixture phase.
+
+Only the host's typed `compaction_summary` request is forwarded to the hosted
+teacher, once, using the teacher's original request controls. All other fixture
+replies are local. The probe requires a complete summary and an actual context
+reduction after the synthesized continuation is published. The fixture uses a
+private copy of the image configuration with shorter protected history and a high
+automatic-compaction trigger; the student window and provider controls stay intact.
+Preflight evidence stays outside the fleet directories consumed by
+collection. Custom-model driving refuses missing evidence or a changed image or
+settings, including when resuming directly at `drive_on`.
+
+`run.task_timeout: 45m` bounds a whole task, including its follow-ups, and overrides
+archetype prompt budgets. `run.tasks_per_runner: 1` gives smoke tasks separate
+runners. With no override, the configured archetype budgets and shard sizes apply.
+
+`run.fail_fast.enabled` defaults to true. Every five seconds the fleet reads a
+consistent, read-only store snapshot and immutable capture facts. A failed turn,
+failed scanner, unavailable required engine, two compaction `length` outcomes,
+or no kept payload after three captures stops admission and the run's active
+containers. `summary_length_limit` and `capture_turn_limit` set those thresholds.
+The abort retains stores, partial exports and a typed `fault.json`; restarting an
+aborted pass refuses to spend again. Use a fresh run after repairing the cause.
+
+`bialy run-faults --run NAME` reads active containers or their saved stores and
+reports each shard's error-code counts and first occurrence, failed turns, scanner
+and engine failures, capture exclusions, modified fields and kept payload counts.
+A kept payload is a capture candidate; receipt admission and independent quality
+review still decide which candidates train the student. Structured utility health
+requires a host build carrying `pw-training-health/1` telemetry under the capture
+directory's `health/` subdirectory.
+
 ## Workspaces
 
 Every task runs in a workspace: a pinned repository, or a stack
