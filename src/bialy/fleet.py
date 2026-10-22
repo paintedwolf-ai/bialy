@@ -89,13 +89,19 @@ PILOT_MOUNT = "/opt/decide"
 
 def pilot_env(pilot):
     """The sidecar's decision engine for a pass: off, or the engine and heads in `pilot`
-    (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT."""
+    (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT.
+
+    Runners have only a CPU, so the engine is pinned to it. Picking a device itself, the
+    engine refuses one slower than the product's reference speed, which a shared two-core
+    runner always is; a pinned device serves at whatever speed, and the raised decision
+    deadline gives each answer the time it needs."""
     if not pilot:
         return {"LYCAON_DECIDE_DISABLED": "1"}
     heads = sorted(p.stem for p in (Path(pilot) / "heads").glob("*.safetensors"))
     if not heads:
         raise ValueError("pilot %s carries no heads" % pilot)
     return {"LYCAON_DECIDE_BINARY": PILOT_MOUNT + "/bialy", "LYCAON_DECIDE_MODEL_DIR": PILOT_MOUNT + "/model",
+            "LYCAON_DECIDE_DEVICE": "cpu",
             "LYCAON_DECIDE_HEADS": ",".join("%s=%s/heads/%s.safetensors" % (h, PILOT_MOUNT, h) for h in heads)}
 
 
