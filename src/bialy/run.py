@@ -108,6 +108,12 @@ class Run:
         return bool(self.setting("engine_on", {}).get("enabled"))
 
     @property
+    def collection_window(self):
+        """The student's declared context window when this run collects custom-model data."""
+        custom = self.setting("custom_model") or {}
+        return int(custom["student_serving"]["context_window"]) if custom.get("enabled") else None
+
+    @property
     def engine_on_only(self):
         """The engine-on pass drives with released heads, so no engine-off pass or pilot training runs."""
         return self.engine_on and bool(self.setting("engine_on", {}).get("heads"))
@@ -178,6 +184,11 @@ def scaled_factory(run):
     # A share keeps the configured mix at a smaller volume; a cap flattens it to at most n per archetype.
     archetypes = [dataclasses.replace(a, per_workspace=max(1, round(a.per_workspace * float(share)))) if share else a for a in f.archetypes]
     archetypes = [dataclasses.replace(a, per_workspace=min(a.per_workspace, int(cap))) if cap else a for a in archetypes]
+    chosen = set(run.setting("archetypes") or [])
+    unknown = chosen - {a.id for a in f.archetypes}
+    if unknown:
+        raise RunError("run.archetypes names unknown archetypes: %s" % ", ".join(sorted(unknown)))
+    archetypes = [a for a in archetypes if not chosen or a.id in chosen]
     names = set(run.setting("workspaces") or [])
     return dataclasses.replace(f, models=models, archetypes=archetypes, repos=[r for r in f.repos if not names or r.name in names],
                                stacks=[s for s in f.stacks if not names or s.name in names], run=run.settings)
@@ -308,8 +319,9 @@ def stage_image(run):
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
     if present and not run.rebuild_image:
         return {"image": tag, "built": False}
-    fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, scanner=run.scanner)
-    return {"image": tag, "built": True, "scanner": run.scanner}
+    fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, config_dir=run.checkout / "lycaon/config",
+                      scanner=run.scanner, context_window=run.collection_window)
+    return {"image": tag, "built": True, "scanner": run.scanner, "context_window": run.collection_window}
 
 
 def stage_corpus(run):
@@ -373,7 +385,9 @@ def plan_pass(run, pass_name, pilot):
     decide_env = fleet.pilot_env(pilot)
     custom = run.setting("custom_model") or {}
     if custom.get("enabled"):
-        decide_env.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"])
+        serving = custom["student_serving"]
+        decide_env.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"],
+                          PW_TRAINING_STUDENT_PROVIDER=serving["provider"], PW_TRAINING_STUDENT_MODEL=serving["model"])
     if (run_dir / "shards").exists():
         # A plan stage runs again only when its pass is being redone, so earlier shards
         # of the pass are stale; containers still running are kept and adopted.
@@ -517,7 +531,8 @@ def stage_pilot(run):
     tag = run.image("on")
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
     if not present or run.rebuild_image:
-        fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, deadline, run.checkout / "lycaon/config", scanner=run.scanner)
+        fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, deadline, run.checkout / "lycaon/config", scanner=run.scanner,
+                          context_window=run.collection_window)
     return dict(report, pilot=str(run.path("build", "pilot")), image=tag)
 
 

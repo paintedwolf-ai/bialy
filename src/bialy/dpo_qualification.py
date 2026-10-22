@@ -34,6 +34,7 @@ def capture_reasons(row):
     supported_fields = {
         "schema", "request_id", "session_id", "message_id", "host_revision", "epoch", "tool_surface",
         "catalog_sha256", "state_sha256", "messages", "tools", "sha256", "controls",
+        "student_provider", "student_kind", "student_model", "dispatch_sha256",
     }
     if set(capture) - supported_fields:
         reasons.append("unsupported_request_capture_fields")
