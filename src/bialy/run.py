@@ -304,7 +304,10 @@ def stage_repos(run):
 def stage_build(run):
     """The runner binaries and engine payload from the pinned checkout, plus binaries for
     this host when it is not the runner platform."""
-    out = {"runner": build.binaries(run.checkout, run.bin_dir, run.cache_root)}
+    # A pinned scanner's identity is linked into the runner binaries; a development
+    # candidate is passed to the sidecar at run time instead.
+    identity = build.scanner_identity(run.checkout, run.cache_root) if run.scanner and not run.scanner_candidate else None
+    out = {"runner": build.binaries(run.checkout, run.bin_dir, run.cache_root, scanner_identity=identity)}
     if not build.host_is_runner_platform():
         goos = platform.system().lower()
         goarch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
