@@ -94,6 +94,18 @@ def test_binaries_write_a_build_record(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "bin/BUILD.json").read_text())["lycaon_commit"] == "deadbeef" and record["go_image"] == build.GO_IMAGE
 
 
+def test_the_go_container_trusts_the_mounted_checkout(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(build.shutil, "which", lambda name: None)
+    monkeypatch.setattr(build, "sh", lambda args, **kw: seen.append(args))
+    build.go_run(tmp_path / "co", tmp_path / "cache", ["go", "build", "./cmd/lycaon"], tmp_path / "co")
+    args = seen[0]
+    pairs = {args[i + 1] for i, a in enumerate(args) if a == "-e"}
+    assert {"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=%s" % (tmp_path / "co").resolve()} <= pairs
+    assert args[args.index(build.GO_IMAGE) + 1:] == ["go", "build", "./cmd/lycaon"]
+
+
 def test_rust_channel_comes_from_the_checkouts_toolchain_file(tmp_path):
     (tmp_path / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.97.1"\nprofile = "minimal"\n')
     assert build.rust_channel(tmp_path) == "1.97.1" and build.rust_image(tmp_path) == "rust:1.97.1-bullseye"

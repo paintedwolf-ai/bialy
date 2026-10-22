@@ -65,6 +65,9 @@ def go_run(checkout, cache_root, args, cwd, goos=None, goarch=None, mounts=()):
     for path in {str(checkout), str(cache_root), *(str(Path(m).resolve()) for m in mounts)}:
         Path(path).mkdir(parents=True, exist_ok=True)
         docker += ["-v", "%s:%s" % (path, path)]
+    # The container runs as root over a checkout another user may own; git refuses such
+    # a repository, and Go's VCS stamping then fails the build.
+    env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=str(checkout))
     for key, value in env.items():
         docker += ["-e", "%s=%s" % (key, value)]
     return sh(docker + [GO_IMAGE] + list(args))
