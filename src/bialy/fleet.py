@@ -13,13 +13,14 @@ import json
 import os
 import random
 import shutil
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
 
 import yaml
 
-from . import config, llm
+from . import config, faults, llm
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -258,7 +259,7 @@ def sidecar_files(factory, decide_env, lane):
 def plan_shards(factory, tasks_dir, run_dir, decide_env, workspaces=None, skip=()):
     """Split every workspace's tasks into shards under run_dir/shards. Shards named in
     `skip` keep their files, and still advance the replica lanes."""
-    per = int(factory.fleet["tasks_per_shard"])
+    per = int(factory.run.get("tasks_per_runner") or factory.fleet["tasks_per_shard"])
     count = planned = 0
     for workspace in factory.workspaces():
         if workspaces and workspace.name not in workspaces:
@@ -270,7 +271,7 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, workspaces=None, skip=(
         # Task files are grouped by archetype; mixed shards take similar time. Shards are
         # cut per prompt budget, so a shard of quick tasks never waits on a long budget.
         random.Random("shards:" + workspace.name).shuffle(lines)
-        budget = lambda line: (json.loads(line).get("meta") or {}).get("prompt_timeout") or factory.fleet["prompt_timeout"]  # noqa: E731
+        budget = lambda line: factory.run.get("task_timeout") or (json.loads(line).get("meta") or {}).get("prompt_timeout") or factory.fleet["prompt_timeout"]  # noqa: E731
         lines.sort(key=lambda line: -config.minutes(budget(line)))
         # A shard of long-budget tasks could otherwise run for most of a day; its size is
         # what fits shard_minutes at the budget, from tasks_per_shard down to one task.
@@ -303,6 +304,8 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, workspaces=None, skip=(
             (shard / "sidecar.env").write_text(env, encoding="utf-8")
             timeout = max((budget(line) for line in group), key=config.minutes)
             spec = {"workspace": workspace.name, "kind": workspace.kind, "prompt_timeout": timeout}
+            if factory.run.get("task_timeout"):
+                spec["task_timeout"] = factory.run["task_timeout"]
             if workspace.kind == "repository":
                 spec["commit"] = workspace.commit
             (shard / "workspace.json").write_text(json.dumps(spec), encoding="utf-8")
@@ -436,6 +439,8 @@ def container_args(factory, run_name, shard, extra_mounts, image=None):
             "-v", "%s:/cache" % cache,
             "-e", "WORKSPACE=" + spec["workspace"], "-e", "WORKSPACE_KIND=" + spec["kind"],
             "-e", "PROMPT_TIMEOUT=" + (spec.get("prompt_timeout") or fleet["prompt_timeout"])]
+    if spec.get("task_timeout"):
+        args += ["-e", "TASK_TIMEOUT=" + spec["task_timeout"]]
     if spec["kind"] == "repository":
         args += ["-e", "COMMIT=" + spec["commit"]]
     for host_path, container_path in extra_mounts:
@@ -478,6 +483,9 @@ def shard_tasks(shard):
 
 def shard_deadline(factory, shard, started):
     """When a shard started at `started` (epoch seconds) counts as stuck."""
+    spec = json.loads((shard / "workspace.json").read_text(encoding="utf-8"))
+    if spec.get("task_timeout"):
+        return started + 60 * len(shard_tasks(shard)) * config.minutes(spec["task_timeout"]) + 120
     prompts = sum(1 + len(task.get("follow_ups") or []) for task in shard_tasks(shard))
     return started + 60 * (OVERDUE_FACTOR * prompts * shard_minutes(factory, shard) + OVERDUE_GRACE_MINUTES)
 
@@ -543,6 +551,9 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     run_dir = Path(run_dir)
     run_name = run_dir.name
     ledger = Ledger(run_dir)
+    if (run_dir / "fault.json").exists():
+        fault = json.loads((run_dir / "fault.json").read_text())
+        raise faults.RunFault(fault["code"], fault["shard"])
     adopted = running_containers(run_dir)
     for name in Ledger(run_dir).containers():
         if name not in adopted.values() and sh("docker", "container", "inspect", name, check=False).returncode == 0:
@@ -560,7 +571,7 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and s.name not in adopted),
                      key=lambda s: (-shard_minutes(factory, s), s.name))
     for shard in pending:
-        for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part", "overdue-rows.part"):
+        for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part", "overdue-rows.part", "ready.json", "health.json", "task-fault.json"):
             (shard / stale).unlink(missing_ok=True)
     limit = int(runners or factory.fleet["runners"])
     done = failed = 0
@@ -575,6 +586,30 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
         time.sleep(5)
         for name, (proc, shard, work, deadline) in list(active.items()):
             code = proc.poll()
+            health_settings = dict(factory.run.get("fail_fast") or {})
+            if health_settings.get("enabled") and (shard / "ready.json").exists():
+                try:
+                    report = faults.snapshot(shard, name if code is None else None)
+                    (shard / "health.json").write_text(json.dumps(report, indent=2) + "\n")
+                    health_settings.update(require_engine=bool((factory.run.get("engine_on") or {}).get("enabled") and extra_mounts),
+                                           require_captures=bool((factory.run.get("custom_model") or {}).get("enabled")))
+                    reason = faults.reason(report, health_settings)
+                except (faults.RunFault, ValueError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
+                    report, reason = {"observation_error": type(exc).__name__}, "health_observation_failed"
+                if reason:
+                    fault = dict(code=reason, shard=shard.name, report=report)
+                    (run_dir / "fault.json").write_text(json.dumps(fault, indent=2) + "\n")
+                    # Only containers owned by this run's ledger are stopped. Preserve
+                    # their live stores and exports before releasing their workspaces.
+                    for other, (child, current, current_work, _) in active.items():
+                        if child.poll() is None:
+                            export_live(other, current, "aborted-rows.part")
+                            sh("docker", "exec", other, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+                            sh("docker", "stop", "--time", "10", other, check=False)
+                            child.wait()
+                        ledger.append(event="health_abort", container=other, shard=current.name, code=reason)
+                        release_work(current_work)
+                    raise faults.RunFault(reason, shard.name)
             if code is None and time.time() > deadline:
                 exported = export_live(name, shard, "overdue-rows.part")
                 sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)

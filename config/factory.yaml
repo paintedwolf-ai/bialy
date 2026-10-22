@@ -31,6 +31,10 @@ run:
   local_workers_only: false        # when true, sidecar lite and agent_pool use local served generators
   judges: [deepseek-v4.1-flash, glm-5.3-flash]  # hybrid local runs must explicitly select their local judges
   runners: 4                       # concurrent runner containers on this machine
+  task_timeout: null               # optional whole-task wall-clock cap, including follow-ups, e.g. 45m
+  tasks_per_runner: null           # optional shard size override; use 1 for smokes
+  preflight: {enabled: true, timeout_seconds: 300}
+  fail_fast: {enabled: true, summary_length_limit: 2, capture_turn_limit: 3}
   spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
   scanner: pinned                  # the checkout's pinned Opengrep for linux/amd64; candidate takes a local build; none runs without one
   scanner_candidate: null          # for candidate: the downstream repository's artifact directory (opengrep, provenance.json, source-lock.json)

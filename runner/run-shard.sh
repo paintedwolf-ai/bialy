@@ -62,6 +62,13 @@ set -a
 # shellcheck disable=SC1091
 . "$out/sidecar.env"
 set +a
+fixture_pid=
+if [ "${BIALY_PREFLIGHT:-}" = fixture ]; then
+  python3 /opt/bialy/preflight.py configure
+  export LYCAON_CONFIG_ROOT=/cfg/preflight-overlay
+  (clear_provider_environment; exec python3 /opt/bialy/preflight.py fixture) >"$out/fixture.log" 2>&1 &
+  fixture_pid=$!
+fi
 if [ -n "${PW_TRAINING_CAPTURE_DIR:-}" ]; then
   mkdir -p "$PW_TRAINING_CAPTURE_DIR"
   chmod 700 "$PW_TRAINING_CAPTURE_DIR"
@@ -79,6 +86,10 @@ stop_sidecar() {
   if kill -0 "$sidecar" 2>/dev/null; then
     kill -TERM "$sidecar"
     wait "$sidecar" || true
+  fi
+  if [ -n "$fixture_pid" ] && kill -0 "$fixture_pid" 2>/dev/null; then
+    kill -TERM "$fixture_pid"
+    wait "$fixture_pid" || true
   fi
 }
 trap stop_sidecar EXIT
@@ -111,10 +122,39 @@ for pair in github:GITHUB_SEARCH_API_KEY gitlab:GITLAB_SEARCH_API_KEY stackexcha
 done
 clear_provider_environment
 rm /cfg/credential.headers
+printf '{"ready":true}\n' > "$out/ready.json"
+if [ -n "${BIALY_PREFLIGHT:-}" ]; then
+  python3 /opt/bialy/preflight.py before "$project"
+fi
 
-/opt/bialy/bin/lycaon-debug decide generate --addr http://127.0.0.1:8850 --token "$(cat /cfg/api.token)" \
-  --tasks "$out/tasks.jsonl" --project "$project" --project-name "$WORKSPACE" --manifest "$out/manifest.jsonl" \
-  --unattended /opt/bialy/unattended.yaml --timeout "$PROMPT_TIMEOUT" || echo "driver exited $?"
+while IFS= read -r task; do
+  [ -n "$task" ] || continue
+  printf '%s\n' "$task" > "$out/task.part"
+  command=(/opt/bialy/bin/lycaon-debug decide generate --addr http://127.0.0.1:8850 --token "$(cat /cfg/api.token)"
+    --tasks "$out/task.part" --project "$project" --project-name "$WORKSPACE" --manifest "$out/task-manifest.part"
+    --unattended /opt/bialy/unattended.yaml --timeout "$PROMPT_TIMEOUT")
+  if [ -n "${TASK_TIMEOUT:-}" ]; then
+    command=(timeout --signal=TERM --kill-after=10s "$TASK_TIMEOUT" "${command[@]}")
+  fi
+  code=0
+  "${command[@]}" || code=$?
+  if [ -f "$out/task-manifest.part" ]; then
+    cat "$out/task-manifest.part" >> "$out/manifest.jsonl"
+    rm "$out/task-manifest.part"
+  fi
+  if [ "$code" -ne 0 ]; then
+    printf '{"code":"driver_exit","exit_code":%d}\n' "$code" > "$out/task-fault.json"
+    break
+  fi
+  if ! python3 -c 'import json,sys; sys.exit(any(json.loads(l)["status"] != "settled" for l in open(sys.argv[1])))' "$out/manifest.jsonl"; then
+    printf '{"code":"task_failed"}\n' > "$out/task-fault.json"
+    break
+  fi
+done < "$out/tasks.jsonl"
+if [ -n "${BIALY_PREFLIGHT:-}" ]; then
+  python3 /opt/bialy/preflight.py after "$project"
+fi
+
 stop_sidecar
 trap - EXIT
 

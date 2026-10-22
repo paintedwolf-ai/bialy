@@ -242,6 +242,9 @@ RUN_DEFAULTS = {
     "lycaon_checkout": "../paintedwolf-code", "generators": [], "generator_weights": {}, "archetype_generators": {},
     "local_workers_only": False, "judges": [], "workspaces": [], "archetypes": [], "task_cap": None, "task_share": None, "seed": 7, "workers": 16,
     "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
+    "task_timeout": None, "tasks_per_runner": None,
+    "fail_fast": {"enabled": True, "summary_length_limit": 2, "capture_turn_limit": 3},
+    "preflight": {"enabled": True, "timeout_seconds": 300},
     "engine_on": {"enabled": True, "deadline_ms": 60000, "heads": None},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
     "coderank": {"per_repo": 40},
@@ -281,6 +284,15 @@ def run_settings(raw):
                 settings[key][k] = v
         else:
             settings[key] = value
+    if settings["task_timeout"] is not None and minutes(str(settings["task_timeout"])) <= 0:
+        raise ConfigError("run.task_timeout must be positive")
+    for key in ("tasks_per_runner",):
+        if settings[key] is not None and int(settings[key]) < 1:
+            raise ConfigError("run.%s must be positive" % key)
+    if any(int(settings["fail_fast"][k]) < 1 for k in ("summary_length_limit", "capture_turn_limit")):
+        raise ConfigError("run.fail_fast thresholds must be positive")
+    if int(settings["preflight"]["timeout_seconds"]) < 1:
+        raise ConfigError("run.preflight.timeout_seconds must be positive")
     for key in ("lycaon_checkout", "scanner_candidate"):
         value = settings.get(key)
         if value:
