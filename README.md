@@ -169,9 +169,11 @@ status to `run.json` there; a failed stage stops the run with its error in
   runners and assembles the engine payload (schemas, the pinned git, the
   headless browser, Opengrep) from the checkout; `engine` builds the decision
   engine for this host with cargo. The checkout pins Opengrep releases per
-  platform; until it pins a Linux one, `run.scanner: candidate` with
-  `run.scanner_candidate` pointing at a linux/amd64 artifact directory from the
-  downstream Opengrep repository's `engine/build.py` carries that build, and
+  platform, including linux/amd64, and stages the pinned one at
+  `bundled/opengrep-<version>/`, where the sidecar finds it under
+  `LYCAON_ENGINE_ROOT`. `run.scanner: candidate` with `run.scanner_candidate`
+  pointing at a linux/amd64 artifact directory from the downstream Opengrep
+  repository's `engine/build.py` carries a development build instead, and
   `run.scanner: none` runs without a scanner, which the sidecar then reports
   unavailable.
 - The first pass drives with the engine off. `train_pilot` trains the recipes
