@@ -195,6 +195,17 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
     assert all(a.per_workspace == 1 for a in runmod.scaled_factory(make_run(factory, tmp_path, task_share=0.5, task_cap=1)).archetypes)
     with pytest.raises(runmod.RunError, match="task_share"):
         runmod.scaled_factory(make_run(factory, tmp_path, task_share=1.5))
+    # Archetype selection keeps only the named kinds of request.
+    picked = runmod.scaled_factory(make_run(factory, tmp_path, archetypes=["question", "new_project"]))
+    assert sorted(a.id for a in picked.archetypes) == ["new_project", "question"]
+    with pytest.raises(runmod.RunError, match="unknown archetypes"):
+        runmod.scaled_factory(make_run(factory, tmp_path, archetypes=["no_such_archetype"]))
+
+
+def test_a_collection_declares_the_students_window_and_identity(factory, tmp_path):
+    run = runmod.Run(factory=factory, name="t", settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
+    assert run.collection_window == 32768
+    assert make_run(factory, tmp_path).collection_window is None
 
 
 def test_an_early_stop_still_leaves_a_current_report(factory, tmp_path):

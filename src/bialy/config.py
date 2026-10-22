@@ -240,7 +240,7 @@ def local_deployment():
 
 RUN_DEFAULTS = {
     "lycaon_checkout": "../paintedwolf-code", "generators": [], "generator_weights": {}, "archetype_generators": {},
-    "local_workers_only": False, "judges": [], "workspaces": [], "task_cap": None, "task_share": None, "seed": 7, "workers": 16,
+    "local_workers_only": False, "judges": [], "workspaces": [], "archetypes": [], "task_cap": None, "task_share": None, "seed": 7, "workers": 16,
     "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
     "engine_on": {"enabled": True, "deadline_ms": 60000, "heads": None},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
@@ -250,6 +250,10 @@ RUN_DEFAULTS = {
               "requirements": None, "torch_index": None, "epochs": None},
     "custom_model": {"enabled": False, "diagnostic_only": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
                      "epoch": None, "tool_surface": "legacy", "host_commit": None, "quality_reports": None, "quality_judge": False, "passes": None,
+                     # How the trained student will be served: llama.cpp's server applies the
+                     # checkpoint's own chat template, so the trained tokens are the served ones.
+                     "student_serving": {"provider": "student", "kind": "openai-compatible", "model": "gemma-4-e4b-it",
+                                         "base_url": "http://127.0.0.1:8080/v1", "context_window": 32768},
                      "preload_from_judge": False, "max_routine_reads_per_session": 6, "shadow": False, "repair": False},
 }
 

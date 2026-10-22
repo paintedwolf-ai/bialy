@@ -44,6 +44,16 @@ def validate_settings(cfg):
         raise DatasetError("run.custom_model.host_commit must pin the full Painted Wolf Code commit")
     if cfg.get("preload_from_judge"):
         raise DatasetError("custom-model training requires observed offered tools; synthetic judge preloading is unsupported")
+    serving = cfg.get("student_serving") or {}
+    if (set(serving) != {"provider", "kind", "model", "base_url", "context_window"} or not all(serving.values())
+            or serving["kind"] not in STUDENT_SERVING_KINDS or int(serving["context_window"]) < 4096):
+        raise DatasetError("run.custom_model.student_serving declares provider, kind (%s), model, base_url and a context_window "
+                           "of at least 4096: how the student will be served" % ", ".join(sorted(STUDENT_SERVING_KINDS)))
+
+
+# Serving kinds whose server applies the checkpoint's own chat template, so the
+# host exporter can train on exactly the tokens the student will be served.
+STUDENT_SERVING_KINDS = {"openai-compatible"}
 
 
 def binding(run):
@@ -61,6 +71,8 @@ def binding(run):
     identity = {
         "schema": "pw-custom-run/1", "epoch": cfg["epoch"], "tool_surface": cfg["tool_surface"],
         "host_commit": cfg["host_commit"], "settings_sha256": digest(run.settings),
+        "student_provider": cfg["student_serving"]["provider"], "student_kind": cfg["student_serving"]["kind"],
+        "student_model": cfg["student_serving"]["model"], "student_context_window": int(cfg["student_serving"]["context_window"]),
         "factory": provenance.factory_source(),
         "models": [dataclasses.asdict(m) for m in run.factory.models],
         "split": run.factory.split,

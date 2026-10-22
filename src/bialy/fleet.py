@@ -17,6 +17,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import yaml
+
 from . import config, llm
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
@@ -35,28 +37,41 @@ DECISION_SECTIONS = ("turn", "request", "lookup", "tool_event")
 # engine's overlay/) replaces the whole embedded tree with the config/ under it, so the
 # overlay carries the complete tree of the commit the binaries were built from.
 DECISIONS = Path("overlay/config/packs/painted-wolf/platform/host/decisions.yaml")
+COMPACTION = Path("overlay/config/packs/painted-wolf/platform/host/compaction.yaml")
 
 
-def raise_decision_deadlines(config_dir, engine_dir, deadline_ms):
+def stage_config_overlay(config_dir, engine_dir, deadline_ms=None, context_window=None):
     """Stage `config_dir`, the lycaon/config tree of the commit the binaries were built
-    from, with a longer deadline on every turn decision.
+    from, with the run's runtime settings.
 
-    A runner's CPU answers a turn in seconds, and past the deadline the engine abstains.
-    The deadline decides only whether an answer arrives, never what it is, so an
-    engine-on pass raises it."""
+    deadline_ms raises every turn decision's deadline: a runner's CPU answers a turn in
+    seconds, and past the deadline the engine abstains. The deadline decides only whether
+    an answer arrives, never what it is, so an engine-on pass raises it.
+
+    context_window is the true window of the model a collection trains. Sessions budget
+    their context exactly as that model's sessions would (its window times the host's
+    live-budget share), so teachers act on the history a student will be given."""
     overlay = Path(engine_dir) / "overlay" / "config"
     shutil.rmtree(overlay, ignore_errors=True)
     shutil.copytree(config_dir, overlay, symlinks=False)
-    path = Path(engine_dir) / DECISIONS
-    lines = path.read_text(encoding="utf-8").splitlines()
-    section = None
-    for i, line in enumerate(lines):
-        if line and not line.startswith((" ", "#")) and line.endswith(":"):
-            section = line[:-1]
-        elif section in DECISION_SECTIONS and line.startswith("  deadline_ms:"):
-            lines[i] = "  deadline_ms: %d" % deadline_ms
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if deadline_ms:
+        path = Path(engine_dir) / DECISIONS
+        lines = path.read_text(encoding="utf-8").splitlines()
+        section = None
+        for i, line in enumerate(lines):
+            if line and not line.startswith((" ", "#")) and line.endswith(":"):
+                section = line[:-1]
+            elif section in DECISION_SECTIONS and line.startswith("  deadline_ms:"):
+                lines[i] = "  deadline_ms: %d" % deadline_ms
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if context_window:
+        path = Path(engine_dir) / COMPACTION
+        compaction = yaml.safe_load(path.read_text(encoding="utf-8"))
+        budget = int(context_window) * int(compaction["live_budget_pct"]) // 100
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines()
+                 if not line.startswith(("window_source:", "model_context_window:"))]
+        lines += ["window_source: explicit", "model_context_window: %d" % budget]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # What the sidecar needs to offer the tools it advertises; without them sessions still
@@ -100,7 +115,7 @@ def check_engine(engine_dir, scanner=True):
         raise ValueError("engine payload %s lacks %s; see README (engine/)" % (engine_dir, ", ".join(missing)))
 
 
-def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, config_dir=None, scanner=True):
+def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, config_dir=None, scanner=True, context_window=None):
     """Assemble the build context from runner/, the pinned lycaon binaries, and the
     engine payload, then build the runner image."""
     check_engine(engine_dir, scanner)
@@ -112,8 +127,8 @@ def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, con
     for name in ("lycaon", "lycaon-debug"):
         shutil.copy2(Path(lycaon_bin) / name, ctx / "bin" / name)
     shutil.copytree(engine_dir, ctx / "engine", symlinks=False)
-    if deadline_ms:
-        raise_decision_deadlines(config_dir, ctx / "engine", deadline_ms)
+    if deadline_ms or context_window:
+        stage_config_overlay(config_dir, ctx / "engine", deadline_ms, context_window)
     shutil.copy2(CONFIG / "unattended.yaml", ctx / "unattended.yaml")
     subprocess.run(["docker", "build", "-q", "-t", tag or factory.fleet["image"], str(ctx)], check=True)
 
@@ -177,6 +192,12 @@ def endpoint_provider(factory, model, port):
     return base if port == model.port else "%s-%d" % (base, port)
 
 
+def student_serving(factory):
+    """The provider a custom-model collection's student will be served through, or None."""
+    custom = (getattr(factory, "run", None) or {}).get("custom_model") or {}
+    return custom.get("student_serving") if custom.get("enabled") else None
+
+
 def sidecar_files(factory, decide_env, lane):
     """providers.local.yaml, model-policy.yaml, and sidecar.env for a shard. `lane` picks
     which server of each model the shard's sessions use, so shards spread over replicas."""
@@ -199,6 +220,14 @@ def sidecar_files(factory, decide_env, lane):
         providers += ["  - id: %s" % chosen[m.id], "    kind: openai-compatible",
                       "    base_url: %s" % factory.base_url(m, port), "    reasoning_wire: reasoning_content",
                       "    models: [{id: %s}]" % m.id]
+    student = student_serving(factory)
+    if student:
+        # Never called: the host renders each captured request through this entry,
+        # so the training input is what the student's own serving would send.
+        providers += ["  - id: %s" % student["provider"], "    kind: %s" % student["kind"],
+                      "    base_url: %s" % student["base_url"], "    reasoning_wire: reasoning_content",
+                      '    api_key_env: ""',
+                      "    models: [{id: %s, context_length: %d}]" % (student["model"], int(student["context_window"]))]
     gens = factory.generators()
     first = gens[0]
     local_only = bool((getattr(factory, "run", None) or {}).get("local_workers_only"))
