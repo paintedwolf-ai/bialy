@@ -197,3 +197,28 @@ def test_non_diagnostic_requires_exporter_capability(custom_run):
     exporter.write_text("# fixture capability")
     identity = cm.binding(custom_run)
     assert identity["epoch"] == "legacy-review-1"
+
+
+def test_aborted_task_candidates_cannot_reach_quality_review(tmp_path):
+    source = tmp_path / "receipts.jsonl"
+    rows = [{"session": "failed", "source": {"store_sha256": "failed-store"}},
+            {"session": "finished", "source": {"store_sha256": "finished-store"}}]
+    source.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    out = tmp_path / "review.jsonl"
+    count = cm.write_receipt_lineage(source, out, {"finished": {"prompt_group": "good-group"}}, {"failed-store"})
+    assert count == 1
+    assert json.loads(out.read_text()) == dict(rows[1], meta={"prompt_group": "good-group"}, split_group="good-group")
+
+
+def test_aborted_task_evidence_is_hashed_and_missing_store_is_refused(custom_run):
+    identity, before = source_inputs(custom_run)
+    marker = custom_run.path("fleet-off/shards/a/task-aborted.json")
+    marker.write_text('{"code":"turn_failed"}')
+    after = cm.input_manifest(custom_run, identity)
+    assert after != before and "fleet-off/shards/a/task-aborted.json" in after["files"]
+    missing = custom_run.path("fleet-off/shards/b/task-aborted.json")
+    missing.parent.mkdir()
+    missing.write_text('{"code":"turn_failed"}')
+    missing.with_name("manifest.jsonl").touch()
+    with pytest.raises(cm.DatasetError, match="inputs missing.*store.db"):
+        cm.input_manifest(custom_run, identity)

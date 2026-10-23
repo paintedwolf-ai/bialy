@@ -537,6 +537,47 @@ def keep_overdue(shard, exported):
     return True
 
 
+def health_snapshot(shard, name, proc, code):
+    """A removed --rm container is healthy only when its saved store is readable."""
+    if code is not None and not (shard / "store.db").is_file():
+        raise faults.RunFault("health_store_unavailable", shard.name)
+    try:
+        return faults.snapshot(shard, name if code is None else None), code
+    except faults.RunFault as exc:
+        if exc.code != "health_store_unavailable" or code is not None:
+            raise
+        try:
+            code = proc.wait(timeout=1)
+        except subprocess.TimeoutExpired as timeout:
+            raise exc from timeout
+        if not (shard / "store.db").is_file():
+            raise exc
+        return faults.snapshot(shard), code
+
+
+def stop_shard(name, child, shard, work, output):
+    """Preserve this owned container's live evidence before stopping it."""
+    if child.poll() is None:
+        export_live(name, shard, output)
+        sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+        sh("docker", "stop", "--time", "10", name, check=False)
+        child.wait()
+    release_work(work)
+
+
+def record_task_abort(shard, fault):
+    if not (shard / "store.db").is_file():
+        return False
+    rows = shard / "rows.jsonl"
+    if rows.exists():
+        rows.rename(shard / "task-aborted-rows.jsonl")
+    # An empty manifest truthfully records that no driver outcome was published
+    # before the host stopped this task. It never invents a completed session.
+    (shard / "manifest.jsonl").touch(exist_ok=True)
+    (shard / "task-aborted.json").write_text(json.dumps(fault, indent=2) + "\n")
+    return True
+
+
 def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     """Run every shard without rows, at most `runners` at a time, until all have finished.
 
@@ -572,13 +613,14 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
                         shard, factory.root / "work" / run_name / shard_name, shard_deadline(factory, shard, time.time()))
     # Longest budgets first: the shards that run longest start while the fleet is full,
     # instead of trailing a nearly idle fleet at the end of the pass.
-    pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and s.name not in adopted),
+    pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and not (s / "task-aborted.json").exists() and s.name not in adopted),
                      key=lambda s: (-shard_minutes(factory, s), s.name))
     for shard in pending:
         for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part", "overdue-rows.part", "ready.json", "health.json", "task-fault.json"):
             (shard / stale).unlink(missing_ok=True)
     limit = int(runners or factory.fleet["runners"])
-    done = failed = 0
+    done = sum((shard / "rows.jsonl").exists() for shard in (run_dir / "shards").iterdir())
+    failed = sum((shard / "task-aborted.json").exists() for shard in (run_dir / "shards").iterdir())
     refused = None
     while (pending and not refused) or active:
         while pending and len(active) < limit and not refused:
@@ -593,7 +635,7 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
             health_settings = dict(factory.run.get("fail_fast") or {})
             if health_settings.get("enabled") and (shard / "ready.json").exists():
                 try:
-                    report = faults.snapshot(shard, name if code is None else None)
+                    report, code = health_snapshot(shard, name, proc, code)
                     (shard / "health.json").write_text(json.dumps(report, indent=2) + "\n")
                     health_settings.update(require_engine=bool((factory.run.get("engine_on") or {}).get("enabled") and extra_mounts),
                                            require_captures=bool((factory.run.get("custom_model") or {}).get("enabled")))
@@ -602,17 +644,23 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
                     report, reason = {"observation_error": type(exc).__name__}, "health_observation_failed"
                 if reason:
                     fault = dict(code=reason, shard=shard.name, report=report)
+                    one_task = len([line for line in (shard / "tasks.jsonl").read_text().splitlines() if line.strip()]) == 1
+                    if one_task and faults.isolated_task_failure(report, health_settings):
+                        stop_shard(name, proc, shard, work, "task-aborted-rows.part")
+                        if record_task_abort(shard, fault):
+                            ledger.append(event="task_abort", container=name, shard=shard.name, code=reason)
+                            del active[name]
+                            failed += 1
+                            print("%s task aborted; failed=%d pending=%d" % (shard.name, failed, len(pending)), flush=True)
+                            continue
+                        reason = "health_store_unavailable"
+                        fault = dict(code=reason, shard=shard.name, report=report)
                     (run_dir / "fault.json").write_text(json.dumps(fault, indent=2) + "\n")
                     # Only containers owned by this run's ledger are stopped. Preserve
                     # their live stores and exports before releasing their workspaces.
                     for other, (child, current, current_work, _) in active.items():
-                        if child.poll() is None:
-                            export_live(other, current, "aborted-rows.part")
-                            sh("docker", "exec", other, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
-                            sh("docker", "stop", "--time", "10", other, check=False)
-                            child.wait()
+                        stop_shard(other, child, current, current_work, "aborted-rows.part")
                         ledger.append(event="health_abort", container=other, shard=current.name, code=reason)
-                        release_work(current_work)
                     raise faults.RunFault(reason, shard.name)
             if code is None and time.time() > deadline:
                 exported = export_live(name, shard, "overdue-rows.part")
