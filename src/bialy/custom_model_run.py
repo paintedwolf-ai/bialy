@@ -121,7 +121,7 @@ def input_manifest(run, identity):
         for store in stores:
             files += [store, store.parent / "manifest.jsonl"]
             files += sorted(p for p in store.parent.rglob("*") if p.is_file() and (
-                p.parent.name == "training-captures" or p.name == "store.db-wal" or p.name.endswith(".request.json") or p.name == "model-requests.jsonl"))
+                p.parent.name == "training-captures" or (p.name == "store.db-wal" and p.stat().st_size > 0) or p.name.endswith(".request.json") or p.name == "model-requests.jsonl"))
     task_files = sorted(run.path("tasks").glob("*.jsonl"))
     if not task_files:
         raise DatasetError("custom-model extraction requires the original task files")
