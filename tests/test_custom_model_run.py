@@ -100,6 +100,15 @@ def test_input_identity_includes_wal_and_refuses_mismatched_fleet(custom_run):
         cm.input_manifest(custom_run, identity)
 
 
+def test_empty_wal_created_by_a_reader_is_not_a_new_input(custom_run):
+    identity, before = source_inputs(custom_run)
+    wal = custom_run.path("fleet-off/shards/a/store.db-wal")
+    wal.write_bytes(b"")
+    assert cm.input_manifest(custom_run, identity) == before
+    wal.write_bytes(b"committed frames")
+    assert cm.input_manifest(custom_run, identity) != before
+
+
 def test_only_validated_rows_bound_to_this_epoch_reach_qualified_review(custom_run, tmp_path, monkeypatch):
     identity, inputs = source_inputs(custom_run)
     capture = {"epoch": identity["epoch"], "tool_surface": identity["tool_surface"], "host_revision": identity["host_commit"],
