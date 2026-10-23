@@ -234,7 +234,7 @@ def sidecar_files(factory, decide_env, lane):
         providers += ["  - id: %s" % student["provider"], "    kind: %s" % student["kind"],
                       "    base_url: %s" % student["base_url"], "    reasoning_wire: reasoning_content",
                       '    api_key_env: ""',
-                      "    models: [{id: %s, context_length: %d}]" % (student["model"], int(student["context_window"]))]
+                      "    models: [{id: %s, context_length: %d, thinking: {state: supported, can_disable: true}}]" % (student["model"], int(student["context_window"]))]
     gens = factory.generators()
     first = gens[0]
     local_only = bool((getattr(factory, "run", None) or {}).get("local_workers_only"))
@@ -247,6 +247,10 @@ def sidecar_files(factory, decide_env, lane):
               "lite: {provider_id: %s, model: %s}" % (chosen[lite_model.id], wire_model[lite_model.id]),
               "agent_pool:", "  selection: random", "  models:"]
     policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], wire_model[m.id]) for m in worker_gens]
+    if student:
+        # Native fixed control belongs to the serving policy, not the teacher.
+        policy += ["thinking_overrides:", "  - {provider_id: %s, model: %s, mode: fixed, enabled: false}" %
+                   (student["provider"], student["model"])]
     # The sidecar takes provider keys only from its own credential store, so the shard
     # names which provider gets which environment variable's key; run-shard.sh stores it
     # through the API after the sidecar starts. The names travel, never the keys.

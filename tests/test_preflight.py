@@ -68,6 +68,7 @@ def test_preflight_blocks_paid_driving_and_is_required_for_custom_collection(fac
 @pytest.mark.parametrize("phase", ["mock", "fixture"])
 def test_preflight_uses_a_separate_shard_and_never_pays_for_driving(factory, tmp_path, monkeypatch, phase):
     run = collection(factory, tmp_path)
+    monkeypatch.setattr(preflight, "verify_receipts", lambda *_: 4)
     monkeypatch.setattr(fleet, "container_args", lambda f, name, shard, mounts, image: ("owned", tmp_path / "work", ["docker", "run", image]))
     monkeypatch.setattr(fleet, "release_work", lambda *_: None)
     monkeypatch.setattr(fleet, "sh", lambda *args, **kw: SimpleNamespace(stdout="", returncode=0))
@@ -179,3 +180,30 @@ def test_fixture_reduction_thresholds_preserve_the_declared_window(tmp_path):
     assert cfg["model_context_window"] == 24576 and cfg["window_source"] == "explicit" and cfg["live_budget_pct"] == 75
     assert cfg["budget_trigger_pct"] == 99 and cfg["keep_recent_messages"] == 2
     assert yaml.safe_load(path.read_text())["keep_recent_messages"] == 16
+
+
+@pytest.mark.parametrize("counts, expected", [({"accepted_candidates": 4}, 4),
+    ({"excluded:request control needs a model-specific renderer": 4}, None),
+    ({"accepted_candidates": 1, "excluded:invalid receipt": 1}, None)])
+def test_preflight_requires_receipt_admission_not_just_kept_payloads(factory, tmp_path, monkeypatch, counts, expected):
+    run = collection(factory, tmp_path)
+    shard = run.path("preflight-on/shards/fixture")
+    (shard / "training-captures").mkdir(parents=True)
+    (shard / "training-captures/one.json").write_text(json.dumps({"schema": "pw-training-turn/1", "student_request": {"tools": []}}))
+    def export(args, **kw):
+        assert args[1] == str(run.checkout / "scripts/bialy/custom_model/collect.py")
+        source = Path(args[args.index("--fleet") + 1])
+        assert (source / "shards" / "fixture").resolve() == shard.resolve()
+        assert [p.name for p in (source / "shards").iterdir()] == ["fixture"]
+        binding = json.loads((shard / "receipt-binding.json").read_text())
+        assert binding["student_model"] == "gemma-4-e4b-it" and binding["epoch"] == "fixture"
+        output = shard / "receipt-export"
+        output.mkdir()
+        (output / "manifest.json").write_text(json.dumps({"counts": counts}))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(preflight.subprocess, "run", export)
+    if expected:
+        assert preflight.verify_receipts(run, shard) == expected
+    else:
+        with pytest.raises(faults.RunFault, match="receipt_not_accepted"):
+            preflight.verify_receipts(run, shard)
