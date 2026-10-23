@@ -4,6 +4,7 @@ import copy
 import json
 import shlex
 import subprocess
+import sys
 
 import yaml
 
@@ -74,12 +75,43 @@ def run_phase(run, pass_name, phase, pilot):
         report = json.loads((shard / "preflight.json").read_text()) if (shard / "preflight.json").exists() else {}
         if result.returncode or report.get("status") != "passed":
             raise faults.RunFault(report.get("code", "preflight_runner_failed"), phase)
+        if phase == "fixture":
+            report["receipt_candidates"] = verify_receipts(run, shard)
         return report
     except subprocess.TimeoutExpired as exc:
         raise faults.RunFault("preflight_timeout", phase) from exc
     finally:
         fleet.sh("docker", "stop", "--time", "10", name, check=False)
         fleet.release_work(work)
+
+
+def verify_receipts(run, shard):
+    """Qualify captured payloads with the pinned host's actual receipt exporter."""
+    custom = run.setting("custom_model")
+    serving = custom["student_serving"]
+    identity = {key: custom[key] for key in ("epoch", "host_commit", "tool_surface")}
+    identity.update(student_provider=serving["provider"], student_kind=serving["kind"], student_model=serving["model"])
+    binding = shard / "receipt-binding.json"
+    custom_model_run.write_json(binding, identity)
+    records = [json.loads(p.read_text()) for p in (shard / "training-captures").glob("*.json")]
+    # This probe's offered tool inventories identify its catalog; its rows never
+    # enter a collection's training splits.
+    catalog = custom_model_run.digest([r["student_request"].get("tools", []) for r in records
+                                      if r.get("schema") == "pw-training-turn/1" and r.get("student_request")])
+    source = shard.parent.parent / "receipt-source"
+    (source / "shards").mkdir(parents=True)
+    (source / "shards" / shard.name).symlink_to(shard.resolve(), target_is_directory=True)
+    destination = shard / "receipt-export"
+    result = subprocess.run([sys.executable, str(run.checkout / "scripts/bialy/custom_model/collect.py"),
+                             "--fleet", str(source), "--binding", str(binding),
+                             "--catalog-sha256", catalog, "--out", str(destination)], capture_output=True, text=True, timeout=30)
+    (shard / "receipt-export.log").write_text(result.stdout + result.stderr)
+    if result.returncode:
+        raise faults.RunFault("preflight_receipt_export_failed", shard.name)
+    counts = json.loads((destination / "manifest.json").read_text())["counts"]
+    if not counts.get("accepted_candidates") or any(key.startswith("excluded:") and value for key, value in counts.items()):
+        raise faults.RunFault("preflight_receipt_not_accepted", shard.name)
+    return counts["accepted_candidates"]
 
 
 def qualify(run, pass_name, pilot=None):

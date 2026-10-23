@@ -87,14 +87,21 @@ def test_a_collection_budgets_context_as_the_students_sessions_would(tmp_path):
 def test_the_student_serving_provider_is_declared_but_never_driven(factory, tmp_path):
     import dataclasses
 
+    import yaml
+
     from bialy import run as runmod
     run = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name="t",
                      settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
     scaled = runmod.scaled_factory(run)
     providers, policy, _, chosen, _ = fleet.sidecar_files(scaled, {}, 0)
     assert "  - id: student\n    kind: openai-compatible\n" in providers
-    assert "models: [{id: gemma-4-e4b-it, context_length: 32768}]" in providers
-    assert "student" not in chosen.values() and "provider_id: student" not in policy
+    entry = next(p for p in yaml.safe_load(providers)["providers"] if p["id"] == "student")
+    assert entry["models"] == [{"id": "gemma-4-e4b-it", "context_length": 32768,
+                                 "thinking": {"state": "supported", "can_disable": True}}]
+    parsed = yaml.safe_load(policy)
+    assert parsed["thinking_overrides"] == [{"provider_id": "student", "model": "gemma-4-e4b-it", "mode": "fixed", "enabled": False}]
+    assert "student" not in chosen.values() and parsed["coordinator"]["provider_id"] != "student"
+    assert all(m["provider_id"] != "student" for m in parsed["agent_pool"]["models"])
     plain = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name="p", settings=runmod.settings_for(factory, {}))
     assert "id: student" not in fleet.sidecar_files(runmod.scaled_factory(plain), {}, 0)[0]
 
