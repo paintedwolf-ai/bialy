@@ -14,6 +14,8 @@ from pathlib import Path
 
 import yaml
 
+from .faults import MODEL_FAILURE_CODES
+
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config"
 
@@ -243,7 +245,7 @@ RUN_DEFAULTS = {
     "local_workers_only": False, "judges": [], "workspaces": [], "archetypes": [], "task_cap": None, "task_share": None, "seed": 7, "workers": 16,
     "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
     "task_timeout": None, "tasks_per_runner": None,
-    "fail_fast": {"enabled": True, "summary_length_limit": 2, "capture_turn_limit": 3},
+    "fail_fast": {"enabled": True, "summary_length_limit": 2, "capture_turn_limit": 3, "task_failure_codes": []},
     "preflight": {"enabled": True, "timeout_seconds": 300},
     "engine_on": {"enabled": True, "deadline_ms": 60000, "heads": None},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
@@ -291,6 +293,11 @@ def run_settings(raw):
             raise ConfigError("run.%s must be positive" % key)
     if any(int(settings["fail_fast"][k]) < 1 for k in ("summary_length_limit", "capture_turn_limit")):
         raise ConfigError("run.fail_fast thresholds must be positive")
+    isolated = settings["fail_fast"]["task_failure_codes"]
+    if not isinstance(isolated, list) or any(not isinstance(code, str) or code not in MODEL_FAILURE_CODES for code in isolated):
+        raise ConfigError("run.fail_fast.task_failure_codes must list supported model failure codes: turn_closeout_tool_call")
+    if isolated and settings["tasks_per_runner"] != 1:
+        raise ConfigError("run.fail_fast.task_failure_codes requires tasks_per_runner: 1")
     if int(settings["preflight"]["timeout_seconds"]) < 1:
         raise ConfigError("run.preflight.timeout_seconds must be positive")
     for key in ("lycaon_checkout", "scanner_candidate"):

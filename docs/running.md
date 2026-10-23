@@ -62,6 +62,18 @@ aborted pass refuses to spend again. Use a fresh run after repairing the cause.
 `bialy run-faults --run NAME` reads active containers or their saved stores and
 reports each shard's error-code counts and first occurrence, failed turns, scanner
 and engine failures, capture exclusions, modified fields and kept payload counts.
+For a collection that should continue after a known model miss, set
+`run.fail_fast.task_failure_codes: [turn_closeout_tool_call]` with
+`run.tasks_per_runner: 1`. Only that isolated task stops on its first failure.
+Its store, partial export, manifest and `task-aborted.json` remain; it counts as
+failed and is not retried on resume. Other tasks continue. Unknown submission
+codes, provider/driver failures, and any concurrent scanner, engine or capture
+health failure retain run-wide scope. The empty default list keeps every
+failure run-wide. Failed-task rows are not counted as finished shards. Every receipt candidate
+from an aborted task is excluded before quality review; the marker and saved
+store remain bound in the input manifest. A resumed pass retains completed and
+failed shard counts without re-driving either.
+
 A kept payload is a capture candidate; receipt admission and independent quality
 review still decide which candidates train the student. Structured utility health
 requires a host build carrying `pw-training-health/1` telemetry under the capture

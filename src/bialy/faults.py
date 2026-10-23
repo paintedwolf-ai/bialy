@@ -20,6 +20,11 @@ QUERIES = {
 }
 
 
+# The host refuses this model action without invoking it. Infrastructure and
+# permission failures never have task-local scope.
+MODEL_FAILURE_CODES = frozenset({"turn_closeout_tool_call"})
+
+
 class RunFault(RuntimeError):
     def __init__(self, code, shard):
         self.code, self.shard = code, shard
@@ -100,6 +105,18 @@ def reason(report, settings):
     if settings.get("require_captures") and max(report.get("turns", 0), report.get("captures", 0)) >= settings.get("capture_turn_limit", 3) and not report.get("payloads_kept", 0):
         return "no_kept_captures"
     return None
+
+
+def isolated_task_failure(report, settings):
+    """Only explicitly configured submission codes can have task-local scope."""
+    allowed = set(settings.get("task_failure_codes") or []) & MODEL_FAILURE_CODES
+    codes = set(report.get("codes") or {})
+    if not codes or not codes <= allowed:
+        return False
+    if (report.get("task_fault") or {}).get("code") not in (None, "task_failed"):
+        return False
+    health = {key: value for key, value in report.items() if key not in ("task_fault", "failed_turns", "codes")}
+    return reason(health, settings) is None
 
 
 def run_snapshot(run_dir, containers=None):

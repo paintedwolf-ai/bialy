@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import sqlite3
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -145,3 +146,96 @@ def test_triage_keeps_same_named_shards_in_different_passes_separate(tmp_path, m
     on.mkdir(parents=True)
     monkeypatch.setattr(faults, "snapshot", lambda shard, container: (str(shard), container))
     assert faults.run_snapshot(tmp_path, {str(on): "active-on"}) == [(str(off), None), (str(on), "active-on")]
+
+
+@pytest.mark.parametrize("extra,settings,expected", [
+    ({}, {}, True),
+    ({"codes": {"unknown_failure": {"count": 1}}}, {}, False),
+    ({"codes": {"turn_closeout_tool_call": {}, "provider_request_rejected": {}}}, {}, False),
+    ({"task_fault": {"code": "driver_exit"}}, {}, False),
+    ({"scanner_failures": 1}, {}, False),
+    ({"engine_unavailable": 1}, {"require_engine": True}, False),
+    ({"summary_length": 2}, {}, False),
+    ({"turns": 3, "payloads_kept": 0}, {"require_captures": True}, False),
+])
+def test_task_scope_never_masks_other_health_faults(extra, settings, expected):
+    report = {"failed_turns": 1, "codes": {"turn_closeout_tool_call": {"count": 1}}, "task_fault": {"code": "task_failed"}}
+    assert faults.isolated_task_failure(dict(report, **extra), dict(task_failure_codes=["turn_closeout_tool_call"], **settings)) is expected
+
+
+def test_isolated_model_miss_stops_one_task_continues_pending_and_survives_resume(factory, tmp_path, monkeypatch):
+    settings = dict(factory.run, tasks_per_runner=1, fail_fast=dict(factory.run["fail_fast"], task_failure_codes=["turn_closeout_tool_call"]))
+    factory = dataclasses.replace(factory, root=tmp_path, run=settings)
+    directory = tmp_path / "fleet-on"
+    for name in ("a", "b", "c"):
+        shard = directory / "shards" / name
+        shard.mkdir(parents=True)
+        (shard / "workspace.json").write_text('{"prompt_timeout":"45m"}')
+        (shard / "tasks.jsonl").write_text('{"id":"one"}\n')
+    started, stopped, exported = [], [], []
+    class Container:
+        def __init__(self, args, **kw):
+            self.name = args[0]
+            started.append(self.name)
+            (directory / "shards" / self.name / "ready.json").write_text('{}')
+            (directory / "shards" / self.name / "store.db").touch()
+        def poll(self):
+            if self.name == "a":
+                return None
+            (directory / "shards" / self.name / "rows.jsonl").write_text('{}\n')
+            return 0
+        def wait(self):
+            return 0
+    def command(*args, **kw):
+        if args[:2] == ("docker", "stop"):
+            stopped.append(args[-1])
+        return SimpleNamespace(returncode=0, stdout="")
+    monkeypatch.setattr(fleet, "running_containers", lambda _: {})
+    monkeypatch.setattr(fleet, "container_args", lambda f, r, s, m, i: (s.name, None, [s.name]))
+    monkeypatch.setattr(fleet.subprocess, "Popen", Container)
+    monkeypatch.setattr(fleet.time, "sleep", lambda _: None)
+    monkeypatch.setattr(fleet, "sh", command)
+    monkeypatch.setattr(fleet, "release_work", lambda _: None)
+    monkeypatch.setattr(fleet, "export_live", lambda name, *_: exported.append(name))
+    monkeypatch.setattr(faults, "snapshot", lambda shard, container: {"failed_turns": 1, "codes": {"turn_closeout_tool_call": {"count": 1}}} if shard.name == "a" else {})
+    assert fleet.run(factory, directory, runners=2) == (2, 1)
+    assert started == ["a", "b", "c"]
+    assert stopped == exported == ["a"]
+    assert (directory / "shards/a/task-aborted.json").is_file()
+    assert not (directory / "fault.json").exists()
+    assert fleet.run(factory, directory, runners=2) == (2, 1)
+    assert started == ["a", "b", "c"]
+
+
+def test_even_explicit_configuration_cannot_make_provider_failure_task_local():
+    assert not faults.isolated_task_failure({"failed_turns": 1, "codes": {"provider_request_rejected": {"count": 1}}},
+                                            {"task_failure_codes": ["provider_request_rejected"]})
+
+
+def test_container_exit_during_health_read_uses_saved_store_only_after_confirmed_exit(tmp_path, monkeypatch):
+    (tmp_path / "store.db").touch()
+    calls = []
+    def snapshot(shard, container=None):
+        calls.append(container)
+        if container:
+            raise faults.RunFault("health_store_unavailable", shard.name)
+        return {"turns": 1, "failed_turns": 0}
+    monkeypatch.setattr(faults, "snapshot", snapshot)
+    child = SimpleNamespace(wait=lambda timeout: 0)
+    assert fleet.health_snapshot(tmp_path, "finished-container", child, None) == ({"turns": 1, "failed_turns": 0}, 0)
+    assert calls == ["finished-container", None]
+
+
+@pytest.mark.parametrize("running,store", [(True, True), (False, False)])
+def test_failed_live_read_cannot_be_hidden_by_unknown_process_or_missing_store(tmp_path, monkeypatch, running, store):
+    if store:
+        (tmp_path / "store.db").touch()
+    def fail(*args, **kwargs):
+        raise faults.RunFault("health_store_unavailable", tmp_path.name)
+    def wait(timeout):
+        if running:
+            raise subprocess.TimeoutExpired("docker", timeout)
+        return 0
+    monkeypatch.setattr(faults, "snapshot", fail)
+    with pytest.raises(faults.RunFault, match="health_store_unavailable"):
+        fleet.health_snapshot(tmp_path, "container", SimpleNamespace(wait=wait), None)

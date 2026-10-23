@@ -118,6 +118,8 @@ def input_manifest(run, identity):
         if not stores:
             raise DatasetError("custom-model extraction has no %s shard stores" % name)
         files += [base / "provenance.json", run.path("judged-" + name + ".jsonl")]
+        for marker in sorted(base.glob("shards/*/task-aborted.json")):
+            files += [marker, marker.parent / "store.db", marker.parent / "manifest.jsonl"]
         for store in stores:
             files += [store, store.parent / "manifest.jsonl"]
             files += sorted(p for p in store.parent.rglob("*") if p.is_file() and (
@@ -169,6 +171,21 @@ def qualify_inputs(paths, out, identity, inputs):
     return dict(counts)
 
 
+def write_receipt_lineage(source, out, lineage, excluded_stores):
+    """Bind task lineage while excluding every candidate from aborted tasks."""
+    excluded = 0
+    with Path(out).open("w") as output:
+        for line in Path(source).read_text().splitlines():
+            row = json.loads(line)
+            if row["source"]["store_sha256"] in excluded_stores:
+                excluded += 1
+                continue
+            row["meta"] = lineage.get(row["session"], {})
+            row["split_group"] = row["meta"].get("prompt_group")
+            output.write(json.dumps(row) + "\n")
+    return excluded
+
+
 def collect(run, judge_factory=None):
     cfg = run.setting("custom_model") or {}
     if not cfg.get("enabled"):
@@ -207,12 +224,9 @@ def collect(run, judge_factory=None):
                 lineage[session["session_id"]] = {k: session.get(k) for k in
                     ("workspace", "prompt_group", "task_id", "archetype", "model")}
         accepted = base / "sft.host-receipts.jsonl"
-        with accepted.open("w") as output:
-            for line in (destination / "sft.receipts.jsonl").read_text().splitlines():
-                row = json.loads(line)
-                row["meta"] = lineage.get(row["session"], {})
-                row["split_group"] = row["meta"].get("prompt_group")
-                output.write(json.dumps(row) + "\n")
+        aborted_stores = {inputs["files"][str(marker.parent.relative_to(run.dir) / "store.db")]
+                          for name in inputs["passes"] for marker in run.path("fleet-" + name).glob("shards/*/task-aborted.json")}
+        stats["excluded_aborted_task_candidates"] = write_receipt_lineage(destination / "sft.receipts.jsonl", accepted, lineage, aborted_stores)
         if cfg.get("quality_judge"):
             quality_path = base / "quality.jsonl"
             stats["quality"] = custom_quality.judge_rows(judge_factory or run.factory, accepted, transcripts, quality_path,

@@ -99,3 +99,15 @@ def test_a_reasoning_effort_must_be_one_a_provider_takes(tmp_path, monkeypatch):
     copied_config(tmp_path, monkeypatch, edit)
     with pytest.raises(config.ConfigError, match="reasoning_effort is one of none, low, medium, high"):
         config.load()
+
+
+@pytest.mark.parametrize("codes", [None, "turn_closeout_tool_call", ["bad code"], [1], ["provider_request_rejected"]])
+def test_task_failure_codes_require_structured_identifiers(codes):
+    with pytest.raises(config.ConfigError, match="supported model failure codes"):
+        config.run_settings({"fail_fast": {"task_failure_codes": codes}})
+
+
+def test_task_local_failure_scope_requires_one_task_per_runner():
+    with pytest.raises(config.ConfigError, match="tasks_per_runner: 1"):
+        config.run_settings({"fail_fast": {"task_failure_codes": ["turn_closeout_tool_call"]}})
+    assert config.run_settings({"tasks_per_runner": 1, "fail_fast": {"task_failure_codes": ["turn_closeout_tool_call"]}})["tasks_per_runner"] == 1
