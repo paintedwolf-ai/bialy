@@ -79,3 +79,18 @@ def test_legacy_receipts_preserve_terminal_verdict_without_program_facts(verdict
     assert result['legacy_commands'] == {'call': verdict}
     assert result['unresolved_effects'] == unresolved
     assert result['programs'] == {}
+
+
+@pytest.mark.parametrize('mutation, unresolved', [({}, 0), ({'status': 'error'}, 1),
+    ({'settled_at': None}, 2), ({'failure': {'class': 'host_rejection', 'code': 'OTHER'}}, 1),
+    ({'evidence': {'kind': 'rejection', 'ref': 'OTHER'}}, 1)])
+def test_known_missing_executable_is_not_an_unknown_effect(mutation, unresolved):
+    task, facts, oracle, _ = inputs()
+    invocation = facts['sessions'][0]['invocations'][0]
+    invocation.update(status='rejected', failure={'class': 'host_rejection', 'code': 'COMMAND_NOT_FOUND'},
+                      evidence={'kind': 'rejection', 'ref': 'COMMAND_NOT_FOUND'})
+    invocation.update(mutation)
+    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', {}, tool_surface='legacy')
+    assert result['legacy_commands'] == {'call': None}
+    assert result['unresolved_effects'] == unresolved
+    assert result['legacy_rejections'] == ({} if unresolved else {'call': 'COMMAND_NOT_FOUND'})

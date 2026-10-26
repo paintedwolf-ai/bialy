@@ -160,6 +160,7 @@ def test_runner_dispatches_the_bundled_scanner_and_requires_engine_readiness(tmp
             assert "scanner_id='lycaon-sast'" in sql
             return [("complete",)]
     monkeypatch.setattr(module, "api", api)
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
     monkeypatch.setattr(module.sqlite3, "connect", lambda *args, **kw: Store())
     monkeypatch.setenv("LYCAON_DECIDE_DEVICE", "cpu")
     module.before(str(tmp_path))
@@ -253,3 +254,14 @@ def test_fixture_requires_committed_captures_for_each_student(tmp_path, monkeypa
     else:
         with pytest.raises(module.ProbeFailure, match='preflight_capture_not_kept'):
             module.after()
+
+
+def test_preflight_refuses_a_broken_document_helper(tmp_path, monkeypatch):
+    module = runner_module()
+    def run(args, **kwargs):
+        assert args == ['/opt/bialy/bin/lycaon', 'diagnostics', 'document-core']
+        return SimpleNamespace(returncode=1)
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    monkeypatch.setattr(module, 'api', lambda *args: pytest.fail('continued after helper failure'))
+    with pytest.raises(module.ProbeFailure, match='preflight_document_core_unavailable'):
+        module.before(str(tmp_path))

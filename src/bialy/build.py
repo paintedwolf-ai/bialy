@@ -92,11 +92,38 @@ def binaries(checkout, out_dir, cache_root, goos=RUNNER_GOOS, goarch=RUNNER_GOAR
     for name in BINARIES:
         go_run(checkout, cache_root, ["go", "build", "-ldflags=" + " ".join(ldflags), "-o", str(out_dir / name), "./cmd/" + name],
                cwd=checkout / "lycaon", goos=goos, goarch=goarch, mounts=[out_dir])
-    build = {"lycaon_commit": checkout_commit(checkout), "goos": goos, "goarch": goarch, "version": version,
+    core = document_core(checkout, out_dir, cache_root, goos, goarch)
+    build = {"document_core": core, "lycaon_commit": checkout_commit(checkout), "goos": goos, "goarch": goarch, "version": version,
              "scanner_identity_sha256": hashlib.sha256(scanner_identity.encode()).hexdigest() if scanner_identity else None,
              "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "go_image": None if shutil.which("go") else GO_IMAGE}
     (out_dir / "BUILD.json").write_text(json.dumps(build, indent=2) + "\n", encoding="utf-8")
     return build
+
+
+def document_core(checkout, out_dir, cache_root, goos, goarch):
+    """Build the document helper for the same platform as the sidecar."""
+    checkout, out_dir = Path(checkout).resolve(), Path(out_dir).resolve()
+    target = Path(cache_root).resolve() / ('document-core-' + goos + '-' + goarch)
+    target.mkdir(parents=True, exist_ok=True)
+    native_os = {'Linux': 'linux', 'Darwin': 'darwin'}.get(platform.system())
+    native_arch = {'x86_64': 'amd64', 'AMD64': 'amd64', 'arm64': 'arm64', 'aarch64': 'arm64'}.get(platform.machine())
+    native = (goos, goarch) == (native_os, native_arch) and shutil.which('rustup')
+    crate = checkout / 'lycaon/internal/documentcore/native/Cargo.toml'
+    args = ['cargo', 'build', '--locked', '--release', '--manifest-path', str(crate), '--bin', 'pw-document-core']
+    image = None
+    if native:
+        sh(args, cwd=checkout, env=dict(os.environ, CARGO_TARGET_DIR=str(target)))
+    else:
+        if (goos, goarch) != ('linux', 'amd64'):
+            raise BuildError('document core requires a native toolchain for ' + goos + '/' + goarch)
+        image = rust_image(checkout)
+        sh(['docker', 'run', '--rm', '--platform', 'linux/amd64',
+            '-v', f'{checkout}:{checkout}:ro', '-v', f'{target}:/target',
+            '-e', 'CARGO_TARGET_DIR=/target', '-w', str(checkout), image, *args])
+    binary = out_dir / 'pw-document-core'
+    shutil.copy2(target / 'release/pw-document-core', binary)
+    binary.chmod(0o755)
+    return {'sha256': file_sha256(binary), 'image': image}
 
 
 def gitengine(checkout, out_dir, platform_key="linux-amd64"):

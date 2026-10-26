@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -27,6 +28,9 @@ def api(path, body=None):
 
 
 def before(project):
+    core = subprocess.run(['/opt/bialy/bin/lycaon', 'diagnostics', 'document-core'], capture_output=True, timeout=120)
+    if core.returncode:
+        raise ProbeFailure('preflight_document_core_unavailable')
     probes = api("/v1/preflight")["probes"]
     if os.environ.get("LYCAON_DECIDE_DISABLED") != "1":
         engine = next((p for p in probes if p["id"] == "decision_engine"), None)

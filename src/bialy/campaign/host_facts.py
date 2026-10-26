@@ -75,7 +75,7 @@ def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_ide
         if effect['session_id'] not in sessions:
             interventions += 1
     unresolved = 0
-    legacy_commands = {}
+    legacy_commands, legacy_rejections = {}, {}
     invocation_ids = set()
     for session in sessions.values():
         for invocation in session.get('invocations', []):
@@ -86,7 +86,13 @@ def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_ide
                 if tool_surface == 'legacy':
                     verdict = invocation.get('source_verdict')
                     legacy_commands[invocation['id']] = verdict
-                    unresolved += int(verdict not in {'passed', 'failed'})
+                    failure, evidence = invocation.get('failure') or {}, invocation.get('evidence') or {}
+                    not_started = (invocation['status'] == 'rejected' and bool(invocation.get('settled_at'))
+                                   and failure.get('class') == 'host_rejection' and failure.get('code') == 'COMMAND_NOT_FOUND'
+                                   and evidence == {'kind': 'rejection', 'ref': 'COMMAND_NOT_FOUND'})
+                    if not_started:
+                        legacy_rejections[invocation['id']] = 'COMMAND_NOT_FOUND'
+                    unresolved += int(verdict not in {'passed', 'failed'} and not not_started)
                     continue
                 program = programs.get(invocation['id'])
                 if program is None:
@@ -104,7 +110,7 @@ def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_ide
             'store_sha256': store_sha256, 'final_source_sha256': source, 'checks': checks,
             'human_interventions': interventions, 'unauthorized_effects': unauthorized, 'unresolved_effects': unresolved,
             'host_evidence_sha256': digest(facts), 'programs_sha256': digest(programs), 'programs': programs,
-            'tool_surface': tool_surface, 'legacy_commands': legacy_commands,
+            'tool_surface': tool_surface, 'legacy_commands': legacy_commands, 'legacy_rejections': legacy_rejections,
             'evidence_ids': sorted(invocation_ids | {check['id'] for check in checks})}
 
 

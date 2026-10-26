@@ -132,7 +132,7 @@ def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, con
         shutil.rmtree(ctx)
     shutil.copytree(RUNNER, ctx)
     (ctx / "bin").mkdir()
-    for name in ("lycaon", "lycaon-debug"):
+    for name in ("lycaon", "lycaon-debug", "pw-document-core"):
         shutil.copy2(Path(lycaon_bin) / name, ctx / "bin" / name)
     shutil.copytree(engine_dir, ctx / "engine", symlinks=False)
     if deadline_ms or context_window:

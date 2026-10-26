@@ -511,3 +511,23 @@ def test_student_capture_json_survives_shell_environment_loading(tmp_path, facto
     result = subprocess.run(['bash', '-c', '. "$1"; printf "%s" "$PW_TRAINING_STUDENTS"', 'fixture', str(path)],
                             check=True, text=True, capture_output=True)
     assert json.loads(result.stdout) == students
+
+
+def test_runner_image_requires_and_stages_document_helper(factory, tmp_path, monkeypatch):
+    import dataclasses
+    factory = dataclasses.replace(factory, root=tmp_path / 'factory')
+    binaries, engine = tmp_path / 'bin', tmp_path / 'engine'
+    binaries.mkdir()
+    engine.mkdir()
+    for name in ('lycaon', 'lycaon-debug'):
+        (binaries / name).write_bytes(b'binary')
+    monkeypatch.setattr(fleet, 'check_engine', lambda *args: None)
+    calls = []
+    monkeypatch.setattr(fleet.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(FileNotFoundError, match='pw-document-core'):
+        fleet.build_image(factory, binaries, engine)
+    assert not calls
+    (binaries / 'pw-document-core').write_bytes(b'core')
+    fleet.build_image(factory, binaries, engine)
+    assert len(calls) == 1
+    assert (factory.root / 'build/runner/bin/pw-document-core').read_bytes() == b'core'
