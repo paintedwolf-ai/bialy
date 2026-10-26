@@ -33,11 +33,19 @@ class RunFault(RuntimeError):
 
 def store_snapshot(path=None, container=None):
     if container:
-        sql = "BEGIN; SELECT json_object(" + ",".join("'%s',(%s)" % (key, query if key != "codes" else
-              "SELECT json_group_array(json_array(code,n,first_at)) FROM (" + query.replace(
-                  "coalesce(nullif(error_code,''),'submission_failed'),count(*),min(completed_at)",
-                  "coalesce(nullif(error_code,''),'submission_failed') AS code,count(*) AS n,min(completed_at) AS first_at") + ")")
-              for key, query in QUERIES.items()) + "); COMMIT;"
+        fields = []
+        for key, query in QUERIES.items():
+            if key == "codes":
+                rows = query.replace(
+                    "coalesce(nullif(error_code,''),'submission_failed'),count(*),min(completed_at)",
+                    "coalesce(nullif(error_code,''),'submission_failed') AS code,count(*) AS n,min(completed_at) AS first_at",
+                )
+                # Scalar subqueries can lose SQLite's JSON subtype.
+                value = "json((SELECT json_group_array(json_array(code,n,first_at)) FROM (%s)))" % rows
+            else:
+                value = "(%s)" % query
+            fields.append("'%s',%s" % (key, value))
+        sql = "BEGIN; SELECT json_object(" + ",".join(fields) + "); COMMIT;"
         result = subprocess.run(["docker", "exec", container, "sqlite3", "-readonly", "-cmd", ".timeout 1000", "/cfg/store.db", sql],
                                 capture_output=True, text=True, timeout=10)
         if result.returncode:

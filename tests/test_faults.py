@@ -34,9 +34,13 @@ def test_live_store_statuses_and_first_code_are_read_without_error_prose(tmp_pat
     assert report["spend_usd"] == 1
 
 
-def test_live_docker_query_is_one_readonly_transaction(tmp_path, monkeypatch):
+@pytest.mark.parametrize("empty", [False, True])
+def test_live_docker_query_is_one_readonly_transaction(tmp_path, monkeypatch, empty):
     path = tmp_path / "store.db"
     store(path)
+    if empty:
+        with sqlite3.connect(path) as db:
+            db.execute("DELETE FROM prompt_submissions")
     def execute(args, **kw):
         assert args[:5] == ["docker", "exec", "owned", "sqlite3", "-readonly"]
         assert "-cmd" in args and kw["timeout"] == 10
@@ -48,7 +52,10 @@ def test_live_docker_query_is_one_readonly_transaction(tmp_path, monkeypatch):
     monkeypatch.setattr(faults.subprocess, "run", execute)
     report = faults.snapshot(tmp_path, "owned")
     assert report["failed_turns"] == 1
-    assert report["codes"]["provider_request_rejected"]["count"] == 1
+    assert report == faults.snapshot(tmp_path)
+    assert report["codes"] == ({} if empty else {
+        "provider_request_rejected": {"count": 1, "first_at": "2026-10-22T00:00:00Z"},
+    })
 
 
 def test_capture_triage_distinguishes_payloads_commits_exclusions_and_summary_protocol(tmp_path):
