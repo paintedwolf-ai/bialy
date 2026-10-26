@@ -26,6 +26,22 @@ def write(path, value):
         os.close(descriptor)
 
 
+def cleanup_inventory(records, token):
+    servers = {}
+    for server in records:
+        if token not in server['tags']:
+            raise ResourceError('cleanup refuses an unowned resource')
+        previous = servers.get(server['id'], {})
+        volumes, addresses = {}, {}
+        for snapshot in (previous, server):
+            volumes.update({item['id']: item for item in (snapshot.get('volumes') or {}).values()})
+            addresses.update({item['id']: item for item in snapshot.get('public_ips', [])})
+            if snapshot.get('public_ip'):
+                addresses[snapshot['public_ip']['id']] = snapshot['public_ip']
+        servers[server['id']] = dict(server, volumes=volumes, public_ips=list(addresses.values()), public_ip=None)
+    return list(servers.values())
+
+
 class Resources:
     def __init__(self, root, provider, clock=time.time):
         self.root, self.provider, self.clock = Path(root), provider, clock
@@ -111,12 +127,10 @@ class Resources:
             known = current.get('cleanup_resources', [])
             if current.get('server'):
                 known = [*known, current['server']]
-            servers = list({server['id']: server for server in [*known, *observed]}.values())
+            servers = cleanup_inventory([*known, *observed], current['token'])
             current['cleanup_resources'] = servers
             write(path, current)
             for server in servers:
-                if current['token'] not in server['tags']:
-                    raise ResourceError('cleanup refuses an unowned resource')
                 self.provider.delete(server)
                 if not self.provider.absent(server):
                     raise ResourceError('provider still reports owned storage or addresses')

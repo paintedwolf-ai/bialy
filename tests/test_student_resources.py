@@ -24,11 +24,10 @@ class Provider:
         return server
 
     def delete(self, server):
-        if server in self.servers:
-            self.servers.remove(server)
+        self.servers = [item for item in self.servers if item['id'] != server['id']]
 
     def absent(self, server):
-        return server not in self.servers
+        return all(item['id'] != server['id'] for item in self.servers)
 
 
 def test_create_response_loss_reconciles_without_duplicate_resource(tmp_path):
@@ -109,3 +108,23 @@ def test_controller_recovery_requires_the_same_live_resource(tmp_path):
         resources.recover(intent['token'], 180)
     with pytest.raises(ResourceError, match='cannot be recovered'):
         Resources(tmp_path, provider, clock=lambda: 281).recover(intent['token'], 180)
+
+
+def test_cleanup_retains_children_missing_from_later_provider_snapshots(tmp_path):
+    provider = Provider()
+    resources = Resources(tmp_path, provider, clock=lambda: 100)
+    resources.reap()
+    intent = resources.intent({}, 120)
+    allocation = resources.allocate(intent)
+    path = tmp_path / (intent['token'] + '.json')
+    allocation['server'].update(volumes={'0': {'id': 'disk'}}, public_ip={'id': 'ip'})
+    path.write_text(json.dumps(allocation))
+    provider.servers[0] = {'id': 'owned', 'tags': [intent['token']], 'volumes': {}, 'public_ips': []}
+    deleted = []
+    def delete(server):
+        deleted.append(server)
+        provider.servers.clear()
+    provider.delete = delete
+    assert resources.release(intent['token'])['state'] == 'released'
+    assert deleted[0]['volumes'] == {'disk': {'id': 'disk'}}
+    assert deleted[0]['public_ips'] == [{'id': 'ip'}]
