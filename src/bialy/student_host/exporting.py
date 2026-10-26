@@ -3,6 +3,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from ..provenance import file_sha256
 from .jobs import JobError, tree, validate_inputs, validate_result
 from .resources import write
 
@@ -27,7 +28,11 @@ def export(directory, llama, revision, run=subprocess.run):
         args.append('--resume')
     run(args, check=True)
     manifest = json.loads((gguf / 'manifest.json').read_text())
-    if not manifest.get('load_probe'):
+    if (manifest.get('schema') != 'pw-custom-gguf/1' or manifest.get('load_probe') != 'passed'
+            or manifest.get('llama_cpp_revision') != revision
+            or manifest.get('merged_manifest_sha256') != file_sha256(merged / 'manifest.json')
+            or manifest.get('unquantized', {}).get('sha256') != file_sha256(gguf / 'model-f16.gguf')
+            or manifest.get('quantized', {}).get('sha256') != file_sha256(gguf / 'model-Q4_K_M.gguf')):
         raise JobError('export lacks a load parity receipt')
     result = {'schema': 'pw-student-artifact/1', 'student': plan['student'],
               'specification_sha256': plan['specification_sha256'], 'host_commit': plan['host_commit'],

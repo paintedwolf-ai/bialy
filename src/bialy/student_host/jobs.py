@@ -1,4 +1,5 @@
 """Unique training jobs with typed retries and content-verified completion."""
+import fcntl
 import json
 import subprocess
 import time
@@ -78,6 +79,18 @@ def validate_result(plan):
 
 def train(directory, run=subprocess.run, sleep=time.sleep):
     directory = Path(directory)
+    with (directory / '.execution.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise JobError('another controller owns this training job') from exc
+        try:
+            return train_owned(directory, run, sleep)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def train_owned(directory, run, sleep):
     plan = json.loads((directory / 'plan.json').read_text())
     validate_inputs(plan)
     pipe = Path(plan['checkout']) / 'scripts/bialy/custom_model'
@@ -107,11 +120,14 @@ def train(directory, run=subprocess.run, sleep=time.sleep):
                          plan['out'], plan['device'], plan['mirror'], pilot=plan['pilot'], resume=resume)
         state.update(status='running', attempts=state['attempts'] + 1)
         write(state_path, state)
+        previous_terminal = file_sha256(terminal_path) if terminal_path.exists() else None
         with (directory / ('attempt-%d.log' % state['attempts'])).open('x') as log:
             result = run(['uv', 'run', '--project', str(pipe), '--locked', 'python', str(pipe / 'train.py'), *args],
                          cwd=plan['checkout'], stdout=log, stderr=subprocess.STDOUT)
         if not terminal_path.exists():
             raise JobError('trainer did not publish a terminal receipt')
+        if file_sha256(terminal_path) == previous_terminal:
+            raise JobError('trainer did not publish a new terminal receipt')
         terminal = json.loads(terminal_path.read_text())
         if terminal.get('status') == 'complete' and result.returncode == 0:
             verified = validate_result(plan)

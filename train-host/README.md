@@ -463,23 +463,39 @@ examples or hosted judgments were used in this final control experiment.
 
 ## Student
 
-`student/` trains the custom coordinator student with the Painted Wolf Code
-trainer (`scripts/bialy/custom_model/` at a recorded commit) over the rows a
-`custom_model` run produces. Example `run:` sections for qualification, smoke,
-and the two halves of a collection are in `config/runs/`.
+The student host trains and exports both E4B and 12B using the pinned Painted
+Wolf Code trainer. `config/students.json` declares their model revisions and
+one context policy for pilots, full training, and serving: 65,536 tokens,
+thinking disabled, and no token truncation. Student-specific dataset directories
+contain `train.jsonl`, `val.jsonl`, `holdout.jsonl`, and an authenticated
+`source.json` issued from the campaign's frozen task lineage.
 
-The scripts name roles, never machines or people. Pinned inputs are in
-`student/pins.env`. This deployment's settings go in `student/student.local.env`,
-copied from `student.example.env`; git ignores it. The training host is an SSH
-alias from your own `~/.ssh/config`, which supplies its address, user, and key.
+Copy `student/student.example.env` to `student/student.local.env` and configure
+the deployment paths. Keep the source signing key and rental configuration
+private. `student/pins.env` pins the export and serving tools. Rental source
+revisions must be full commits; both local and remote trainer checkouts must
+be clean. Credentials come from the deployment environment and Scaleway profile.
 
-| Script | Runs on | Does |
+| Script | Runs on | Operation |
 |---|---|---|
-| `setup.sh` | training host | Installs the toolchain, serving image, llama.cpp CPU tools, both repositories, released heads, the student checkpoint and its inventory, the trainer environment, and optionally an external teacher and a restricted tunnel key |
-| `pilot.sh RUN` | training host | Trains on a run's qualified rows with a planned pause and a hard kill, resumes, merges, converts to GGUF, and loads it |
-| `sft-scaleway.sh RUN SPLIT_DIR HOST_COMMIT` | your machine | Rents a GPU server, trains there, returns the adapter run to the training host, and deletes the server with its volumes and IP on every exit |
+| `setup.sh` | Training host | Install the toolchain, pinned models, trainer, export tools, and independent cleanup service |
+| `pilot.sh SPLITS` | Training host | Create unique jobs for both students from `SPLITS/e4b` and `SPLITS/12b`, train, resume typed pauses, and export |
+| `sft-scaleway.sh SPLITS` | Training host | Run both students on leased GPU instances and return verified training artifacts and checkpoints |
+
+Each job preserves its input inventory, attempt logs, terminal status, and
+adapter inventory. Retries require a new typed terminal receipt; OOM and
+unknown process outcomes do not trigger another launch. Checkpoints are copied
+while training and verified before publication. An incomplete transfer cannot
+replace an intact generation.
+
+The independent reaper must be healthy before allocation. Leases identify exact
+owned servers, volumes, and addresses. Cleanup remains unconfirmed when the
+provider cannot establish deletion, including an allocation whose response was
+lost. The reaper keeps reconciling those records. Returned adapters are accepted
+only after dataset, model, context, and terminal receipts match the job plan.
+Export separately checks merged weights, GGUF checksums, and a successful load
+receipt; that receipt does not establish behavioral qualification.
 
 `tests/test_identity.py` refuses home directories, logins on real hosts, and
-private addresses outside the factory network in tracked files. List your own
-host and user names in `config/identity.local.txt`, which git ignores, to have
-the tests refuse those too.
+private addresses outside the factory network in tracked files. Deployment
+identity exclusions can be added to ignored `config/identity.local.txt`.

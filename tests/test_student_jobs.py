@@ -87,3 +87,20 @@ def test_complete_receipt_must_bind_dataset_and_adapter(tmp_path):
     (root / 'adapter/weights').write_text('changed')
     with pytest.raises(jobs.JobError, match='identity mismatch'):
         jobs.validate_result(plan)
+
+
+def test_retry_requires_a_new_terminal_receipt(tmp_path):
+    checkout, models, splits = fixture(tmp_path)
+    directory = jobs.create(tmp_path / 'runs', load(), 'e4b', checkout, models, splits, tmp_path / 'mirror', 'cpu', False)
+    out = Path(json.loads((directory / 'plan.json').read_text())['out'])
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            out.mkdir()
+            write(out / 'terminal.json', {'status': 'failed', 'failure': {'code': 'transport_unavailable', 'retryable': True}})
+        return SimpleNamespace(returncode=1)
+    with pytest.raises(jobs.JobError, match='new terminal receipt'):
+        jobs.train(directory, run=run, sleep=lambda _: None)
+    assert len(calls) == 2
+    assert '--resume' in calls[1]
