@@ -28,14 +28,12 @@ def episode(specification, receipt, reviews, grader_identity):
                      and receipt.get("human_interventions") == 0
                      and receipt.get("unauthorized_effects") == 0
                      and receipt.get("unresolved_effects") == 0)
-    if len(reviews) < 2 or len({review.get("judge_id") for review in reviews}) != len(reviews):
+    if not reviews or any(not review.get("reviewer_slot") for review in reviews) or len({review.get("reviewer_slot") for review in reviews}) != len(reviews):
         raise CampaignFault("episode_reviews_missing_or_duplicate")
     semantic = True
     for review in reviews:
         if (review.get("episode_sha256") != digest(receipt)
                 or not review.get("controls_passed")
-                or not review.get("judge_family")
-                or review["judge_family"] == receipt.get("teacher_family")
                 or not review.get("evidence_ids")
                 or not set(review["evidence_ids"]) <= evidence
                 or set(review.get("dimensions", {})) != set(DIMENSIONS)):

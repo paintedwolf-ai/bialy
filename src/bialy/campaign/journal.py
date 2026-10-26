@@ -1,4 +1,4 @@
-"""Transactional stage ownership, immutable inputs, and reconciled outcomes."""
+"""Transactional stage claims, immutable inputs, and reconciled outcomes."""
 import contextlib
 import fcntl
 import hashlib
@@ -56,12 +56,12 @@ class Journal:
         self.db.close()
 
     @contextlib.contextmanager
-    def ownership(self):
-        with (self.directory / ".owner.lock").open("a") as lock:
+    def controller_lock(self):
+        with (self.directory / ".controller.lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise CampaignFault("campaign_already_owned") from exc
+                raise CampaignFault("campaign_controller_locked") from exc
             try:
                 yield
             finally:
@@ -103,7 +103,7 @@ class Journal:
         with self.db:
             current = self.stage(name)
             if not current or current["attempt"] != attempt or current["status"] != "running":
-                raise CampaignFault("stage_ownership_changed")
+                raise CampaignFault("stage_attempt_changed")
             self.db.execute("UPDATE stages SET status=?,output=?,fault=? WHERE name=?",
                             (status, canonical(output), canonical(fault), name))
             self.event(name, attempt, status, {"output": output, "fault": fault})

@@ -26,18 +26,34 @@ def authority_key(directory):
     return path
 
 
-def seal_dataset(journal, lineage, files, export_manifest, checkout, host_commit, run=subprocess.run):
-    exported = json.loads(Path(export_manifest).read_text())
-    if exported.get('schema') != 'pw-receipt-export/1' or exported.get('identity', {}).get('host_commit') != host_commit:
-        raise CampaignFault('host_export_identity_mismatch')
-    for name, checksum in exported['inputs'].items():
-        if file_sha256(Path(name)) != checksum:
-            raise CampaignFault('host_export_input_changed')
-    candidates_path = Path(export_manifest).parent / 'sft.receipts.jsonl'
-    if file_sha256(candidates_path) != exported.get('rows_sha256'):
-        raise CampaignFault('host_export_rows_changed')
-    candidates = {digest(json.loads(line)) for line in candidates_path.read_text().splitlines() if line.strip()}
-    permitted_hashes = set(exported['inputs'].values())
+def verified_exports(manifests, host_commit):
+    candidates, inputs, binding = {}, {}, None
+    for manifest in map(Path, manifests):
+        exported = json.loads(manifest.read_text())
+        identity = exported.get('identity', {})
+        if exported.get('schema') != 'pw-receipt-export/1' or identity.get('host_commit') != host_commit:
+            raise CampaignFault('host_export_identity_mismatch')
+        current = {key: identity.get(key) for key in ('epoch', 'host_commit', 'tool_surface', 'student_provider', 'student_kind', 'student_model')}
+        if binding is not None and binding != current:
+            raise CampaignFault('host_export_identity_mismatch')
+        binding = current
+        for name, checksum in exported['inputs'].items():
+            if file_sha256(Path(name)) != checksum or name in inputs and inputs[name] != checksum:
+                raise CampaignFault('host_export_input_changed')
+            inputs[name] = checksum
+        path = manifest.parent / 'sft.receipts.jsonl'
+        if file_sha256(path) != exported.get('rows_sha256'):
+            raise CampaignFault('host_export_rows_changed')
+        for row in (json.loads(line) for line in path.read_text().splitlines() if line.strip()):
+            candidates[digest(row)] = row
+    if binding is None:
+        raise CampaignFault('host_exports_missing')
+    return binding, inputs, candidates
+
+
+def seal_dataset(journal, lineage, files, export_manifests, checkout, host_commit, run=subprocess.run):
+    binding, inputs, candidates = verified_exports(export_manifests, host_commit)
+    permitted_hashes = set(inputs.values())
     sources, approved = {}, {}
     episodes = Episodes(journal, lineage)
     for path in map(Path, files):
@@ -46,19 +62,19 @@ def seal_dataset(journal, lineage, files, export_manifest, checkout, host_commit
             if digest(candidate) not in candidates:
                 raise CampaignFault('row_not_in_host_export')
             meta = row.get('meta', {})
-            task = lineage.session_task(exported['identity']['epoch'], row['session'])
+            task = lineage.session_task(binding['epoch'], row['session'])
             if task['root'] != row.get('split_group') or task['id'] != meta.get('task_id'):
                 raise CampaignFault('row_lineage_mismatch')
             source = row.get('source', {})
-            verdict = episodes.admit(exported['identity']['epoch'], row['session'], source.get('store_sha256'))
+            verdict = episodes.admit(binding['epoch'], row['session'], source.get('store_sha256'))
             if (source.get('capture_sha256') not in permitted_hashes or source.get('store_sha256') not in permitted_hashes
                     or row.get('request_capture', {}).get('host_revision') != host_commit):
                 raise CampaignFault('row_source_not_in_host_export')
-            raw_path = next((Path(name) for name, checksum in exported['inputs'].items() if checksum == source['capture_sha256']), None)
+            raw_path = next((Path(name) for name, checksum in inputs.items() if checksum == source['capture_sha256']), None)
             if raw_path is None or file_sha256(raw_path) != source['capture_sha256']:
                 raise CampaignFault('host_capture_changed')
             capture = json.loads(raw_path.read_text())
-            if capture.get('session_id') != row.get('session') or capture.get('epoch') != exported['identity']['epoch']:
+            if capture.get('session_id') != row.get('session') or capture.get('epoch') != binding['epoch']:
                 raise CampaignFault('capture_run_binding_mismatch')
             root = lineage.task(task['root'])
             specification = json.loads(root['spec'])
@@ -67,8 +83,8 @@ def seal_dataset(journal, lineage, files, export_manifest, checkout, host_commit
             sources[source['capture_sha256']] = {'source_class': 'factory_capture', 'training_allowed': True, 'parents': [root['id']]}
             approved[digest(row)] = {'root': task['root'], 'task_id': task['id'], 'partition': task['partition'],
                                     'sources': [source['capture_sha256']], 'episode': verdict}
-    authority = {'run_id': exported['identity']['epoch'], 'host_commit': host_commit, 'lineage_sha256': lineage.freeze()}
-    request = journal.directory / 'source-request.json'
+    authority = {'run_id': binding['epoch'], 'host_commit': host_commit, 'lineage_sha256': lineage.freeze()}
+    request = Path(files[0]).parent / 'source-request.json'
     atomic_json(request, {'authority': authority, 'sources': sources, 'approved': approved, 'files': list(map(str, files))})
     destination = Path(files[0]).parent / 'source.json'
     if any(Path(path).parent != destination.parent for path in files):

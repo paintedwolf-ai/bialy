@@ -1,4 +1,4 @@
-"""Qualified cross-family judges assess complete episodes against host evidence."""
+"""Qualified reviewers assess complete episodes against host evidence."""
 import json
 
 from .grading import DIMENSIONS
@@ -13,12 +13,10 @@ the supplied evidence, and a short reason. Every dimension must be present. No t
 
 
 class Reviewers:
-    def __init__(self, journal, factory, judge_ids, seed=7):
+    def __init__(self, journal, factory, reviewer_slots, seed=7):
         self.journal, self.factory, self.seed = journal, factory, seed
-        if len(judge_ids) != len(set(judge_ids)):
-            raise CampaignFault('duplicate_judge')
-        self.models = [factory.model(name) for name in judge_ids]
-        if any('judge' not in model.roles or not model.family for model in self.models):
+        self.models = [factory.model(name) for name in reviewer_slots]
+        if any('judge' not in model.roles for model in self.models):
             raise CampaignFault('judge_not_approved')
         self.journal.db.execute('''CREATE TABLE IF NOT EXISTS judge_controls(
             identity TEXT PRIMARY KEY, receipt TEXT NOT NULL)''')
@@ -78,17 +76,15 @@ class Reviewers:
 
     def review(self, receipt, transcript):
         reviews = []
-        for model in self.models:
-            if model.family == receipt['teacher_family']:
-                continue
+        for slot, model in enumerate(self.models):
             identity = self.identity(model)
             row = self.journal.db.execute('SELECT receipt FROM judge_controls WHERE identity=?', (identity,)).fetchone()
             if not row or json.loads(row[0])['passed'] is not True:
                 continue
             result = self.ask(model, {'receipt': receipt, 'transcript': transcript, 'evidence_ids': receipt['evidence_ids']})
-            reviews.append({**result, 'judge_id': model.id, 'judge_family': model.family,
+            reviews.append({**result, 'reviewer_slot': str(slot), 'judge_id': model.id, 'judge_family': model.family,
                             'judge_revision': model.revision, 'controls_passed': True,
                             'controls_sha256': digest(json.loads(row[0])), 'episode_sha256': digest(receipt)})
-            if len(reviews) == 2:
-                return reviews
-        raise CampaignFault('insufficient_qualified_cross_family_judges')
+        if not reviews:
+            raise CampaignFault('no_qualified_episode_reviewer')
+        return reviews

@@ -3,10 +3,8 @@
 # and recorded that its outputs may train a model released under Apache-2.0
 # (outputs_trainable). The configuration refuses any other model.
 #
-# A row is judged by a model from another family than the one that drove its
-# session. GLM-5.3-Flash drives sessions and writes requests; DeepSeek-V4.1-Flash
-# judges with reasoning off, and GLM judges a sample again to measure agreement.
-# GLM-5.3-Flash is thinking-only: the provider refuses reasoning_effort none.
+# Reviewer slots use models from the approved pool.
+# GLM-5.3-Flash requires thinking enabled.
 # Hosted models read their key from the environment variable hosted.key_env;
 # price_per_million (list prices, uncached input) totals a run's metered spend.
 models:

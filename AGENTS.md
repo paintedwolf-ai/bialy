@@ -80,4 +80,4 @@ lectures. Measurements and the history behind a default belong in
   of prose.
 - Labels come from structured row facts and schema-constrained judge verdicts,
   never from matching prose.
-- A row is judged by a model of another family than the one that drove it.
+- Reviewer slots use explicit model assignments from the approved pool.

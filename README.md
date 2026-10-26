@@ -67,9 +67,9 @@ The native runtime in Painted Wolf Code derives from
    re-export.
 5. **Judge.** `bialy judge` scores every skill card against each turn and
    every offered tool card against each `request_tools` need, 0..4, with a
-   model of another family than the one that drove the session, greedy
+   configured reviewer model, greedy
    decoding constrained to the reply schema, and a seeded candidate order per
-   row. A sample is judged by both families to report agreement.
+   row. A sample uses a second reviewer slot to report agreement.
 6. **Code-rank pairs.** `bialy coderank` harvests code units from each
    repository with the engine's own parsers, pairs each with requests (the
    unit's leading comment, and requests the generator models write), and
@@ -120,21 +120,21 @@ Command adoption requires a fresh collection epoch using the integrated host,
 prompt/catalog/exporter versions and executed child-operation facts. Preserve
 stable task families and split assignments for comparison, but never reuse old
 answers as command-surface labels. The existing Bialy training/release pipeline
-owns matching decision heads; custom-model SFT/DPO training is a separate
+produces matching decision heads; custom-model SFT/DPO training is a separate
 consumer with additional qualification requirements.
 
-Use `custom_model.quality_judge: true` for explicit cross-family review during
+Use `custom_model.quality_judge: true` for explicit receipt-bound quality review during
 collection, or `bialy dpo quality --sft ROWS --transcripts ARCHIVE --out REPORTS`
 for a separate review stage. These operations make provider calls. Reviews bind
 verdicts to exact request/response digests and actual evidence identifiers;
-acceptance alone is not quality. The host repository owns training and export.
+acceptance alone is not quality. Training and export run the host repository’s implementations.
 
 A consumer-GPU server launched outside the factory is a model with
 `serve.external` in `models.yaml`: `model` (the alias the server advertises on
 `/models`), `artifact` (the GGUF file name) and `artifact_sha256`. Its `port` is
 the bridge port the runners call. The tunnel to it (`ssh`, `key`, `remote` as
 loopback host:port) belongs in the uncommitted `replicas.local.yaml` under
-`external`, keyed by model id. The factory owns only that SSH tunnel and checks
+`external`, keyed by model id. The factory manages only that SSH tunnel and checks
 the alias from `/models`; it never starts or stops the server. Before collection,
 verify the loaded artifact and server binary hashes on the serving host. The
 large vLLM configuration is not a consumer-GPU preset.

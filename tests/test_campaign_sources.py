@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -37,7 +38,7 @@ def fixture(tmp_path):
                'final_source_sha256': 'final', 'evidence_ids': ['check'], 'human_interventions': 0,
                'unauthorized_effects': 0, 'unresolved_effects': 0, 'teacher_family': 'teacher',
                'epoch': 'epoch', 'root_session': 'session', 'store_sha256': file_sha256(store)}
-    reviews = [{'judge_id': name, 'judge_family': name, 'episode_sha256': digest(receipt),
+    reviews = [{'reviewer_slot': name, 'judge_id': name, 'judge_family': name, 'episode_sha256': digest(receipt),
                 'controls_passed': True, 'evidence_ids': ['check'], 'dimensions': dict.fromkeys(DIMENSIONS, 'pass')}
                for name in ('first', 'second')]
     Episodes(journal, lineage).record('epoch', 'session', 'train' + FAMILIES[0], ['session'], specification, receipt, reviews, 'grader')
@@ -48,16 +49,16 @@ def test_issuance_uses_frozen_ancestry_and_exported_bytes(tmp_path):
     journal, lineage, dataset, manifest, store = fixture(tmp_path)
     requests = []
     def run(args, **kwargs):
-        request = json.loads((journal.directory / 'source-request.json').read_text())
+        request = json.loads(Path(args[args.index('--request') + 1]).read_text())
         requests.append(request)
         (tmp_path / 'source.json').write_text('sealed')
-    seal_dataset(journal, lineage, [dataset], manifest, tmp_path, 'host', run=run)
+    seal_dataset(journal, lineage, [dataset], [manifest], tmp_path, 'host', run=run)
     binding = next(iter(requests[0]['approved'].values()))
     assert binding['partition'] == 'train' and binding['root'] == 'train' + FAMILIES[0]
     assert authority_key(journal.directory).stat().st_mode & 0o077 == 0
     store.write_bytes(b'changed')
     with pytest.raises(CampaignFault, match='input_changed'):
-        seal_dataset(journal, lineage, [dataset], manifest, tmp_path, 'host', run=run)
+        seal_dataset(journal, lineage, [dataset], [manifest], tmp_path, 'host', run=run)
     assert len(requests) == 1
     journal.close()
 
@@ -68,7 +69,7 @@ def test_changed_training_target_cannot_receive_a_source_permit(tmp_path):
     row['target']['content'] = 'invented answer'
     dataset.write_text(json.dumps(row) + '\n')
     with pytest.raises(CampaignFault, match='row_not_in_host_export'):
-        seal_dataset(journal, lineage, [dataset], manifest, tmp_path, 'host')
+        seal_dataset(journal, lineage, [dataset], [manifest], tmp_path, 'host')
     journal.close()
 
 
@@ -79,7 +80,7 @@ def test_metadata_cannot_reassign_a_session_to_another_partition(tmp_path):
     row['split_group'] = row['meta']['task_id']
     dataset.write_text(json.dumps(row) + '\n')
     with pytest.raises(CampaignFault, match='row_lineage_mismatch'):
-        seal_dataset(journal, lineage, [dataset], manifest, tmp_path, 'host')
+        seal_dataset(journal, lineage, [dataset], [manifest], tmp_path, 'host')
     with pytest.raises(CampaignFault, match='session_task_changed'):
         lineage.bind_session('epoch', 'session', row['meta']['task_id'])
     journal.close()
@@ -90,5 +91,5 @@ def test_successful_turn_without_a_qualified_episode_cannot_receive_a_permit(tmp
     journal.db.execute('DELETE FROM episodes')
     journal.db.commit()
     with pytest.raises(CampaignFault, match='episode_missing'):
-        seal_dataset(journal, lineage, [dataset], manifest, tmp_path, 'host')
+        seal_dataset(journal, lineage, [dataset], [manifest], tmp_path, 'host')
     journal.close()

@@ -270,7 +270,7 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
     assert all(a.per_workspace == 1 for a in scaled.archetypes)
     assert [m.id for m in scaled.generators()] == ["glm-5.3-flash"]
     assert [w.name for w in scaled.workspaces()] == ["flask", "react-vite"]
-    assert scaled.judge_for("glm-5.3-flash").family != "glm"
+    assert scaled.reviewer().id == run.settings["judges"][0]
     assert runmod.writer_model(run).id in {m.id for m in factory.models if "writer" in m.roles}
     # A model named as neither generator nor judge keeps its other roles.
     assert "writer" in scaled.model("glm-5.3-flash").roles and "qwen3.6-35b-a3b" not in {m.id for m in scaled.models}

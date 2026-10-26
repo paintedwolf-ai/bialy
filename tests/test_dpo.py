@@ -272,9 +272,9 @@ def test_hybrid_generator_weights_local_workers_and_sidecar_request_metering(fac
     run = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name="hybrid", settings=settings)
     scaled = runmod.scaled_factory(run)
     assert [m.id for m in scaled.generators()] == ["qwen3.6-35b-a3b", "glm-5.3-flash", "gemma-4-31b-it"]
-    assert scaled.judge_for("gemma-4-31b-it").id == "qwen3.6-35b-a3b"
-    assert scaled.judge_for("qwen3.6-35b-a3b").id == "gemma-4-31b-it"
-    assert scaled.judge_for("glm-5.3-flash").id in {"qwen3.6-35b-a3b", "gemma-4-31b-it"}
+    assert scaled.reviewer(0).id == "qwen3.6-35b-a3b"
+    assert scaled.reviewer(0).id == "qwen3.6-35b-a3b"
+    assert scaled.reviewer(1).id in {"qwen3.6-35b-a3b", "gemma-4-31b-it"}
 
     # With local_workers_only=True, lite and agent_pool exclude hosted glm-5.3-flash.
     _, policy, _, _, _ = fleet.sidecar_files(scaled, {"LYCAON_DECIDE_DISABLED": "1"}, 0)

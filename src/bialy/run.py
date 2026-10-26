@@ -259,9 +259,10 @@ def stage_check(run):
     for name in run.setting("judges") or []:
         if not any(m.id == name and ("judge" in m.roles or m.serve) for m in f.models):
             faults.append("run.judges names %s, which is not a judge in models.yaml" % name)
-    for model in generators:
+    reviewer_slots = run.setting("judges") or [model.id for model in scaled.models if "judge" in model.roles]
+    for slot in range(max(1, len(reviewer_slots))):
         try:
-            used.append(scaled.judge_for(model.id))
+            used.append(scaled.reviewer(slot))
         except config.ConfigError as exc:
             faults.append(str(exc))
     try:
@@ -304,7 +305,7 @@ def stage_check(run):
         faults.append("run.spend_ceiling_usd needs hosted.price_per_million on at least one model it would count")
     if faults:
         raise RunError("; ".join(faults))
-    return {"generators": [m.id for m in generators], "judges": sorted({scaled.judge_for(m.id).id for m in generators}),
+    return {"generators": [m.id for m in generators], "judges": reviewer_slots,
             "writer": writer_model(run).id, "repositories": len(scaled.repos), "stacks": len(scaled.stacks),
             "runners": int(run.setting("runners") or f.fleet["runners"]), "engine_on": run.engine_on, "recipes": recipes,
             "scanner": run.setting("scanner") if scanner else "none",

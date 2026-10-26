@@ -11,15 +11,15 @@ class Campaign:
         self.executor = Executor(journal, backend, sleep)
 
     def run(self):
-        with self.journal.ownership():
-            return self.owned()
+        with self.journal.controller_lock():
+            return self.execute_stages()
 
     def stage(self, name, inputs):
         result = self.executor.run(name, inputs)
         atomic_json(self.journal.directory / 'status.json', self.journal.snapshot())
         return result
 
-    def owned(self):
+    def execute_stages(self):
         host = self.stage('host_qualification', {})
         if host['status'] != 'passed':
             return self.finish('dependency_unqualified')

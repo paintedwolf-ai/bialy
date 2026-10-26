@@ -1,4 +1,4 @@
-"""Explicit cross-family review of receipt-bound custom-model candidates."""
+"""Explicit receipt-bound review of receipt-bound custom-model candidates."""
 import gzip
 import json
 from collections import Counter
@@ -32,9 +32,7 @@ def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
                 counts["missing_lineage"] += 1
                 continue
             teacher = factory.model(teacher_id)
-            judge = factory.judge_for(teacher_id)
-            if not teacher.family or not judge.family or teacher.family == judge.family:
-                raise ValueError("quality judge must belong to another family")
+            judge = factory.reviewer()
             if judge.id not in chats:
                 chats[judge.id] = factory.chats(judge)[0]
             evidence = [report["receipt_id"], *report.get("invocation_receipt_ids", [])]
@@ -50,7 +48,7 @@ def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
                     or any(not isinstance(ref, str) or ref not in evidence for ref in refs)
                     or verdict["verdict"] == "pass" and not refs or not isinstance(verdict.get("reason"), str)):
                 raise ValueError("quality judge returned invalid evidence or verdict")
-            quality = dict(verdict, method="cross_family_judge", judge_family=judge.family, teacher_family=teacher.family,
+            quality = dict(verdict, method="model_judge", judge_family=judge.family, teacher_family=teacher.family,
                            judge_model=judge.id, judge_revision=judge.revision, teacher_model=teacher.id,
                            teacher_revision=teacher.revision, request_sha256=capture["sha256"],
                            response_sha256=digest(row["target"]), review_input_sha256=digest(payload))

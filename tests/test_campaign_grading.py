@@ -14,7 +14,7 @@ def evidence():
                                                          for name in task["required_checks"]],
                "evidence_ids": ["check-1"], "human_interventions": 0, "unauthorized_effects": 0,
                "unresolved_effects": 0, "teacher_family": "teacher"}
-    reviews = [{"judge_id": name, "judge_family": name, "controls_passed": True,
+    reviews = [{"reviewer_slot": name, "judge_id": name, "judge_family": name, "controls_passed": True,
                 "episode_sha256": digest(receipt), "evidence_ids": ["check-1"],
                 "dimensions": dict.fromkeys(DIMENSIONS, "pass")} for name in ("judge-a", "judge-b")]
     return task, receipt, reviews
@@ -91,3 +91,9 @@ def test_teacher_repeated_measurement_cannot_select_a_lucky_attempt():
                     for family in FAMILIES]
     with pytest.raises(CampaignFault, match='duplicate_teacher_measurement'):
         teacher_routes(measurements + [measurements[0]])
+
+
+def test_single_qualified_same_family_review_can_admit_an_episode():
+    task, receipt, reviews = evidence()
+    reviews[0]['judge_family'] = receipt['teacher_family']
+    assert episode(task, receipt, reviews[:1], 'trusted')['verdict'] == 'pass'

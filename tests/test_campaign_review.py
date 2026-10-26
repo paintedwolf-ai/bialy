@@ -36,16 +36,25 @@ def test_controls_are_persisted_and_unqualified_judges_never_review(tmp_path):
     calls = len(factory.calls)
     assert judges.qualify(controls()) == report and len(factory.calls) == calls
     reviews = judges.review({'teacher_family': 'teacher', 'evidence_ids': ['check']}, [])
-    assert [item['judge_id'] for item in reviews] == ['first', 'second']
+    assert [item['judge_id'] for item in reviews] == ['teacher', 'first', 'second']
     assert all(item['controls_passed'] is True and item['controls_sha256'] for item in reviews)
     journal.close()
 
 
-def test_two_distinct_qualified_reviewers_are_required(tmp_path):
+def test_one_qualified_same_family_reviewer_is_sufficient(tmp_path):
     journal = Journal(tmp_path, {})
-    judges = Reviewers(journal, Factory(), ['teacher', 'other'])
+    judges = Reviewers(journal, Factory(), ['teacher'])
     judges.qualify(controls())
-    with pytest.raises(CampaignFault, match='insufficient_qualified'):
+    reviews = judges.review({'teacher_family': 'teacher', 'evidence_ids': ['check']}, [])
+    assert len(reviews) == 1 and reviews[0]['judge_family'] == 'teacher'
+    journal.close()
+
+
+def test_no_qualified_reviewer_fails_without_inventing_a_review(tmp_path):
+    journal = Journal(tmp_path, {})
+    judges = Reviewers(journal, Factory(bad={'teacher'}), ['teacher'])
+    judges.qualify(controls())
+    with pytest.raises(CampaignFault, match='no_qualified_episode_reviewer'):
         judges.review({'teacher_family': 'teacher', 'evidence_ids': ['check']}, [])
     journal.close()
 
@@ -58,4 +67,14 @@ def test_changed_controls_do_not_reuse_prior_qualification(tmp_path):
     changed[0]['payload']['fixture_detail'] = 'different'
     with pytest.raises(CampaignFault, match='controls_changed'):
         judges.qualify(changed)
+    journal.close()
+
+
+def test_multiple_slots_can_assign_the_same_qualified_model(tmp_path):
+    journal = Journal(tmp_path, {})
+    judges = Reviewers(journal, Factory(), ['teacher', 'teacher'])
+    judges.qualify(controls())
+    reviews = judges.review({'teacher_family': 'teacher', 'evidence_ids': ['check']}, [])
+    assert [review['reviewer_slot'] for review in reviews] == ['0', '1']
+    assert [review['judge_id'] for review in reviews] == ['teacher', 'teacher']
     journal.close()

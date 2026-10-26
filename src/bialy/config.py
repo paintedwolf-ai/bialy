@@ -191,13 +191,17 @@ class Factory:
     def provider_id(self, model):
         return model.hosted["provider"] + "-" + model.id.replace(".", "-") if model.hosted else "vllm-" + model.id.replace(".", "-")
 
-    def judge_for(self, generator_model):
-        """The judge for a row: a model of another family than the one that drove it."""
-        family = self.model(generator_model).family if generator_model in {m.id for m in self.models} else None
-        for m in self.models:
-            if "judge" in m.roles and m.family != family:
-                return m
-        raise ConfigError("no judge outside family %r" % family)
+    def reviewer(self, slot=0):
+        """Use the model assigned to a reviewer slot."""
+        selected = self.run.get("judges") or [model.id for model in self.models if "judge" in model.roles]
+        if not selected:
+            raise ConfigError("no judge configured")
+        if type(slot) is not int or not 0 <= slot < len(selected):
+            raise ConfigError("reviewer slot is not configured")
+        reviewer = self.model(selected[slot])
+        if "judge" not in reviewer.roles:
+            raise ConfigError("configured reviewer does not have the judge role")
+        return reviewer
 
     def served(self):
         """The models this host serves itself."""

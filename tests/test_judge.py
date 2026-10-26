@@ -1,9 +1,15 @@
+import dataclasses
 import json
 import re
 
 import pytest
 
 from bialy import judge, llm
+
+
+@pytest.fixture
+def factory(factory):
+    return dataclasses.replace(factory, run={**factory.run, 'judges': ['glm-5.3-flash', 'deepseek-v4.1-flash']})
 
 
 class FakeChat:
@@ -71,7 +77,7 @@ def test_run_writes_judged_rows_and_the_second_judge_sample(factory, tmp_path, m
     report = judge.run(factory, corpus, rows, tmp_path / "out.jsonl", workers=2, second=1.0)
     judged = [json.loads(line) for line in (tmp_path / "out.jsonl").read_text().splitlines()]
     assert report["rows"] == 6 and report["failed"] == 0
-    assert all(r["judge"]["model"] == factory.judge_for(r["model"]).id for r in judged)
+    assert all(r["judge"]["model"] == factory.reviewer().id for r in judged)
     assert judged[0]["labels"]["requests"][0]["scores"] == {"edit": 4, "command": 0}
     assert judged[0]["labels"]["tool_scores"] == {"edit": 0, "command": 0}
     assert judged[0]["judge"]["units"] == ["skills", "tools", "requests"]

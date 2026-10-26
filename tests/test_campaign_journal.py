@@ -31,13 +31,13 @@ def test_only_transient_failures_get_two_retries(tmp_path):
     journal.close()
 
 
-def test_one_owner_and_no_duplicate_accounting(tmp_path):
+def test_one_controller_and_no_duplicate_accounting(tmp_path):
     journal = Journal(tmp_path, {})
     other = Journal(tmp_path, {})
-    with journal.ownership():
-        with pytest.raises(CampaignFault, match="already_owned"), other.ownership():
-            pytest.fail("second controller acquired ownership")
-    with other.ownership():
+    with journal.controller_lock():
+        with pytest.raises(CampaignFault, match="controller_locked"), other.controller_lock():
+            pytest.fail("second controller acquired the lock")
+    with other.controller_lock():
         pass
     journal.usage("request-1", {"tokens": 100, "charge": None})
     journal.usage("request-1", {"tokens": 100, "charge": None})
