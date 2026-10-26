@@ -41,13 +41,16 @@ class Journal:
           stage TEXT NOT NULL, attempt TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS usage(id TEXT PRIMARY KEY, body TEXT NOT NULL);
         """)
-        with self.db:
-            current = self.db.execute("SELECT body FROM manifest WHERE id=1").fetchone()
-            body = canonical(manifest)
-            if current is not None and current["body"] != body:
-                self.db.close()
-                raise CampaignFault("campaign_identity_changed")
-            self.db.execute("INSERT OR IGNORE INTO manifest VALUES(1,?)", (body,))
+        try:
+            with self.db:
+                current = self.db.execute("SELECT body FROM manifest WHERE id=1").fetchone()
+                body = canonical(manifest)
+                if current is not None and current["body"] != body:
+                    raise CampaignFault("campaign_identity_changed")
+                self.db.execute("INSERT OR IGNORE INTO manifest VALUES(1,?)", (body,))
+        except Exception:
+            self.db.close()
+            raise
 
     def close(self):
         self.db.close()
