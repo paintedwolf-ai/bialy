@@ -78,3 +78,32 @@ def test_multiple_slots_can_assign_the_same_qualified_model(tmp_path):
     assert [review['reviewer_slot'] for review in reviews] == ['0', '1']
     assert [review['judge_id'] for review in reviews] == ['teacher', 'teacher']
     journal.close()
+
+
+def test_episode_review_reuses_completed_slots_without_another_model_call(tmp_path):
+    journal = Journal(tmp_path, {})
+    factory = Factory()
+    reviewers = Reviewers(journal, factory, ['first', 'second'])
+    reviewers.qualify(controls())
+    receipt = {'evidence_ids': ['check']}
+    result = reviewers.review(receipt, [])
+    calls = len(factory.calls)
+    assert reviewers.review(receipt, []) == result
+    assert len(factory.calls) == calls
+    journal.close()
+
+
+def test_unknown_review_result_is_not_blindly_repeated(tmp_path, monkeypatch):
+    journal = Journal(tmp_path, {})
+    factory = Factory()
+    reviewers = Reviewers(journal, factory, ['first'])
+    reviewers.qualify(controls())
+    def disconnected(*args):
+        raise OSError('lost provider response')
+    monkeypatch.setattr(reviewers, 'ask', disconnected)
+    with pytest.raises(OSError):
+        reviewers.review({'evidence_ids': ['check']}, [])
+    monkeypatch.setattr(reviewers, 'ask', lambda *args: pytest.fail('review was repeated'))
+    with pytest.raises(CampaignFault, match='episode_review_outcome_unknown'):
+        reviewers.review({'evidence_ids': ['check']}, [])
+    journal.close()

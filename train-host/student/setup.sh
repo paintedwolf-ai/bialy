@@ -4,7 +4,7 @@
 set -euo pipefail
 # shellcheck source=lib.sh
 . "$(cd -- "$(dirname -- "$0")" && pwd)/lib.sh"
-require HOST_COMMIT STUDENT_CHECKPOINT_ROOT STUDENT_RENTAL_CONFIG
+require HOST_COMMIT STUDENT_CHECKPOINT_ROOT STUDENT_REMOTE_CONFIG
 [[ "$HOST_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "HOST_COMMIT must be a full commit" >&2; exit 2; }
 BIALY_CODE=$(cd -- "$STUDENT_HOME/../.." && pwd)
 HOST_CHECKOUT=$SRC/paintedwolf-code-$HOST_COMMIT
@@ -28,4 +28,4 @@ docker pull "$SERVER_IMAGE"
 uv tool install huggingface_hub==2.2.0
 uv run --project "$BIALY_CODE" --locked python -m bialy.student_host models --root "$MODELS"
 uv sync --project "$HOST_CHECKOUT/$PIPE" --locked
-uv run --project "$BIALY_CODE" --locked python -m bialy.student_host install-reaper --configuration "$STUDENT_RENTAL_CONFIG"
+uv run --project "$BIALY_CODE" --locked python -m bialy.student_host install-reaper --configuration "$STUDENT_REMOTE_CONFIG"

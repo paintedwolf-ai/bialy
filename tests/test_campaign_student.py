@@ -75,3 +75,25 @@ def test_training_failure_cannot_be_reported_as_completion(tmp_path):
         handler.train_local(job)
     assert caught.value.details['exit_status'] == 127
     journal.close()
+
+
+@pytest.mark.parametrize('pilot', [False, True])
+def test_pilot_and_full_training_use_the_configured_machine(tmp_path, monkeypatch, pilot):
+    journal, configuration, inputs = setup(tmp_path)
+    configuration.update(full_training='remote', remote='machine.json')
+    calls = []
+    def train(config, student, splits, key, out, **kwargs):
+        calls.append((config, student, kwargs))
+        directory = kwargs.get('resume') or out / 'instance'
+        if not kwargs.get('resume'):
+            directory.mkdir(parents=True)
+        return {'directory': str(directory)}
+    monkeypatch.setattr('bialy.campaign.student.remote_training.train', train)
+    handler = Training(journal, configuration, 'e4b', pilot=pilot)
+    monkeypatch.setattr(handler, 'result', lambda job: {'job': str(job)})
+    result = handler.execute(inputs, 'attempt')
+    assert handler.reconcile(inputs, 'attempt') == result
+    assert len(calls) == 2 and all(call[2]['pilot'] is pilot for call in calls)
+    assert calls[0][2].get('resume') is None
+    assert calls[1][2]['resume'].name == 'instance'
+    journal.close()

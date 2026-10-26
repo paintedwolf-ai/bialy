@@ -1,17 +1,16 @@
 {
-  "profile": "training",
-  "project": "",
-  "zone": "fr-par-2",
-  "registry": "/var/lib/paintedwolf-training/resources",
   "host_repository": "https://github.com/paintedwolf-ai/paintedwolf-code.git",
   "host_commit": "",
   "bialy_repository": "https://github.com/paintedwolf-ai/bialy.git",
   "bialy_commit": "",
   "host_checkout": "/scratch/paintedwolf-training/src/host",
   "models": "/scratch/paintedwolf-training/models",
-  "rental": {
-    "type": "H100-1-80G",
-    "image": "",
-    "root_volume": "1TB"
+  "machine": {
+    "host": "training.example.org",
+    "user": "user",
+    "workspace": "/srv/training",
+    "uv": "/home/user/.local/bin/uv",
+    "port": 22,
+    "device": "cuda:0"
   }
 }

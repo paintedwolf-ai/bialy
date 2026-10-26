@@ -65,15 +65,16 @@ class EpisodeDriver:
         policy['agent_pool'] = {'selection': 'first', 'models': [reference]}
         for filename, body in (('providers.local.yaml', providers), ('model-policy.yaml', yaml.safe_dump(policy)), ('sidecar.env', env)):
             (shard / filename).write_text(body)
-        spec = {'workspace': workspace.name, 'kind': workspace.kind, 'prompt_timeout': '0s'}
+        spec = {'workspace': workspace.name, 'kind': workspace.kind,
+                'prompt_timeout': task.get('prompt_timeout') or self.factory_run.factory.fleet['prompt_timeout']}
         if workspace.kind == 'repository':
             spec['commit'] = workspace.commit
             if spec['commit'] != task['repository_commit']:
                 raise CampaignFault('trial_repository_revision_changed')
         atomic_json(shard / 'workspace.json', spec)
         request = {key: task[key] for key in ('id', 'prompt', 'follow_ups') if key in task}
-        request['model'] = actor['id']
-        request['meta'] = {'task_id': task['id'], 'prompt_group': self.lineage.task(task['id'])['root']}
+        request.update(provider_id=reference['provider_id'], model=reference['model'])
+        request['meta'] = {'task_id': task['id'], 'prompt_group': self.lineage.task(task['id'])['root'], 'model': actor['id']}
         (shard / 'tasks.jsonl').write_text(json.dumps(request) + '\n')
         run_name = 'campaign-' + digest(str(self.journal.directory.resolve()))[:12]
         mounts = [(selector, fleet.PILOT_MOUNT)] if selector else []

@@ -48,9 +48,10 @@ class EvaluationPlan:
 
 
 class Evaluation:
-    def __init__(self, journal, lineage, driver, student, arm, sleep=time.sleep):
+    def __init__(self, journal, lineage, driver, student, arm, actor, sleep=time.sleep):
         self.journal, self.lineage, self.student, self.arm = journal, lineage, student, arm
         self.executor = Executor(journal, driver, sleep)
+        self.actor = actor
 
     def execute(self, inputs, attempt):
         plan = inputs['plan']
@@ -61,7 +62,7 @@ class Evaluation:
             registered = self.lineage.admit(task['id'], 'system_test', task['spec_hash'])
             for repetition in range(plan['attempts_per_task']):
                 trial = {**inputs, 'task': json.loads(registered['spec']), 'repetition': repetition,
-                         'arm': self.arm, 'student': self.student}
+                         'arm': self.arm, 'student': self.student, 'actor': self.actor}
                 name = 'trial_' + digest({'student': self.student, 'arm': self.arm, 'task': task['id'], 'repetition': repetition})
                 result = self.executor.run(name, trial)
                 record = {'task_id': task['id'], 'attempt': repetition, 'arm': self.arm, 'student': self.student,

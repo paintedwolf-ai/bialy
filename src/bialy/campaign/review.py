@@ -18,8 +18,10 @@ class Reviewers:
         self.models = [factory.model(name) for name in reviewer_slots]
         if any('judge' not in model.roles for model in self.models):
             raise CampaignFault('judge_not_approved')
-        self.journal.db.execute('''CREATE TABLE IF NOT EXISTS judge_controls(
-            identity TEXT PRIMARY KEY, receipt TEXT NOT NULL)''')
+        self.journal.db.executescript('''
+            CREATE TABLE IF NOT EXISTS judge_controls(identity TEXT PRIMARY KEY, receipt TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS episode_reviews(identity TEXT PRIMARY KEY, receipt TEXT);
+        ''')
 
     def identity(self, model):
         return digest({'model': model.id, 'revision': model.revision, 'family': model.family,
@@ -81,7 +83,19 @@ class Reviewers:
             row = self.journal.db.execute('SELECT receipt FROM judge_controls WHERE identity=?', (identity,)).fetchone()
             if not row or json.loads(row[0])['passed'] is not True:
                 continue
-            result = self.ask(model, {'receipt': receipt, 'transcript': transcript, 'evidence_ids': receipt['evidence_ids']})
+            payload = {'receipt': receipt, 'transcript': transcript, 'evidence_ids': receipt['evidence_ids']}
+            review_identity = digest({'model': identity, 'slot': slot, 'payload': payload})
+            prior = self.journal.db.execute('SELECT receipt FROM episode_reviews WHERE identity=?', (review_identity,)).fetchone()
+            if prior is not None:
+                if prior[0] is None:
+                    raise CampaignFault('episode_review_outcome_unknown')
+                result = json.loads(prior[0])
+            else:
+                with self.journal.db:
+                    self.journal.db.execute('INSERT INTO episode_reviews VALUES(?,NULL)', (review_identity,))
+                result = self.ask(model, payload)
+                with self.journal.db:
+                    self.journal.db.execute('UPDATE episode_reviews SET receipt=? WHERE identity=?', (canonical(result), review_identity))
             reviews.append({**result, 'reviewer_slot': str(slot), 'judge_id': model.id, 'judge_family': model.family,
                             'judge_revision': model.revision, 'controls_passed': True,
                             'controls_sha256': digest(json.loads(row[0])), 'episode_sha256': digest(receipt)})

@@ -1,1 +1,1 @@
-"""Recoverable student training and owned rental resources."""
+"""Recoverable student training on local and remote machines."""

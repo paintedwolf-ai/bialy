@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
-from . import exporting, jobs, materialize, reaper, rental, supervision
+from . import exporting, jobs, materialize, reaper, remote_training, supervision
 from .specification import DEFAULT, load
 
 
@@ -30,12 +30,13 @@ def main(argv=None):
     reap = commands.add_parser('reap')
     reap.add_argument('--configuration', type=Path, required=True)
     reap.add_argument('--once', action='store_true')
-    rent = commands.add_parser('rent')
-    rent.add_argument('--configuration', type=Path, required=True)
-    rent.add_argument('--resume', type=Path)
-    rent.add_argument('--student', choices=('e4b', '12b'), required=True)
+    remote = commands.add_parser('remote')
+    remote.add_argument('--configuration', type=Path, required=True)
+    remote.add_argument('--resume', type=Path)
+    remote.add_argument('--pilot', action='store_true')
+    remote.add_argument('--student', choices=('e4b', '12b'), required=True)
     for name in ('splits', 'source-key', 'out'):
-        rent.add_argument('--' + name, type=Path, required=True)
+        remote.add_argument('--' + name, type=Path, required=True)
     args = parser.parse_args(argv)
     if args.action == 'models':
         result = materialize.models(load(args.specification), args.root)
@@ -48,8 +49,8 @@ def main(argv=None):
         result = reaper.install(args.configuration)
     elif args.action == 'reap':
         result = reaper.reap(args.configuration, args.once)
-    elif args.action == 'rent':
-        result = rental.train(args.configuration, args.student, args.splits, args.source_key, args.out, resume=args.resume)
+    elif args.action == 'remote':
+        result = remote_training.train(args.configuration, args.student, args.splits, args.source_key, args.out, resume=args.resume, pilot=args.pilot)
     else:
         result = exporting.export(args.directory, args.llama, args.revision)
     print(json.dumps(result, indent=2))

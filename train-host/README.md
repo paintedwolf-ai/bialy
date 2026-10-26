@@ -1,6 +1,6 @@
 # Training host
 
-Scripts that train and evaluate the decision heads on a rented GPU host. They
+Scripts that train and evaluate the decision heads on a configured training machine. They
 run the Painted Wolf Code trainer (`scripts/bialy/` at a recorded commit)
 over rows this repository produces; everything they read is an input you can
 name and hash.
@@ -471,16 +471,25 @@ contain `train.jsonl`, `val.jsonl`, `holdout.jsonl`, and an authenticated
 `source.json` issued from the campaign's frozen task lineage.
 
 Copy `student/student.example.env` to `student/student.local.env` and configure
-the deployment paths. Keep the source signing key and rental configuration
-private. `student/pins.env` pins the export and serving tools. Rental source
+the deployment paths. Keep the source signing key and machine configuration
+private. `student/pins.env` pins the export and serving tools. Source
 revisions must be full commits; both local and remote trainer checkouts must
-be clean. Credentials come from the deployment environment and Scaleway profile.
+be clean. SSH credentials come from the deployment environment. Instance provisioning uses the configured provider profile.
 
 | Script | Runs on | Operation |
 |---|---|---|
 | `setup.sh` | Training host | Install the toolchain, pinned models, trainer, export tools, and independent cleanup service |
 | `pilot.sh SPLITS` | Training host | Create unique jobs for both students from `SPLITS/e4b` and `SPLITS/12b`, train, resume typed pauses, and export |
-| `sft-scaleway.sh SPLITS` | Training host | Run both students on leased GPU instances and return verified training artifacts and checkpoints |
+| `sft-remote.sh SPLITS` | Training host | Run both students on the configured machine and return verified training artifacts and checkpoints |
+
+Use `student/machine.example.json` for an existing SSH-accessible machine or
+`student/provisioned-machine.example.json` to provision an instance. Both use the
+same remote job protocol. Configure the SSH user, port, key path, workspace,
+`uv` executable, and device; remote machines need Git, Python, rsync, uv, and
+the accelerator driver installed. Jobs use separate workspace directories.
+Existing machines are never deleted, stopped, or registered for instance cleanup.
+The campaign defaults pilot training to the full training destination; an explicit
+`pilot_training` setting can select another destination.
 
 Each job preserves its input inventory, attempt logs, terminal status, and
 adapter inventory. Retries require a new typed terminal receipt; OOM and
@@ -489,7 +498,7 @@ while training and verified before publication. An incomplete transfer cannot
 replace an intact generation.
 
 The independent reaper must be healthy before allocation. Leases identify exact
-owned servers, volumes, and addresses. Cleanup remains unconfirmed when the
+allocated servers, volumes, and addresses. Cleanup remains unconfirmed when the
 provider cannot establish deletion, including an allocation whose response was
 lost. The reaper keeps reconciling those records. Returned adapters are accepted
 only after dataset, model, context, and terminal receipts match the job plan.

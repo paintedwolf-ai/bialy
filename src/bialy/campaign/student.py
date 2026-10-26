@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from ..provenance import file_sha256
-from ..student_host import exporting, jobs, rental
+from ..student_host import exporting, jobs, remote_training
 from ..student_host.specification import identity, load
 from .execution import atomic_json
 from .journal import CampaignFault, digest
@@ -18,6 +18,9 @@ class Training:
         self.journal, self.configuration = journal, configuration
         self.student, self.pilot, self.run = student, pilot, run
         self.specification = load(configuration['specification'])
+        self.destination = configuration.get('pilot_training', configuration['full_training']) if pilot else configuration['full_training']
+        if self.destination not in {'local', 'remote'}:
+            raise CampaignFault('student_training_destination_invalid')
 
     def directory(self, attempt):
         return self.journal.directory / 'students' / self.student / ('pilot' if self.pilot else 'full') / attempt
@@ -38,9 +41,9 @@ class Training:
         atomic_json(directory / 'binding.json', {'inputs_sha256': digest(inputs), 'configuration': self.configuration,
                                                 'student': self.student, 'pilot': self.pilot})
         splits = self.dataset(inputs)
-        if not self.pilot and self.configuration['full_training'] == 'rented':
-            result = rental.train(self.configuration['rental'], self.student, splits,
-                                  authority_key(self.journal.directory), directory / 'rental')
+        if self.destination == 'remote':
+            result = remote_training.train(self.configuration['remote'], self.student, splits,
+                                  authority_key(self.journal.directory), directory / 'remote', pilot=self.pilot)
             job = Path(result['directory']) / 'job'
         else:
             job = jobs.create(directory / 'jobs', self.specification, self.student, self.configuration['checkout'],
@@ -64,12 +67,12 @@ class Training:
         if not (directory / 'binding.json').is_file() or json.loads((directory / 'binding.json').read_text()) != expected:
             raise CampaignFault('student_job_binding_unknown')
         self.dataset(inputs)
-        if not self.pilot and self.configuration['full_training'] == 'rented':
-            rentals = list((directory / 'rental').glob('*'))
-            if len(rentals) != 1:
-                raise CampaignFault('student_rental_identity_unknown')
-            result = rental.train(self.configuration['rental'], self.student, self.dataset(inputs),
-                                  authority_key(self.journal.directory), directory / 'rental', resume=rentals[0])
+        if self.destination == 'remote':
+            instances = list((directory / 'remote').glob('*'))
+            if len(instances) != 1:
+                raise CampaignFault('student_remote_job_identity_unknown')
+            result = remote_training.train(self.configuration['remote'], self.student, self.dataset(inputs),
+                                  authority_key(self.journal.directory), directory / 'remote', resume=instances[0], pilot=self.pilot)
             return self.result(Path(result['directory']) / 'job')
         candidates = list((directory / 'jobs').glob('*/plan.json'))
         if len(candidates) != 1:

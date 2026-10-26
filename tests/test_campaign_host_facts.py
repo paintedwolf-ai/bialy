@@ -15,7 +15,8 @@ def inputs():
                            'closeout': {'model_authored': True, 'visible': True, 'has_tool_calls': False}}}
     oracle = {'source_sha256': 'source', 'task_spec_sha256': digest(task), 'grader_identity': 'grader',
               'checks': [{'id': 'oracle', 'passed': True}]}
-    programs = {'call': {'progress_state': 'committed', 'children': [{'effect_certainty': 'completed'}]}}
+    programs = {'call': {'state': 'failed', 'status_code': 127, 'settled_at': 'time', 'progress_state': 'committed',
+                         'children': [{'state': 'completed', 'settled_at': 'time', 'effect_certainty': 'completed'}]}}
     return task, facts, oracle, programs
 
 
@@ -59,3 +60,12 @@ def test_student_controls_check_actual_dispatch_on_every_student_call():
     wrong['provider'] = 'teacher'
     with pytest.raises(CampaignFault, match='call_capture_missing'):
         student_controls([wrong], 'student', 'model')
+
+
+def test_program_status_is_preserved_for_review_and_unsettled_children_block_admission():
+    task, facts, oracle, programs = inputs()
+    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
+    assert result['programs']['call']['status_code'] == 127
+    programs['call']['children'][0]['state'] = 'running'
+    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
+    assert result['unresolved_effects'] == 1

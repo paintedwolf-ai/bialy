@@ -31,14 +31,15 @@ def test_every_planned_attempt_is_retained_and_resume_does_not_replay(tmp_path):
     plan = planner.execute({'measurements': {'accepted': 32}}, 'plan')
     assert plan['planned_attempts_per_arm'] == 48
     driver = Driver()
-    evaluation = Evaluation(journal, lineage, driver, 'e4b', 'base', sleep=lambda _: None)
-    inputs = {'plan': plan, 'actor': {'kind': 'student'}}
+    evaluation = Evaluation(journal, lineage, driver, 'e4b', 'base', {'kind': 'student'}, sleep=lambda _: None)
+    inputs = {'plan': plan}
     result = evaluation.execute(inputs, 'evaluation')
     evaluation.validate(inputs, result)
     assert len(result['attempts']) == 48
     assert sum(row['success'] for row in result['attempts']) == 24
     assert evaluation.reconcile(inputs, 'evaluation') == result
     assert len(driver.calls) == 48
+    assert all(call['actor']['kind'] == 'student' for call in driver.calls)
     changed = copy.deepcopy(result)
     changed['attempts'][0]['success'] = True
     with pytest.raises(CampaignFault, match='evaluation_failure_changed'):

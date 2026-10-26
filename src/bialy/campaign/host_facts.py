@@ -84,14 +84,18 @@ def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_ide
                 if program is None:
                     raise CampaignFault('command_program_evidence_missing')
                 children = program['children']
-                if not children or any(child['effect_certainty'] not in {'none', 'completed', 'attempted', 'unknown'} for child in children):
+                if any(child['effect_certainty'] not in {'none', 'completed', 'attempted', 'unknown'} for child in children):
                     raise CampaignFault('command_effect_evidence_invalid')
-                unresolved += int(program['progress_state'] == 'unknown' or any(child['effect_certainty'] in {'attempted', 'unknown'} for child in children))
+                unresolved += int(
+                    program['state'] not in {'completed', 'rejected', 'failed', 'interrupted'} or not program.get('settled_at')
+                    or program['progress_state'] == 'unknown'
+                    or any(child['state'] not in {'completed', 'refused', 'failed', 'interrupted'}
+                           or not child.get('settled_at') or child['effect_certainty'] in {'attempted', 'unknown'} for child in children))
     return {'task_spec_sha256': digest(task), 'grader_identity': grader_identity, 'complete': True,
             'epoch': epoch, 'root_session': root, 'teacher_family': teacher_family,
             'store_sha256': store_sha256, 'final_source_sha256': source, 'checks': checks,
             'human_interventions': interventions, 'unauthorized_effects': unauthorized, 'unresolved_effects': unresolved,
-            'host_evidence_sha256': digest(facts), 'programs_sha256': digest(programs),
+            'host_evidence_sha256': digest(facts), 'programs_sha256': digest(programs), 'programs': programs,
             'evidence_ids': sorted(invocation_ids | {check['id'] for check in checks})}
 
 
@@ -100,7 +104,7 @@ def program_evidence(database, facts):
                    if item['tool'] == 'command' and item['invoked']]
     programs = {}
     for identifier in identifiers:
-        row = database.execute('SELECT id,progress_state FROM invocation_programs WHERE parent_receipt_id=?', (identifier,)).fetchone()
+        row = database.execute('SELECT id,state,status_code,settled_at,progress_state FROM invocation_programs WHERE parent_receipt_id=?', (identifier,)).fetchone()
         if row is None:
             raise CampaignFault('command_program_evidence_missing')
         children = [dict(item) for item in database.execute(

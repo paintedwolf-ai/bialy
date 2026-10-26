@@ -65,18 +65,32 @@ class Exports:
                 review_directory.mkdir(exist_ok=True)
                 reviewed = review_directory / 'review.json'
                 annotated = {**row, 'meta': {'model': inputs['actor']['id']}}
-                expected = digest({'row': annotated, 'transcript': transcript_body, 'reviewer': {'id': self.factory.reviewer().id, 'revision': self.factory.reviewer().revision}})
+                expected = digest({'row': annotated, 'transcript': transcript_body, 'system': custom_quality.SYSTEM, 'seed': 7, 'reviewer': {'id': self.factory.reviewer().id, 'revision': self.factory.reviewer().revision}})
                 if reviewed.exists():
                     record = json.loads(reviewed.read_text())
                     if record['inputs_sha256'] != expected:
                         raise CampaignFault('response_review_inputs_changed')
                     reports = record['reports']
                 else:
-                    rows = review_directory / 'row.jsonl'
-                    rows.write_text(canonical(annotated) + '\n')
-                    destination = review_directory / (uuid.uuid4().hex + '.jsonl')
-                    custom_quality.judge_rows(self.factory, rows, transcript, destination)
-                    reports = [json.loads(line) for line in destination.read_text().splitlines() if line.strip()]
+                    intent_path = review_directory / 'attempt.json'
+                    if intent_path.exists():
+                        intent = json.loads(intent_path.read_text())
+                        if intent['inputs_sha256'] != expected:
+                            raise CampaignFault('response_review_inputs_changed')
+                        destination = Path(intent['output'])
+                        try:
+                            reports = [json.loads(line) for line in destination.read_text().splitlines() if line.strip()]
+                        except (OSError, json.JSONDecodeError) as exc:
+                            raise CampaignFault('response_review_outcome_unknown') from exc
+                        if len(reports) != 1:
+                            raise CampaignFault('response_review_outcome_unknown')
+                    else:
+                        rows = review_directory / 'row.jsonl'
+                        rows.write_text(canonical(annotated) + '\n')
+                        destination = review_directory / (uuid.uuid4().hex + '.jsonl')
+                        atomic_json(intent_path, {'inputs_sha256': expected, 'output': str(destination)})
+                        custom_quality.judge_rows(self.factory, rows, transcript, destination)
+                        reports = [json.loads(line) for line in destination.read_text().splitlines() if line.strip()]
                     atomic_json(reviewed, {'inputs_sha256': expected, 'reports': reports})
                 reviews.extend(reports)
             quality = target / 'quality.jsonl'
