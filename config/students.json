@@ -1,0 +1,18 @@
+{
+  "schema": "pw-students/1",
+  "context": {"max_sequence_tokens": 65536, "thinking": false, "truncation": "forbidden"},
+  "models": {
+    "e4b": {
+      "repository": "google/gemma-4-E4B-it",
+      "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2",
+      "directory": "gemma-4-E4B-it",
+      "targets": "re:.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj)"
+    },
+    "12b": {
+      "repository": "google/gemma-4-12B-it",
+      "revision": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
+      "directory": "gemma-4-12B-it",
+      "targets": "re:.*\\.(q_proj|k_proj|v_proj|o_proj)"
+    }
+  }
+}

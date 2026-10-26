@@ -1,0 +1,36 @@
+# The `run:` section of config/factory.yaml for the command-surface collection on
+# a factory host with a CUDA GPU: Bialy's normal two-pass run over this host's
+# half of the workspaces, with the student consuming the engine-on pass only.
+# The other half runs on a CPU host (student-collect-cpu.example.yaml), and the
+# two runs' splits are concatenated for training. Set host_commit to the clean
+# host commit the runners are built from.
+run:
+  lycaon_checkout: ../paintedwolf-code
+  generators: [deepseek-v4.1-flash]
+  local_workers_only: false
+  judges: [deepseek-v4.1-flash, glm-5.3-flash]
+  runners: 10                      # hosted driving leaves runners mostly waiting on the network
+  task_share: 0.15
+  workspaces: [cobra, gin, flask, httpx, requests, express, zod, sinatra,
+               web-static, react-vite, node-api, python-cli, python-web, vue-vite, ruby-app]
+  spend_ceiling_usd: 45            # writing and judging; hosted driving is capped by the provider account limit
+  scanner: pinned
+  engine_on:
+    enabled: true                  # the engine-off rows train this run's command heads
+    deadline_ms: 120000
+    heads: null
+  train:
+    device: cuda
+    max_hours: 12
+  custom_model:
+    enabled: true
+    epoch: command-1
+    tool_surface: command-v1
+    host_commit: <host commit>
+    quality_judge: true
+    passes: [on]                   # the student learns from engine-on trajectories only
+    student: gemma-4-e4b-it
+    teacher: gemma-4-26b-a4b-it-q4
+    preload_from_judge: false
+    shadow: false
+    repair: false

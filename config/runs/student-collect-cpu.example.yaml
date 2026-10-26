@@ -1,0 +1,34 @@
+# The `run:` section of config/factory.yaml for the command-surface collection on
+# a factory host without a usable GPU: the other half of the workspaces, with
+# heads trained on the CPU. Use the same host_commit as the GPU host's run.
+run:
+  lycaon_checkout: ../paintedwolf-code
+  generators: [deepseek-v4.1-flash]
+  local_workers_only: false        # no local server here; worker legs use the hosted teacher
+  judges: [deepseek-v4.1-flash, glm-5.3-flash]
+  runners: 14
+  task_share: 0.15
+  workspaces: [axios, gson, okhttp, axum, fd, thor, slim, ripgrep,
+               python-data, go-service, rust-cli, ts-node, c-cli, cpp-cli, php-app, java-maven]
+  spend_ceiling_usd: 45
+  scanner: pinned
+  engine_on:
+    enabled: true
+    deadline_ms: 120000
+    heads: null
+  train:
+    device: cpu
+    threads: 8
+    max_hours: 12
+  custom_model:
+    enabled: true
+    epoch: command-1
+    tool_surface: command-v1
+    host_commit: <host commit>
+    quality_judge: true
+    passes: [on]
+    student: gemma-4-e4b-it
+    teacher: gemma-4-26b-a4b-it-q4
+    preload_from_judge: false
+    shadow: false
+    repair: false

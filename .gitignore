@@ -4,4 +4,7 @@ __pycache__/
 dist/
 .DS_Store
 SOURCE_COMMIT
-config/replicas.local.yaml
+# Deployment details: hosts, users, key paths. Examples live beside them as *.example.*
+config/*.local.yaml
+config/identity.local.txt
+train-host/student/*.local.env
