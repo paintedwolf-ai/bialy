@@ -226,3 +226,30 @@ def test_failed_preflight_retains_consistent_private_store(tmp_path):
     with sqlite3.connect(destination) as db:
         assert db.execute('SELECT value FROM facts').fetchone()[0] == 'failure'
     assert destination.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize('models, accepted', [(['e4b', '12b'], True), (['e4b'], False), (['e4b', 'wrong'], False)])
+def test_fixture_requires_committed_captures_for_each_student(tmp_path, monkeypatch, models, accepted):
+    module = runner_module()
+    shard = tmp_path / 'shard'
+    captures = shard / 'training-captures'
+    captures.mkdir(parents=True)
+    (shard / 'manifest.jsonl').write_text(json.dumps({'status': 'settled', 'root_session': 's'}))
+    records = [{'schema': 'pw-training-fact/1', 'kind': 'turn_committed', 'session_id': 's', 'message_id': 'm'}]
+    records += [{'schema': 'pw-training-turn/1', 'session_id': 's', 'message_id': 'm',
+                 'settled': True, 'student_request': {'messages': []}, 'response': {'text': 'done'},
+                 'student_provider': 'student-' + model, 'student_model': model,
+                 'student_kind': 'openai-compatible'} for model in models]
+    for i, record in enumerate(records):
+        (captures / f'{i}.json').write_text(json.dumps(record))
+    monkeypatch.setattr(module, 'Path', lambda path: shard / str(path).removeprefix('/shard/'))
+    monkeypatch.setenv('BIALY_PREFLIGHT', 'fixture')
+    monkeypatch.setenv('PW_TRAINING_STUDENTS', json.dumps([{'provider': 'student-' + m, 'model': m} for m in ['e4b', '12b']]))
+    monkeypatch.setattr(module, 'api', lambda *_: {'generation': 1, 'tokens_after': 1, 'tokens_before': 2})
+    monkeypatch.setattr(module, 'wait_summary', lambda *_: None)
+    if accepted:
+        module.after()
+        assert json.loads((shard / 'preflight.json').read_text())['status'] == 'passed'
+    else:
+        with pytest.raises(module.ProbeFailure, match='preflight_capture_not_kept'):
+            module.after()

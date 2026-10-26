@@ -103,7 +103,8 @@ def test_the_student_serving_provider_is_declared_but_never_driven(factory, tmp_
     for student, model in (('e4b', 'gemma-4-E4B-it'), ('12b', 'gemma-4-12B-it')):
         provider = 'student-' + student
         assert entries[provider]['models'] == [{'id': model, 'context_length': 65536,
-                                               'thinking': {'state': 'supported', 'can_disable': True}}]
+                                               'thinking': {'state': 'supported', 'can_disable': True},
+                                               'reasoning_effort_levels': {'off': 'none', 'low': 'low', 'medium': 'medium', 'high': 'high'}}]
         assert {'provider_id': provider, 'model': model, 'mode': 'fixed', 'enabled': False} in parsed['thinking_overrides']
         assert provider not in chosen.values() and parsed['coordinator']['provider_id'] != provider
         assert all(m['provider_id'] != provider for m in parsed['agent_pool']['models'])

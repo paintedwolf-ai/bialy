@@ -233,7 +233,7 @@ def sidecar_files(factory, decide_env, lane):
         providers += ["  - id: %s" % student["provider"], "    kind: %s" % student["kind"],
                       "    base_url: %s" % student["base_url"], "    reasoning_wire: reasoning_content",
                       '    api_key_env: ""',
-                      "    models: [{id: %s, context_length: %d, thinking: {state: supported, can_disable: true}}]" % (student["model"], int(student["context_window"]))]
+                      "    models: [{id: %s, context_length: %d, reasoning_effort_levels: {'off': none, low: low, medium: medium, high: high}, thinking: {state: supported, can_disable: true}}]" % (student["model"], int(student["context_window"]))]
     gens = factory.generators()
     first = gens[0]
     local_only = bool((getattr(factory, "run", None) or {}).get("local_workers_only"))

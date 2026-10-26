@@ -60,7 +60,9 @@ def after():
                    if r.get("schema") == "pw-training-fact/1" and r.get("kind") == "turn_committed"}
         kept = [r for r in records if r.get("schema") == "pw-training-turn/1" and not r.get("exclusion_reason") and
                 r.get("settled") and r.get("student_request") and r.get("response") and (r["session_id"], r["message_id"]) in commits]
-        if not kept or any(r["student_kind"] != "openai-compatible" or r["student_model"] != os.environ["PW_TRAINING_STUDENT_MODEL"] for r in kept):
+        expected = {(r["provider"], r["model"]) for r in json.loads(os.environ["PW_TRAINING_STUDENTS"])}
+        actual = {(r["student_provider"], r["student_model"]) for r in kept}
+        if not expected or actual != expected or any(r["student_kind"] != "openai-compatible" for r in kept):
             raise ProbeFailure("preflight_capture_not_kept")
         session = entries[-1]["root_session"]
         compact = api("/v1/sessions/" + session + "/compact", {})
