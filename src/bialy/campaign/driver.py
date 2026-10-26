@@ -14,6 +14,7 @@ from .containers import Container
 from .episodes import Episodes
 from .execution import atomic_json
 from .journal import CampaignFault, digest
+from .preflight import inspect
 
 
 class EpisodeDriver:
@@ -39,6 +40,7 @@ class EpisodeDriver:
         return workspace, directory
 
     def execute(self, name, inputs, attempt):
+        inspect(self.factory_run.checkout, self.factory_run.setting('custom_model')['host_commit'])
         directory = self.directory(attempt)
         directory.mkdir(parents=True, exist_ok=False)
         task = inputs['task']

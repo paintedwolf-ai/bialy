@@ -29,6 +29,23 @@ overdue, and the shard is not driven again.
 
 ## Preflight and live faults
 
+Campaign episode collection checks the pinned host's SQLite schema before
+starting a runner. The command program and child-execution fields consumed by
+grading and export must exist; a missing field produces
+`host_command_receipts_unavailable`. This source check does not qualify live
+execution, capture, or the runner image.
+
+Run the source check separately before preparing a pilot:
+
+```sh
+python -m bialy.campaign.preflight --host-checkout /path/to/paintedwolf-code \
+  --host-commit FULL_COMMIT --out /path/to/new-preflight-directory
+```
+
+The directory must be new. It retains the pinned inputs and a terminal result,
+including missing receipt fields. A failed check exits nonzero without starting
+collection or training. Use a new directory after changing the source.
+
 Before driving, `preflight` checks the engine-off image and `preflight_on` checks
 its engine-on peer. Engine-on probes require the host's decision-engine readiness
 fact and a CPU-pinned engine. Both dispatch the pinned scanner over a small fixture.
