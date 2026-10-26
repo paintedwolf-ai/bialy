@@ -101,6 +101,7 @@ def test_dry_run_drives_suffix_without_claiming_quality(tmp_path, monkeypatch):
     handlers = {'export_e4b': Handler({'directory': '/artifact'}),
                 'evaluate_trained_e4b': Handler({'attempts': [attempt]})}
     plan = {'tasks': [{'id': 'system_test-structured_closeout'}], 'lineage_sha256': 'frozen'}
+    monkeypatch.setattr(dry_run, 'runtime_configuration', lambda cfg, directory, host: cfg)
     monkeypatch.setattr(dry_run, 'compose', lambda *args: (handlers, plan))
     monkeypatch.setattr(dry_run, 'import_evidence', lambda *args: SimpleNamespace())
     monkeypatch.setattr(dry_run, 'Data', lambda *args: Handler({'students': {}}))
@@ -113,3 +114,20 @@ def test_dry_run_drives_suffix_without_claiming_quality(tmp_path, monkeypatch):
     assert json.loads((tmp_path / 'dry/result.json').read_text()) == result
     assert dry_run.run(source, tmp_path / 'dry')['status'] == result['status']
     assert canonical(result['plan'])
+
+def test_dry_run_has_a_new_epoch_and_factory_namespace(tmp_path, monkeypatch):
+    source = {"Id": "sha256:pinned", "Config": {"Labels": {"pw.host_commit": "host"}}}
+    calls = []
+    def process(args, **kwargs):
+        calls.append(args)
+        if args[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0 if args[-1] == "sha256:pinned" else 1,
+                                   stdout=json.dumps([source]))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(dry_run, "prepare_fleet", lambda _: None)
+    cfg = {"epoch": "source-epoch", "host_image": "bialy-runner:source-epoch-off", "host_commit": "host"}
+    result = dry_run.runtime_configuration(cfg, tmp_path, {"image": "sha256:pinned"}, process)
+    assert result["epoch"] != cfg["epoch"]
+    assert result["factory_root"] == str(tmp_path / "factory")
+    assert calls[-1] == ["docker", "tag", "sha256:pinned", result["host_image"]]
+    assert cfg["epoch"] == "source-epoch"

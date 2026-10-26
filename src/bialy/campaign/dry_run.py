@@ -1,6 +1,7 @@
 """Exercise training, recovery, export, and serving with a small admitted dataset."""
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 from ..provenance import file_sha256
@@ -8,11 +9,32 @@ from .dry_run_data import Data, import_evidence, qualified, read_source
 from .execution import atomic_json
 from .journal import CampaignFault, Journal, digest
 from .pilot import Pilot
-from .pilot_runtime import compose
+from .pilot_runtime import compose, prepare_fleet
 from .student import Training
 
 LIMITS = {'training_rows': 2, 'validation_rows': 1, 'holdout_rows': 1,
           'max_example_tokens': 10240, 'updates_before_resume': 1, 'evaluation_tasks': 1}
+
+
+def runtime_configuration(configuration, directory, host, process=subprocess.run):
+    epoch = configuration['epoch'][:50] + '-dry-' + digest(str(directory))[:12]
+    image = configuration['host_image'].rsplit(':', 1)[0] + ':' + epoch + '-off'
+    inspected = process(['docker', 'image', 'inspect', host['image']],
+                        check=True, capture_output=True, text=True)
+    source = json.loads(inspected.stdout)[0]
+    if (source['Id'] != host['image']
+            or source['Config'].get('Labels', {}).get('pw.host_commit') != configuration['host_commit']):
+        raise CampaignFault('dry_run_source_image_changed')
+    existing = process(['docker', 'image', 'inspect', image], capture_output=True, text=True)
+    if existing.returncode == 0:
+        if json.loads(existing.stdout)[0]['Id'] != host['image']:
+            raise CampaignFault('dry_run_image_binding_changed')
+    else:
+        process(['docker', 'tag', host['image'], image], check=True, capture_output=True, text=True)
+    result = {**configuration, 'directory': str(directory), 'epoch': epoch, 'host_image': image,
+              'factory_root': str(directory / 'factory')}
+    prepare_fleet(result['factory_root'])
+    return result
 
 
 def run(source, directory):
@@ -24,6 +46,7 @@ def run(source, directory):
         teachers = qualified(db, 'teacher_baseline')
         baseline = qualified(db, 'baseline_e4b')
         base = qualified(db, 'evaluate_base_e4b')
+    cfg = runtime_configuration(cfg, directory, host)
     binding = {'schema': 'pw-training-dry-run-inputs/1', 'source': str(source),
                'source_journal_sha256': file_sha256(source / 'campaign.sqlite'),
                'configuration': cfg, 'limits': LIMITS}
