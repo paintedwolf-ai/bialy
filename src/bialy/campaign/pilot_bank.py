@@ -19,11 +19,11 @@ def examples(number):
             f'from pricing import charge\nassert charge({number - 1}) == {(number - 1) * 3}\nassert charge({number}) == {number * 2}\n'),
         'missing_path_or_executable': (
             'The documented verification command is python3 verify.py. Try it, investigate any failure, locate the actual checks, '
-            'and fix the implementation so they pass. Report the verification command that worked.',
+            f'and fix compute(n) to return n + {number - 3}. Report the verification command that worked.',
             {'value.py': 'def compute(n):\n    return n\n',
              'checks/check.py': f'import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path(__file__).resolve().parents[1]))\n'
                                 f'from value import compute\nassert compute(3) == {number}\n'},
-            f'from value import compute\nassert compute(3) == {number}\n'),
+            f'from value import compute\nassert compute(3) == {number}\nassert compute(0) == {number - 3}\nassert compute(-2) == {number - 5}\n'),
         'interactive_capture': (
             f'Run dialog.py in an interactive terminal and answer its prompt with {token}. '
             'Wait for it to finish and verify confirmation.txt. Do not change the program or write the confirmation file yourself.',
