@@ -14,11 +14,13 @@ from .sources import authority_key
 
 
 class Training:
-    def __init__(self, journal, configuration, student, pilot=False, run=subprocess.run):
+    def __init__(self, journal, configuration, student, pilot=False, run=subprocess.run, *, dry_run=False):
         self.journal, self.configuration = journal, configuration
-        self.student, self.pilot, self.run = student, pilot, run
+        self.student, self.pilot, self.run, self.dry_run = student, pilot, run, dry_run
         self.specification = load(configuration['specification'])
         self.destination = configuration.get('pilot_training', configuration['full_training']) if pilot else configuration['full_training']
+        if dry_run and self.destination != 'local':
+            raise CampaignFault('dry_run_requires_local_training')
         if self.destination not in {'local', 'remote'}:
             raise CampaignFault('student_training_destination_invalid')
 
@@ -39,7 +41,7 @@ class Training:
         directory = self.directory(attempt)
         directory.mkdir(parents=True, exist_ok=False)
         atomic_json(directory / 'binding.json', {'inputs_sha256': digest(inputs), 'configuration': self.configuration,
-                                                'student': self.student, 'pilot': self.pilot})
+                                                'student': self.student, 'pilot': self.pilot, 'dry_run': self.dry_run})
         splits = self.dataset(inputs)
         if self.destination == 'remote':
             result = remote_training.train(self.configuration['remote'], self.student, splits,
@@ -48,7 +50,7 @@ class Training:
         else:
             job = jobs.create(directory / 'jobs', self.specification, self.student, self.configuration['checkout'],
                               self.configuration['models'], splits, self.configuration['mirror'],
-                              self.configuration['device'], self.pilot)
+                              self.configuration['device'], self.pilot, dry_run=self.dry_run)
             self.train_local(job)
         return self.result(job)
 
@@ -63,7 +65,7 @@ class Training:
     def reconcile(self, inputs, attempt):
         directory = self.directory(attempt)
         expected = {'inputs_sha256': digest(inputs), 'configuration': self.configuration,
-                    'student': self.student, 'pilot': self.pilot}
+                    'student': self.student, 'pilot': self.pilot, 'dry_run': self.dry_run}
         if not (directory / 'binding.json').is_file() or json.loads((directory / 'binding.json').read_text()) != expected:
             raise CampaignFault('student_job_binding_unknown')
         self.dataset(inputs)
@@ -87,12 +89,12 @@ class Training:
         jobs.validate_inputs(plan)
         terminal = jobs.validate_result(plan)
         return {'job': str(job), 'plan_sha256': digest(plan), 'terminal_sha256': digest(terminal),
-                'student': self.student, 'pilot': self.pilot}
+                'student': self.student, 'pilot': self.pilot, 'dry_run': self.dry_run}
 
     def validate(self, inputs, output):
         splits = self.dataset(inputs)
         plan = json.loads((Path(output['job']) / 'plan.json').read_text())
-        if (plan['student'] != self.student or plan['pilot'] is not self.pilot
+        if (plan['student'] != self.student or plan['pilot'] is not self.pilot or plan.get('dry_run', False) is not self.dry_run
                 or plan['host_commit'] != self.configuration['host_commit']
                 or plan['specification_sha256'] != identity(self.specification)
                 or plan['dataset'] != {name: file_sha256(splits / name) for name in plan['dataset']}

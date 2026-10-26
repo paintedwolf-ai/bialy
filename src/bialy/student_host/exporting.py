@@ -36,6 +36,7 @@ def export(directory, llama, revision, run=subprocess.run):
         raise JobError('export lacks a load parity receipt')
     result = {'schema': 'pw-student-artifact/1', 'student': plan['student'],
               'specification_sha256': plan['specification_sha256'], 'host_commit': plan['host_commit'],
+              'dry_run': plan.get('dry_run', False),
               'context': plan['specification']['context'], 'files': tree(gguf), 'directory': str(gguf)}
     write(directory / 'artifact.json', result)
     return result

@@ -87,6 +87,24 @@ references are restricted to the supplied receipts. Returned references are
 validated again before admission. Unexpected stage failures retain private
 diagnostics beside the run journal and do not trigger blind retries.
 
+The 3090 dry run reuses a qualified collection and baseline from an existing
+pilot. It selects two complete training rows, one validation row, and one held-out
+row, each at most 10,240 tokens. It preserves the declared context policy and
+records selection and exclusions. The job pauses after its first optimizer
+update, mirrors its checkpoint, resumes, exports the adapter, and drives one
+application task with thinking off. Its artifacts are marked as dry-run outputs;
+completion qualifies automation mechanics only.
+
+```bash
+python -m bialy.campaign.dry_run --source-run /path/to/completed-collection-run \
+  --directory /path/to/new-dry-run
+```
+
+The source collection, baseline export, and baseline evaluation must have passed.
+A later failed training stage does not invalidate those immutable receipts. The
+dry run has a separate journal and training permit, retains source lineage and
+review evidence, and leaves the source run's terminal result intact.
+
 Before driving, `preflight` checks the engine-off image and `preflight_on` checks
 its engine-on peer. Engine-on probes require the host's decision-engine readiness
 fact and a CPU-pinned engine. Both dispatch the pinned scanner over a small fixture.

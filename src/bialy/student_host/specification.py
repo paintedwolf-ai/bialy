@@ -27,15 +27,15 @@ def identity(spec):
     return hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
-def arguments(spec, student, model_root, splits, out, device, mirror, *, pilot=False, resume=False):
+def arguments(spec, student, model_root, splits, out, device, mirror, *, pilot=False, resume=False, dry_run=False):
     model = spec['models'][student]
     args = ['--mode', 'sft', '--model', str(Path(model_root) / model['directory']),
             '--train', str(Path(splits) / 'train.jsonl'), '--validation', str(Path(splits) / 'val.jsonl'),
             '--holdout', str(Path(splits) / 'holdout.jsonl'), '--out', str(out), '--device', device,
             '--targets', model['targets'], '--max-length', str(spec['context']['max_sequence_tokens']),
-            '--checkpoint-every', '5' if pilot else '50', '--checkpoint-mirror', str(mirror)]
-    if pilot and not resume:
-        args += ['--max-updates', '10']
+            '--checkpoint-every', '1' if dry_run else '5' if pilot else '50', '--checkpoint-mirror', str(mirror)]
+    if (pilot or dry_run) and not resume:
+        args += ['--max-updates', '1' if dry_run else '10']
     if resume:
         args += ['--resume']
     return args

@@ -26,8 +26,9 @@ def setup(tmp_path):
 def test_training_uses_authenticated_split_and_private_key_environment(tmp_path, monkeypatch):
     journal, configuration, inputs = setup(tmp_path)
     observed = []
-    def create(root, spec, student, checkout, models, splits, mirror, device, pilot):
+    def create(root, spec, student, checkout, models, splits, mirror, device, pilot, *, dry_run=False):
         assert student == 'e4b' and pilot is True and spec['context']['thinking'] is False
+        assert dry_run is False
         job = root / 'unique'
         job.mkdir(parents=True)
         (job / 'plan.json').write_text('{}')

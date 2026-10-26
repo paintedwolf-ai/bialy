@@ -41,7 +41,7 @@ def checkpoint(spec, student, root):
     return files
 
 
-def create(root, spec, student, checkout, models, splits, mirror, device, pilot):
+def create(root, spec, student, checkout, models, splits, mirror, device, pilot, *, dry_run=False):
     checkout, models, splits, mirror = map(lambda path: Path(path).resolve(), (checkout, models, splits, mirror))
     revision = subprocess.run(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(checkout), 'status', '--porcelain'], capture_output=True, text=True, check=True).stdout
@@ -52,7 +52,7 @@ def create(root, spec, student, checkout, models, splits, mirror, device, pilot)
     plan = {'schema': 'pw-student-job/1', 'student': student, 'specification': spec, 'specification_sha256': identity(spec),
             'host_commit': revision, 'checkout': str(checkout), 'models': str(models), 'splits': str(splits),
             'dataset': {name: file_sha256(splits / name) for name in ('train.jsonl', 'val.jsonl', 'holdout.jsonl', 'source.json')},
-            'model': checkpoint(spec, student, models), 'device': device, 'pilot': pilot,
+            'model': checkpoint(spec, student, models), 'device': device, 'pilot': pilot, 'dry_run': dry_run,
             'mirror': str(mirror / directory.name), 'out': str(directory / 'training')}
     write(directory / 'plan.json', plan)
     return directory
@@ -139,7 +139,7 @@ def train_owned(directory, run, sleep):
                 raise JobError('training recipe failed permanently')
             sleep(2 ** state['attempts'])
         args = arguments(plan['specification'], plan['student'], plan['models'], plan['splits'],
-                         plan['out'], plan['device'], plan['mirror'], pilot=plan['pilot'], resume=resume)
+                         plan['out'], plan['device'], plan['mirror'], pilot=plan['pilot'], resume=resume, dry_run=plan.get('dry_run', False))
         state.update(status='running', attempts=state['attempts'] + 1)
         write(state_path, state)
         previous_terminal = file_sha256(terminal_path) if terminal_path.exists() else None
