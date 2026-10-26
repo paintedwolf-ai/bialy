@@ -1,5 +1,6 @@
 """Connect pilot stages to capture, grading, training, and student serving."""
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -23,6 +24,13 @@ from .serving import Serving
 from .student import Export, Training
 
 
+def prepare_fleet(root):
+    if os.geteuid() != 0:
+        raise CampaignFault('pilot_requires_fleet_mount_privileges')
+    for name in ('cache', 'repos'):
+        (Path(root) / name).mkdir(parents=True, exist_ok=True)
+
+
 class Host:
     def __init__(self, run, configuration, teachers):
         self.run, self.configuration, self.teachers = run, configuration, teachers
@@ -30,6 +38,7 @@ class Host:
     def execute(self, inputs, attempt):
         cfg = self.configuration
         source = inspect(self.run.checkout, cfg['host_commit'], tool_surface=cfg['tool_surface'])
+        prepare_fleet(cfg['factory_root'])
         image = json.loads(subprocess.check_output(['docker', 'image', 'inspect', self.run.image('off')], text=True))[0]
         if image['Config'].get('Labels', {}).get('pw.host_commit') != cfg['host_commit']:
             raise CampaignFault('pilot_runner_source_mismatch')

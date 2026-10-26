@@ -50,3 +50,17 @@ def test_failed_stage_stops_later_side_effects_and_retains_failure(tmp_path):
     assert stages['pilot_e4b'].calls == 0
     assert journal.stage('host_qualification')['fault']['code'] == 'source_unavailable'
     journal.close()
+
+
+def test_pilot_checks_mount_privileges_before_creating_fleet_state(tmp_path, monkeypatch):
+    import pytest
+
+    from bialy.campaign.pilot_runtime import prepare_fleet
+    monkeypatch.setattr('bialy.campaign.pilot_runtime.os.geteuid', lambda: 1000)
+    with pytest.raises(CampaignFault, match='pilot_requires_fleet_mount_privileges'):
+        prepare_fleet(tmp_path / 'fleet')
+    assert not (tmp_path / 'fleet').exists()
+    monkeypatch.setattr('bialy.campaign.pilot_runtime.os.geteuid', lambda: 0)
+    prepare_fleet(tmp_path / 'fleet')
+    assert (tmp_path / 'fleet/cache').is_dir()
+    assert (tmp_path / 'fleet/repos').is_dir()
