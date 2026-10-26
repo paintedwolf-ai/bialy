@@ -1,0 +1,36 @@
+# The `run:` section of config/factory.yaml for a short smoke pass: six varied
+# kinds of request on one repository and the held-out stack, driven with the
+# released heads, rows rendered for the declared student. Set host_commit to the
+# clean host commit the runners are built from.
+run:
+  lycaon_checkout: ../paintedwolf-code
+  generators: [deepseek-v4.1-flash]
+  local_workers_only: false
+  judges: [deepseek-v4.1-flash, glm-5.3-flash]
+  runners: 6
+  task_cap: 1
+  task_timeout: 45m
+  tasks_per_runner: 1
+  preflight: {enabled: true, timeout_seconds: 300}
+  fail_fast: {enabled: true, summary_length_limit: 2, capture_turn_limit: 3}
+  workspaces: [flask, vue-vite]
+  archetypes: [question, explain_code, small_change, bugfix, ui_mockup, new_project]
+  spend_ceiling_usd: 10
+  scanner: pinned
+  engine_on:
+    enabled: true
+    deadline_ms: 120000
+    heads: /scratch/heads/open1-b5-e4-bialy
+  custom_model:
+    enabled: true
+    epoch: smoke-1
+    tool_surface: legacy
+    host_commit: <host commit>
+    quality_judge: true
+    student: gemma-4-e4b-it
+    teacher: gemma-4-26b-a4b-it-q4
+    preload_from_judge: false
+    shadow: false
+    repair: false
+    student_serving: {provider: student, kind: openai-compatible, model: gemma-4-e4b-it,
+                      base_url: "http://127.0.0.1:8080/v1", context_window: 32768}
