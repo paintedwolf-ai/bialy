@@ -5,7 +5,7 @@ import pytest
 
 from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal
-from bialy.campaign.review import Reviewers
+from bialy.campaign.review import REVIEW_SCHEMA, Reviewers
 
 
 def controls():
@@ -20,6 +20,7 @@ class Factory:
         return SimpleNamespace(id=name, revision='revision', family=name, roles=['judge'])
     def chats(self, model):
         def turn(messages, **kwargs):
+            assert kwargs['schema'] == REVIEW_SCHEMA
             payload = json.loads(messages[-1]['content'])
             self.calls.append((model.id, payload))
             verdict = 'pass' if model.id in self.bad else payload.get('fixture', 'pass')
@@ -106,4 +107,15 @@ def test_unknown_review_result_is_not_blindly_repeated(tmp_path, monkeypatch):
     monkeypatch.setattr(reviewers, 'ask', lambda *args: pytest.fail('review was repeated'))
     with pytest.raises(CampaignFault, match='episode_review_outcome_unknown'):
         reviewers.review({'evidence_ids': ['check']}, [])
+    journal.close()
+
+
+@pytest.mark.parametrize('body', [[], {'dimensions': []}, dict.fromkeys(DIMENSIONS, 'pass')])
+def test_reviewer_rejects_wrong_response_structure(tmp_path, body):
+    journal = Journal(tmp_path, {})
+    factory = Factory()
+    factory.chats = lambda model: [SimpleNamespace(turn=lambda *args, **kwargs: {'text': json.dumps(body)})]
+    reviewers = Reviewers(journal, factory, ['first'])
+    with pytest.raises(CampaignFault, match='episode_judge_invalid_response'):
+        reviewers.ask(factory.model('first'), {'evidence_ids': ['check']})
     journal.close()

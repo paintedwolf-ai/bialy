@@ -12,6 +12,18 @@ Return one JSON object with dimensions (each named dimension is pass or fail), e
 the supplied evidence, and a short reason. Every dimension must be present. No tool calls or repairs.'''
 
 
+REVIEW_SCHEMA = {
+    'type': 'object', 'additionalProperties': False,
+    'required': ['dimensions', 'evidence_ids', 'reason'],
+    'properties': {
+        'dimensions': {'type': 'object', 'additionalProperties': False, 'required': list(DIMENSIONS),
+                       'properties': {name: {'type': 'string', 'enum': ['pass', 'fail']} for name in DIMENSIONS}},
+        'evidence_ids': {'type': 'array', 'minItems': 1, 'items': {'type': 'string'}},
+        'reason': {'type': 'string'},
+    },
+}
+
+
 class Reviewers:
     def __init__(self, journal, factory, reviewer_slots, seed=7):
         self.journal, self.factory, self.seed = journal, factory, seed
@@ -25,19 +37,21 @@ class Reviewers:
 
     def identity(self, model):
         return digest({'model': model.id, 'revision': model.revision, 'family': model.family,
-                       'system': SYSTEM, 'seed': self.seed})
+                       'system': SYSTEM, 'schema': REVIEW_SCHEMA, 'seed': self.seed})
 
     def ask(self, model, payload):
         answer = self.factory.chats(model)[0].turn([
             {'role': 'system', 'content': SYSTEM},
             {'role': 'user', 'content': canonical({**payload, 'dimensions': list(DIMENSIONS)})},
-        ], seed=self.seed, max_tokens=4096)
+        ], seed=self.seed, max_tokens=4096, schema=REVIEW_SCHEMA)
         if answer.get('tool_calls'):
             raise CampaignFault('episode_judge_tool_call')
         try:
             result = json.loads(answer['text'])
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise CampaignFault('episode_judge_invalid_response') from exc
+        if not isinstance(result, dict) or not isinstance(result.get('dimensions'), dict):
+            raise CampaignFault('episode_judge_invalid_response')
         references = result.get('evidence_ids')
         if (set(result.get('dimensions', {})) != set(DIMENSIONS)
                 or any(value not in {'pass', 'fail'} for value in result['dimensions'].values())

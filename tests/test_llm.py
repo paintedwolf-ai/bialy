@@ -66,3 +66,12 @@ def test_training_turns_preserve_calls_and_disable_local_reasoning():
     assert output["tool_calls"] == [{"id": "call-1", "name": "read", "arguments": '{"path":"a.py"}'}]
     assert seen[0]["tools"] == tools
     assert seen[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_structured_turn_sends_schema_and_preserves_finish_validation():
+    chat = llm.Chat("https://example.invalid/v1", "m", hosted=True, reasoning_effort="none")
+    sent = calls(chat)
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    assert chat.turn([{"role": "user", "content": "judge"}], schema=schema)["text"] == "{}"
+    assert sent[0]["response_format"] == {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema, "strict": True}}
+    assert sent[0]["extra_body"] == {"reasoning_effort": "none"}
