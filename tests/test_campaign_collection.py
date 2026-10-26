@@ -77,3 +77,29 @@ def test_teacher_floors_come_from_development_attempts(tmp_path):
     assert baseline.reconcile(inputs, 'baseline') == result
     assert len(driver.calls) == 64
     journal.close()
+
+
+@pytest.mark.parametrize('kind', ['teacher', 'collection'])
+def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_path, kind):
+    journal = Journal(tmp_path, {})
+    lineage = Lineage(journal)
+    lineage.roots([{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic'}
+                   for partition in PARTITIONS for family in FAMILIES])
+    lineage.freeze()
+    driver = Driver()
+    def broken(name, inputs, attempt):
+        driver.calls.append(inputs)
+        raise CampaignFault('evidence_unavailable')
+    driver.execute = broken
+    inputs = {'host': {'conservative_reference': {}, 'teacher_capture_qualified': {'teacher': True}},
+              'selector': {}, 'teachers': {'teachers': [{'id': 'teacher'}],
+                                          'families': {family: {'teacher_id': 'teacher'} for family in FAMILIES}}}
+    if kind == 'teacher':
+        stage = TeacherBaseline(journal, lineage, driver, [{'id': 'teacher'}], minimum_tasks=1, repetitions=1)
+    else:
+        stage = Collection(journal, lineage, driver, None, None, True)
+    with pytest.raises(CampaignFault, match='episode_incomplete') as failure:
+        stage.execute(inputs, 'run')
+    assert failure.value.details['fault']['code'] == 'evidence_unavailable'
+    assert len(driver.calls) == 1
+    journal.close()

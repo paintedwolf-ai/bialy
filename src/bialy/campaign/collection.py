@@ -33,8 +33,10 @@ class TeacherBaseline:
                              'selector': inputs['host']['conservative_reference']}
                     name = 'teacher_trial_' + digest({'teacher': teacher['id'], 'task': task['id'], 'repetition': repetition})
                     result = self.executor.run(name, trial)
+                    if result['status'] != 'passed':
+                        raise CampaignFault('teacher_episode_incomplete', details={'stage': name, 'fault': result['fault']})
                     counts[task['family']] += 1
-                    successes[task['family']] += result['status'] == 'passed' and result['output']['success'] is True
+                    successes[task['family']] += result['output']['success'] is True
                     evidence.append({'stage': name, 'sha256': digest(result)})
             for family in FAMILIES:
                 measurements.append({'teacher_id': teacher['id'], 'family': family, 'attempts': counts[family],
@@ -87,7 +89,9 @@ class Collection:
                 trial = {key: trial[key] for key in ('host', 'selector', 'task', 'repetition', 'actor')}
                 result = self.executor.run(name, trial)
                 evidence.append({'stage': name, 'sha256': digest(result)})
-                if result['status'] != 'passed' or not result['output']['success']:
+                if result['status'] != 'passed':
+                    raise CampaignFault('collection_episode_incomplete', details={'stage': name, 'fault': result['fault']})
+                if not result['output']['success']:
                     continue
                 exported = self.export(trial, result['output'])
                 if not all(exported[student]['rows'] > 0 for student in manifests):
