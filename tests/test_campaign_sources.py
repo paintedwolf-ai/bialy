@@ -2,7 +2,9 @@ import json
 
 import pytest
 
-from bialy.campaign.journal import CampaignFault, Journal
+from bialy.campaign.episodes import Episodes
+from bialy.campaign.grading import DIMENSIONS
+from bialy.campaign.journal import CampaignFault, Journal, digest
 from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
 from bialy.campaign.sources import authority_key, seal_dataset
 from bialy.provenance import file_sha256
@@ -11,7 +13,7 @@ from bialy.provenance import file_sha256
 def fixture(tmp_path):
     journal = Journal(tmp_path / 'campaign', {})
     lineage = Lineage(journal)
-    lineage.roots([{'id': partition + family, 'family': family, 'partition': partition, 'source_class': 'synthetic'}
+    lineage.roots([{'id': partition + family, 'family': family, 'partition': partition, 'source_class': 'synthetic', 'required_checks': ['outcome']}
                    for partition in PARTITIONS for family in FAMILIES])
     lineage.freeze()
     lineage.bind_session('epoch', 'session', 'train' + FAMILIES[0])
@@ -29,6 +31,16 @@ def fixture(tmp_path):
     row = dict(candidate, meta={'task_id': 'train' + FAMILIES[0]}, split_group='train' + FAMILIES[0])
     dataset = tmp_path / 'train.jsonl'
     dataset.write_text(json.dumps(row) + '\n')
+    specification = json.loads(lineage.task('train' + FAMILIES[0])['spec'])
+    receipt = {'task_spec_sha256': digest(specification), 'grader_identity': 'grader', 'complete': True,
+               'checks': [{'id': 'outcome', 'source_sha256': 'final', 'passed': True}],
+               'final_source_sha256': 'final', 'evidence_ids': ['check'], 'human_interventions': 0,
+               'unauthorized_effects': 0, 'unresolved_effects': 0, 'teacher_family': 'teacher',
+               'epoch': 'epoch', 'root_session': 'session', 'store_sha256': file_sha256(store)}
+    reviews = [{'judge_id': name, 'judge_family': name, 'episode_sha256': digest(receipt),
+                'controls_passed': True, 'evidence_ids': ['check'], 'dimensions': dict.fromkeys(DIMENSIONS, 'pass')}
+               for name in ('first', 'second')]
+    Episodes(journal, lineage).record('epoch', 'session', 'train' + FAMILIES[0], ['session'], specification, receipt, reviews, 'grader')
     return journal, lineage, dataset, manifest, store
 
 
@@ -70,4 +82,13 @@ def test_metadata_cannot_reassign_a_session_to_another_partition(tmp_path):
         seal_dataset(journal, lineage, [dataset], manifest, tmp_path, 'host')
     with pytest.raises(CampaignFault, match='session_task_changed'):
         lineage.bind_session('epoch', 'session', row['meta']['task_id'])
+    journal.close()
+
+
+def test_successful_turn_without_a_qualified_episode_cannot_receive_a_permit(tmp_path):
+    journal, lineage, dataset, manifest, _ = fixture(tmp_path)
+    journal.db.execute('DELETE FROM episodes')
+    journal.db.commit()
+    with pytest.raises(CampaignFault, match='episode_missing'):
+        seal_dataset(journal, lineage, [dataset], manifest, tmp_path, 'host')
     journal.close()

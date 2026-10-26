@@ -98,16 +98,17 @@ def test_the_student_serving_provider_is_declared_but_never_driven(factory, tmp_
                      settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
     scaled = runmod.scaled_factory(run)
     providers, policy, _, chosen, _ = fleet.sidecar_files(scaled, {}, 0)
-    assert "  - id: student\n    kind: openai-compatible\n" in providers
-    entry = next(p for p in yaml.safe_load(providers)["providers"] if p["id"] == "student")
-    assert entry["models"] == [{"id": "gemma-4-e4b-it", "context_length": 32768,
-                                 "thinking": {"state": "supported", "can_disable": True}}]
     parsed = yaml.safe_load(policy)
-    assert parsed["thinking_overrides"] == [{"provider_id": "student", "model": "gemma-4-e4b-it", "mode": "fixed", "enabled": False}]
-    assert "student" not in chosen.values() and parsed["coordinator"]["provider_id"] != "student"
-    assert all(m["provider_id"] != "student" for m in parsed["agent_pool"]["models"])
-    plain = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name="p", settings=runmod.settings_for(factory, {}))
-    assert "id: student" not in fleet.sidecar_files(runmod.scaled_factory(plain), {}, 0)[0]
+    entries = {p['id']: p for p in yaml.safe_load(providers)['providers']}
+    for student, model in (('e4b', 'gemma-4-E4B-it'), ('12b', 'gemma-4-12B-it')):
+        provider = 'student-' + student
+        assert entries[provider]['models'] == [{'id': model, 'context_length': 65536,
+                                               'thinking': {'state': 'supported', 'can_disable': True}}]
+        assert {'provider_id': provider, 'model': model, 'mode': 'fixed', 'enabled': False} in parsed['thinking_overrides']
+        assert provider not in chosen.values() and parsed['coordinator']['provider_id'] != provider
+        assert all(m['provider_id'] != provider for m in parsed['agent_pool']['models'])
+    plain = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name='p', settings=runmod.settings_for(factory, {}))
+    assert 'id: student-' not in fleet.sidecar_files(runmod.scaled_factory(plain), {}, 0)[0]
 
 
 def test_collect_joins_rows_to_their_task_and_lists_what_it_drove(tmp_path):

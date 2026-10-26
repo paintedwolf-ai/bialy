@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from ..provenance import file_sha256
+from .episodes import Episodes
 from .execution import atomic_json
 from .journal import CampaignFault, digest
 
@@ -38,6 +39,7 @@ def seal_dataset(journal, lineage, files, export_manifest, checkout, host_commit
     candidates = {digest(json.loads(line)) for line in candidates_path.read_text().splitlines() if line.strip()}
     permitted_hashes = set(exported['inputs'].values())
     sources, approved = {}, {}
+    episodes = Episodes(journal, lineage)
     for path in map(Path, files):
         for row in (json.loads(line) for line in path.read_text().splitlines() if line.strip()):
             candidate = {key: value for key, value in row.items() if key not in {'meta', 'split_group'}}
@@ -48,6 +50,7 @@ def seal_dataset(journal, lineage, files, export_manifest, checkout, host_commit
             if task['root'] != row.get('split_group') or task['id'] != meta.get('task_id'):
                 raise CampaignFault('row_lineage_mismatch')
             source = row.get('source', {})
+            verdict = episodes.admit(exported['identity']['epoch'], row['session'], source.get('store_sha256'))
             if (source.get('capture_sha256') not in permitted_hashes or source.get('store_sha256') not in permitted_hashes
                     or row.get('request_capture', {}).get('host_revision') != host_commit):
                 raise CampaignFault('row_source_not_in_host_export')
@@ -63,7 +66,7 @@ def seal_dataset(journal, lineage, files, export_manifest, checkout, host_commit
                                    'permission_sha256': specification.get('permission_sha256')}
             sources[source['capture_sha256']] = {'source_class': 'factory_capture', 'training_allowed': True, 'parents': [root['id']]}
             approved[digest(row)] = {'root': task['root'], 'task_id': task['id'], 'partition': task['partition'],
-                                    'sources': [source['capture_sha256']]}
+                                    'sources': [source['capture_sha256']], 'episode': verdict}
     authority = {'run_id': exported['identity']['epoch'], 'host_commit': host_commit, 'lineage_sha256': lineage.freeze()}
     request = journal.directory / 'source-request.json'
     atomic_json(request, {'authority': authority, 'sources': sources, 'approved': approved, 'files': list(map(str, files))})

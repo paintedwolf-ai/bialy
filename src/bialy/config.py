@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from .faults import MODEL_FAILURE_CODES
+from .student_host.specification import serving
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config"
@@ -264,10 +265,7 @@ RUN_DEFAULTS = {
               "requirements": None, "torch_index": None, "epochs": None},
     "custom_model": {"enabled": False, "diagnostic_only": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
                      "epoch": None, "tool_surface": "legacy", "host_commit": None, "quality_reports": None, "quality_judge": False, "passes": None,
-                     # How the trained student will be served: llama.cpp's server applies the
-                     # checkpoint's own chat template, so the trained tokens are the served ones.
-                     "student_serving": {"provider": "student", "kind": "openai-compatible", "model": "gemma-4-e4b-it",
-                                         "base_url": "http://127.0.0.1:8080/v1", "context_window": 32768},
+                     "students": serving(),
                      "preload_from_judge": False, "max_routine_reads_per_session": 6, "shadow": False, "repair": False},
 }
 

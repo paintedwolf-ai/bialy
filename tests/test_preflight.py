@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import importlib.util
 import json
@@ -14,7 +15,7 @@ from bialy import run as runmod
 
 
 def collection(factory, tmp_path):
-    settings = dict(factory.run)
+    settings = copy.deepcopy(factory.run)
     settings["custom_model"] = dict(settings["custom_model"], enabled=True, epoch="fixture", host_commit="a" * 40)
     settings["generators"] = ["deepseek-v4.1-flash"]
     factory = dataclasses.replace(factory, root=tmp_path, run=settings)
@@ -41,11 +42,11 @@ def test_overlay_window_is_read_from_the_actual_image(factory, tmp_path, monkeyp
     seen = []
     def read(*args):
         seen.append(args)
-        return SimpleNamespace(stdout=yaml.safe_dump({"window_source": "explicit", "model_context_window": 24576, "live_budget_pct": 75}))
+        return SimpleNamespace(stdout=yaml.safe_dump({"window_source": "explicit", "model_context_window": 49152, "live_budget_pct": 75}))
     monkeypatch.setattr(fleet, "sh", read)
     preflight.verify_window(run, "on")
     assert seen[0][:4] == ("docker", "run", "--rm", "--entrypoint")
-    run.settings["custom_model"]["student_serving"] = dict(run.settings["custom_model"]["student_serving"], context_window=65536)
+    run.settings["custom_model"]["students"]["e4b"] = dict(run.settings["custom_model"]["students"]["e4b"], context_window=32768)
     with pytest.raises(faults.RunFault, match="window_mismatch"):
         preflight.verify_window(run, "on")
 
@@ -195,15 +196,15 @@ def test_preflight_requires_receipt_admission_not_just_kept_payloads(factory, tm
         source = Path(args[args.index("--fleet") + 1])
         assert (source / "shards" / "fixture").resolve() == shard.resolve()
         assert [p.name for p in (source / "shards").iterdir()] == ["fixture"]
-        binding = json.loads((shard / "receipt-binding.json").read_text())
-        assert binding["student_model"] == "gemma-4-e4b-it" and binding["epoch"] == "fixture"
-        output = shard / "receipt-export"
+        binding = json.loads(Path(args[args.index("--binding") + 1]).read_text())
+        assert binding["student_model"] in {"gemma-4-E4B-it", "gemma-4-12B-it"} and binding["epoch"] == "fixture"
+        output = Path(args[args.index("--out") + 1])
         output.mkdir()
         (output / "manifest.json").write_text(json.dumps({"counts": counts}))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(preflight.subprocess, "run", export)
     if expected:
-        assert preflight.verify_receipts(run, shard) == expected
+        assert preflight.verify_receipts(run, shard) == {"e4b": expected, "12b": expected}
     else:
         with pytest.raises(faults.RunFault, match="receipt_not_accepted"):
             preflight.verify_receipts(run, shard)

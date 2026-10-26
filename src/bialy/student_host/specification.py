@@ -39,3 +39,11 @@ def arguments(spec, student, model_root, splits, out, device, mirror, *, pilot=F
     if resume:
         args += ['--resume']
     return args
+
+
+def serving(spec=None):
+    spec = load() if spec is None else spec
+    return {name: {'provider': 'student-' + name, 'kind': 'openai-compatible',
+                   'model': model['directory'], 'base_url': 'http://127.0.0.1:%d/v1' % (8080 + index),
+                   'context_window': spec['context']['max_sequence_tokens']}
+            for index, (name, model) in enumerate(spec['models'].items())}

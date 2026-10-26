@@ -18,7 +18,7 @@ def verify_window(run, pass_name):
     result = fleet.sh("docker", "run", "--rm", "--entrypoint", "cat", run.image(pass_name),
                       "/opt/bialy/engine/" + str(fleet.COMPACTION))
     config = yaml.safe_load(result.stdout)
-    window = int(custom["student_serving"]["context_window"])
+    window = int(custom["students"]["e4b"]["context_window"])
     if config["window_source"] != "explicit" or int(config["model_context_window"]) != window * int(config["live_budget_pct"]) // 100:
         raise faults.RunFault("preflight_student_window_mismatch", "image")
 
@@ -35,9 +35,9 @@ def run_phase(run, pass_name, phase, pilot):
     if phase == "mock":
         environment["LYCAON_LLM_MOCK"] = "1"
     if custom.get("enabled"):
-        serving = custom["student_serving"]
         environment.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"],
-                           PW_TRAINING_STUDENTS=json.dumps([{"provider": serving["provider"], "model": serving["model"]}]))
+                           PW_TRAINING_STUDENTS=json.dumps([{"provider": serving["provider"], "model": serving["model"]}
+                                                         for serving in custom["students"].values()]))
     providers, policy, _, chosen, models = fleet.sidecar_files(run.factory, environment, 0)
     if phase == "fixture":
         teacher = run.factory.generators()[0]
@@ -88,24 +88,28 @@ def run_phase(run, pass_name, phase, pilot):
 def verify_receipts(run, shard):
     """Qualify captured payloads with the pinned host's actual receipt exporter."""
     custom = run.setting("custom_model")
-    serving = custom["student_serving"]
-    identity = {key: custom[key] for key in ("epoch", "host_commit", "tool_surface")}
+    return {name: verify_student_receipts(run, shard, name, serving) for name, serving in custom["students"].items()}
+
+
+def verify_student_receipts(run, shard, name, serving):
+    custom = run.setting("custom_model")
+    identity = {key: custom[key] for key in ("epoch", "host_commit", "tool_surface", "students")}
     identity.update(student_provider=serving["provider"], student_kind=serving["kind"], student_model=serving["model"])
-    binding = shard / "receipt-binding.json"
+    binding = shard / ("receipt-binding-" + name + ".json")
     custom_model_run.write_json(binding, identity)
     records = [json.loads(p.read_text()) for p in (shard / "training-captures").glob("*.json")]
     # This probe's offered tool inventories identify its catalog; its rows never
     # enter a collection's training splits.
     catalog = custom_model_run.digest([r["student_request"].get("tools", []) for r in records
                                       if r.get("schema") == "pw-training-turn/1" and r.get("student_request")])
-    source = shard.parent.parent / "receipt-source"
+    source = shard.parent.parent / ("receipt-source-" + name)
     (source / "shards").mkdir(parents=True)
     (source / "shards" / shard.name).symlink_to(shard.resolve(), target_is_directory=True)
-    destination = shard / "receipt-export"
+    destination = shard / ("receipt-export-" + name)
     result = subprocess.run([sys.executable, str(run.checkout / "scripts/bialy/custom_model/collect.py"),
                              "--fleet", str(source), "--binding", str(binding),
                              "--catalog-sha256", catalog, "--out", str(destination)], capture_output=True, text=True, timeout=30)
-    (shard / "receipt-export.log").write_text(result.stdout + result.stderr)
+    (shard / ("receipt-export-" + name + ".log")).write_text(result.stdout + result.stderr)
     if result.returncode:
         raise faults.RunFault("preflight_receipt_export_failed", shard.name)
     counts = json.loads((destination / "manifest.json").read_text())["counts"]

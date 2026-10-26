@@ -294,7 +294,7 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
 
 def test_a_collection_declares_the_students_window_and_identity(factory, tmp_path):
     run = runmod.Run(factory=factory, name="t", settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
-    assert run.collection_window == 32768
+    assert run.collection_window == 65536
     assert make_run(factory, tmp_path).collection_window is None
 
 

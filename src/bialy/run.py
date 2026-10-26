@@ -130,7 +130,7 @@ class Run:
     def collection_window(self):
         """The student's declared context window when this run collects custom-model data."""
         custom = self.setting("custom_model") or {}
-        return int(custom["student_serving"]["context_window"]) if custom.get("enabled") else None
+        return int(custom["students"]["e4b"]["context_window"]) if custom.get("enabled") else None
 
     @property
     def engine_on_only(self):
@@ -421,9 +421,9 @@ def plan_pass(run, pass_name, pilot):
     decide_env = fleet.pilot_env(pilot)
     custom = run.setting("custom_model") or {}
     if custom.get("enabled"):
-        serving = custom["student_serving"]
         decide_env.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"],
-                          PW_TRAINING_STUDENTS=json.dumps([{"provider": serving["provider"], "model": serving["model"]}]))
+                          PW_TRAINING_STUDENTS=json.dumps([{"provider": serving["provider"], "model": serving["model"]}
+                                                         for serving in custom["students"].values()]))
     if (run_dir / "shards").exists():
         # A plan stage runs again only when its pass is being redone, so earlier shards
         # of the pass are stale; containers still running are kept and adopted.
