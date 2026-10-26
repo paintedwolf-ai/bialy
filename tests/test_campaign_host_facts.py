@@ -69,3 +69,13 @@ def test_program_status_is_preserved_for_review_and_unsettled_children_block_adm
     programs['call']['children'][0]['state'] = 'running'
     result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
     assert result['unresolved_effects'] == 1
+
+
+@pytest.mark.parametrize('verdict,unresolved', [('passed', 0), ('failed', 0), ('unverifiable', 1), (None, 1)])
+def test_legacy_receipts_preserve_terminal_verdict_without_program_facts(verdict, unresolved):
+    task, facts, oracle, _ = inputs()
+    facts['sessions'][0]['invocations'][0]['source_verdict'] = verdict
+    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', {}, tool_surface='legacy')
+    assert result['legacy_commands'] == {'call': verdict}
+    assert result['unresolved_effects'] == unresolved
+    assert result['programs'] == {}

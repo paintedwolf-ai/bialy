@@ -40,11 +40,12 @@ class EpisodeDriver:
         return workspace, directory
 
     def execute(self, name, inputs, attempt):
-        inspect(self.factory_run.checkout, self.factory_run.setting('custom_model')['host_commit'])
+        custom = self.factory_run.setting('custom_model')
+        inspect(self.factory_run.checkout, custom['host_commit'], tool_surface=custom['tool_surface'])
         directory = self.directory(attempt)
         directory.mkdir(parents=True, exist_ok=False)
         task = inputs['task']
-        workspace, _ = self.validate_task(task)
+        workspace, oracle_directory = self.validate_task(task)
         shard = directory / 'fleet' / 'shards' / attempt
         shard.mkdir(parents=True)
         custom = self.factory_run.setting('custom_model')
@@ -81,6 +82,7 @@ class EpisodeDriver:
         run_name = 'campaign-' + digest(str(self.journal.directory.resolve()))[:12]
         mounts = [(selector, fleet.PILOT_MOUNT)] if selector else []
         container_name, work, arguments = fleet.container_args(self.factory_run.factory, run_name, shard, mounts, inputs['host']['image'])
+        oracle.seed(task, oracle_directory, work / 'work' / workspace.name)
         plan = {'inputs': inputs, 'inputs_sha256': digest(inputs), 'shard': str(shard), 'work': str(work),
                 'name': container_name, 'arguments': arguments, 'request_files': {
                     path.name: file_sha256(path) for path in shard.iterdir() if path.is_file()}}
@@ -145,8 +147,9 @@ class EpisodeDriver:
                               inputs['host']['image'], directory / 'grading', self.process)
         with sqlite3.connect('file:' + quote(str(store.resolve()), safe='/') + '?mode=ro', uri=True) as database:
             database.row_factory = sqlite3.Row
-            programs = host_facts.program_evidence(database, facts)
-        receipt = host_facts.receipt(task, facts, checks, checksum, epoch, actor['family'], checks['grader_identity'], programs)
+            surface = self.factory_run.setting('custom_model')['tool_surface']
+            programs = host_facts.program_evidence(database, facts) if surface == 'command-v1' else {}
+        receipt = host_facts.receipt(task, facts, checks, checksum, epoch, actor['family'], checks['grader_identity'], programs, surface)
         if file_sha256(store) != checksum:
             raise CampaignFault('trial_store_changed')
         reviews_path = directory / 'reviews.json'

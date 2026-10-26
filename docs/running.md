@@ -30,10 +30,12 @@ overdue, and the shard is not driven again.
 ## Preflight and live faults
 
 Campaign episode collection checks the pinned host's SQLite schema before
-starting a runner. The command program and child-execution fields consumed by
-grading and export must exist; a missing field produces
-`host_command_receipts_unavailable`. This source check does not qualify live
-execution, capture, or the runner image.
+starting a runner. Runs selecting `command-v1` require the command program and
+child-execution fields consumed by grading and export; a missing field produces
+`host_command_receipts_unavailable`. A mechanical pilot may explicitly select
+`legacy`, which uses terminal command verdicts and records that surface in its
+evidence. It does not qualify revised portable-command behavior. This source
+check does not qualify live execution, capture, or the runner image.
 
 Run the source check separately before preparing a pilot:
 
@@ -45,6 +47,19 @@ python -m bialy.campaign.preflight --host-checkout /path/to/paintedwolf-code \
 The directory must be new. It retains the pinned inputs and a terminal result,
 including missing receipt fields. A failed check exits nonzero without starting
 collection or training. Use a new directory after changing the source.
+
+The mechanical pilot is `python -m bialy.campaign.pilot --configuration FILE`.
+Its JSON configuration pins the host checkout and commit, runner image, student
+models, llama.cpp revision, serving image, reviewer slots, and storage locations.
+The selected `tool_surface` is part of the immutable run input. The runner image
+must carry its source commit in the `pw.host_commit` label.
+
+The pilot creates eight tasks per partition: training, validation, development,
+and held-out evaluation. It measures the teacher on development tasks, collects
+whole qualified episodes, exports an unchanged baseline, trains, exports the
+adapter result, and drives paired host evaluations with thinking off. Its result
+separates pipeline completion from behavioral success and never qualifies a model
+for promotion. The multi-turn probe does not establish long-context behavior.
 
 Before driving, `preflight` checks the engine-off image and `preflight_on` checks
 its engine-on peer. Engine-on probes require the host's decision-engine readiness

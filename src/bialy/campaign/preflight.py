@@ -31,7 +31,7 @@ def command_schema(schema):
     return {'schema_sha256': hashlib.sha256(schema.encode()).hexdigest(), 'missing_columns': missing}
 
 
-def inspect(checkout, commit, process=subprocess.run):
+def inspect(checkout, commit, process=subprocess.run, tool_surface='command-v1'):
     checkout = Path(checkout).resolve()
     actual = process(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
     if actual != commit:
@@ -41,22 +41,25 @@ def inspect(checkout, commit, process=subprocess.run):
     if dirty:
         raise CampaignFault('host_source_not_clean')
     result = command_schema((checkout / 'lycaon/internal/db/schema.sql').read_text())
-    if result['missing_columns']:
+    if tool_surface not in {'legacy', 'command-v1'}:
+        raise CampaignFault('host_tool_surface_unknown')
+    if tool_surface == 'command-v1' and result['missing_columns']:
         raise CampaignFault('host_command_receipts_unavailable', details={'host_commit': actual, **result})
-    return {'host_commit': actual, **result}
+    return {'host_commit': actual, 'tool_surface': tool_surface, **result}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host-checkout', required=True, type=Path)
     parser.add_argument('--host-commit', required=True)
+    parser.add_argument('--tool-surface', choices=('legacy', 'command-v1'), default='command-v1')
     parser.add_argument('--out', required=True, type=Path)
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=False)
-    inputs = {'host_checkout': str(args.host_checkout.resolve()), 'host_commit': args.host_commit}
+    inputs = {'host_checkout': str(args.host_checkout.resolve()), 'host_commit': args.host_commit, 'tool_surface': args.tool_surface}
     atomic_json(args.out / 'inputs.json', inputs)
     try:
-        evidence = inspect(args.host_checkout, args.host_commit)
+        evidence = inspect(args.host_checkout, args.host_commit, tool_surface=args.tool_surface)
         result = {'status': 'source_prerequisites_passed', 'evidence': evidence}
     except CampaignFault as exc:
         result = {'status': 'blocked', 'fault': exc.record()}

@@ -37,10 +37,15 @@ def test_inspection_requires_clean_pinned_source_before_accepting_schema(tmp_pat
     with pytest.raises(CampaignFault, match='host_command_receipts_unavailable') as failure:
         inspect(tmp_path, 'pinned', process)
     assert set(failure.value.details['missing_columns']) == set(COMMAND_COLUMNS)
+    legacy = inspect(tmp_path, 'pinned', process, tool_surface='legacy')
+    assert legacy['tool_surface'] == 'legacy'
+    assert legacy['missing_columns']
+    with pytest.raises(CampaignFault, match='host_tool_surface_unknown'):
+        inspect(tmp_path, 'pinned', process, tool_surface='unknown')
 
 
 def test_preflight_retains_terminal_failure_and_never_overwrites_run(tmp_path, monkeypatch):
-    def unavailable(*args):
+    def unavailable(*args, **kwargs):
         raise CampaignFault('host_command_receipts_unavailable')
     monkeypatch.setattr('bialy.campaign.preflight.inspect', unavailable)
     out = tmp_path / 'attempt'
@@ -54,7 +59,7 @@ def test_preflight_retains_terminal_failure_and_never_overwrites_run(tmp_path, m
 
 
 def test_preflight_source_success_does_not_claim_live_qualification(tmp_path, monkeypatch):
-    monkeypatch.setattr('bialy.campaign.preflight.inspect', lambda *args: {'host_commit': 'pinned'})
+    monkeypatch.setattr('bialy.campaign.preflight.inspect', lambda *args, **kwargs: {'host_commit': 'pinned'})
     out = tmp_path / 'attempt'
     assert main(['--host-checkout', str(tmp_path), '--host-commit', 'pinned', '--out', str(out)]) == 0
     result = json.loads((out / 'result.json').read_text())
@@ -63,10 +68,10 @@ def test_preflight_source_success_does_not_claim_live_qualification(tmp_path, mo
 
 def test_episode_source_failure_precedes_container_or_provider_calls(tmp_path, monkeypatch):
     from bialy.campaign.driver import EpisodeDriver
-    def unavailable(*args):
+    def unavailable(*args, **kwargs):
         raise CampaignFault('host_command_receipts_unavailable')
     monkeypatch.setattr('bialy.campaign.driver.inspect', unavailable)
-    run = SimpleNamespace(checkout=tmp_path, setting=lambda key: {'host_commit': 'pinned'})
+    run = SimpleNamespace(checkout=tmp_path, setting=lambda key: {'host_commit': 'pinned', 'tool_surface': 'command-v1'})
     driver = EpisodeDriver(SimpleNamespace(directory=tmp_path), None, run, None, tmp_path,
                            process=lambda *args, **kwargs: pytest.fail('process started before source qualification'))
     with pytest.raises(CampaignFault, match='host_command_receipts_unavailable'):

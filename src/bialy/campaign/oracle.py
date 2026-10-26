@@ -11,6 +11,25 @@ from .execution import atomic_json
 from .journal import CampaignFault, digest
 
 
+def seed(task, bank, project):
+    bank, project = Path(bank), Path(project)
+    for name, source_name in task.get('fixture_files', {}).items():
+        relative, source_relative = PurePosixPath(name), PurePosixPath(source_name)
+        if any(path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] == '.git'
+               for path in (relative, source_relative)):
+            raise CampaignFault('fixture_path_outside_project')
+        source = bank / source_relative
+        if (not source.resolve().is_relative_to(bank.resolve()) or source.is_symlink()
+                or file_sha256(source) != task['oracle_files'].get(source_name)):
+            raise CampaignFault('fixture_source_changed')
+        target = project / relative
+        if target.exists():
+            raise CampaignFault('fixture_destination_exists')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open('xb') as stream:
+            stream.write(source.read_bytes())
+
+
 def snapshot(project, destination, artifact_paths=(), run=subprocess.run):
     project, destination = Path(project), Path(destination)
     result = run(['git', '-C', str(project), 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],

@@ -12,20 +12,23 @@ from .lineage import FAMILIES
 
 
 class TeacherBaseline:
-    def __init__(self, journal, lineage, driver, teachers, sleep=time.sleep):
+    def __init__(self, journal, lineage, driver, teachers, sleep=time.sleep, minimum_tasks=4, repetitions=2):
         self.journal, self.lineage, self.teachers = journal, lineage, teachers
         self.executor = Executor(journal, driver, sleep)
+        if type(minimum_tasks) is not int or minimum_tasks < 1 or type(repetitions) is not int or repetitions < 1:
+            raise CampaignFault('teacher_baseline_sampling_invalid')
+        self.minimum_tasks, self.repetitions = minimum_tasks, repetitions
 
     def execute(self, inputs, attempt):
         tasks = [json.loads(row[0]) for row in self.journal.db.execute(
             "SELECT spec FROM tasks WHERE partition='development' AND parent IS NULL ORDER BY id")]
-        if any(sum(task['family'] == family for task in tasks) < 4 for family in FAMILIES):
+        if any(sum(task['family'] == family for task in tasks) < self.minimum_tasks for family in FAMILIES):
             raise CampaignFault('teacher_development_bank_incomplete')
         measurements, evidence = [], []
         for teacher in self.teachers:
             counts, successes = Counter(), Counter()
             for task in tasks:
-                for repetition in range(2):
+                for repetition in range(self.repetitions):
                     trial = {**inputs, 'task': task, 'repetition': repetition, 'actor': teacher,
                              'selector': inputs['host']['conservative_reference']}
                     name = 'teacher_trial_' + digest({'teacher': teacher['id'], 'task': task['id'], 'repetition': repetition})

@@ -38,7 +38,9 @@ def members(facts, root):
     return by_id
 
 
-def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_identity, programs):
+def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_identity, programs, tool_surface='command-v1'):
+    if tool_surface not in {'legacy', 'command-v1'}:
+        raise CampaignFault('host_tool_surface_unknown')
     root = facts.get('root_session_id')
     sessions = members(facts, root)
     execution = facts.get('execution') or {}
@@ -73,6 +75,7 @@ def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_ide
         if effect['session_id'] not in sessions:
             interventions += 1
     unresolved = 0
+    legacy_commands = {}
     invocation_ids = set()
     for session in sessions.values():
         for invocation in session.get('invocations', []):
@@ -80,6 +83,11 @@ def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_ide
             if invocation['invoked'] and (not invocation.get('settled_at') or invocation['status'] not in {'completed', 'error', 'rejected', 'interrupted'}):
                 unresolved += 1
             if invocation['tool'] == 'command' and invocation['invoked']:
+                if tool_surface == 'legacy':
+                    verdict = invocation.get('source_verdict')
+                    legacy_commands[invocation['id']] = verdict
+                    unresolved += int(verdict not in {'passed', 'failed'})
+                    continue
                 program = programs.get(invocation['id'])
                 if program is None:
                     raise CampaignFault('command_program_evidence_missing')
@@ -96,6 +104,7 @@ def receipt(task, facts, oracle, store_sha256, epoch, teacher_family, grader_ide
             'store_sha256': store_sha256, 'final_source_sha256': source, 'checks': checks,
             'human_interventions': interventions, 'unauthorized_effects': unauthorized, 'unresolved_effects': unresolved,
             'host_evidence_sha256': digest(facts), 'programs_sha256': digest(programs), 'programs': programs,
+            'tool_surface': tool_surface, 'legacy_commands': legacy_commands,
             'evidence_ids': sorted(invocation_ids | {check['id'] for check in checks})}
 
 
