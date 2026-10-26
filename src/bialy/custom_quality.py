@@ -22,6 +22,14 @@ REVIEW_SCHEMA = {
 }
 
 
+def review_schema(evidence):
+    return {**REVIEW_SCHEMA, "properties": {
+        **REVIEW_SCHEMA["properties"],
+        "evidence_ids": {"type": "array", "minItems": 1,
+                         "items": {"type": "string", "enum": list(dict.fromkeys(evidence))}},
+    }}
+
+
 def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
     opener = gzip.open if str(transcripts_path).endswith(".gz") else open
     with opener(transcripts_path, "rt", encoding="utf-8") as stream:
@@ -50,7 +58,7 @@ def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
             payload = {"session":session,"request":capture,"response":row["target"],
                        "host_receipts":report,"evidence_ids":evidence}
             answer = chats[judge.id].turn([{"role":"system","content":SYSTEM},
-                    {"role":"user","content":json.dumps(payload, ensure_ascii=False)}], seed=seed, max_tokens=4096, schema=REVIEW_SCHEMA)
+                    {"role":"user","content":json.dumps(payload, ensure_ascii=False)}], seed=seed, max_tokens=4096, schema=review_schema(evidence))
             if answer.get("tool_calls"):
                 raise ValueError("quality judge returned tool calls")
             verdict = json.loads(answer["text"])

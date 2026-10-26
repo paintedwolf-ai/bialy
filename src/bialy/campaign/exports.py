@@ -65,7 +65,9 @@ class Exports:
                 review_directory.mkdir(exist_ok=True)
                 reviewed = review_directory / 'review.json'
                 annotated = {**row, 'meta': {'model': inputs['actor']['id']}}
-                expected = digest({'row': annotated, 'transcript': transcript_body, 'system': custom_quality.SYSTEM, 'schema': custom_quality.REVIEW_SCHEMA, 'seed': 7, 'reviewer': {'id': self.factory.reviewer().id, 'revision': self.factory.reviewer().revision}})
+                validation = row['validation']
+                schema = custom_quality.review_schema([validation['receipt_id'], *validation.get('invocation_receipt_ids', [])])
+                expected = digest({'row': annotated, 'transcript': transcript_body, 'system': custom_quality.SYSTEM, 'schema': schema, 'seed': 7, 'reviewer': {'id': self.factory.reviewer().id, 'revision': self.factory.reviewer().revision}})
                 if reviewed.exists():
                     record = json.loads(reviewed.read_text())
                     if record['inputs_sha256'] != expected:

@@ -25,7 +25,7 @@ def test_paired_export_resumes_review_receipts_and_rejects_changed_source(tmp_pa
         binding = json.loads((tmp_path / argv[argv.index('--binding') + 1]).read_text())
         rows = out / 'sft.receipts.jsonl'
         rows.write_text(json.dumps({'session': 'session', 'student': binding['student_model'],
-                                   'reviewed': '--quality' in argv}) + '\n')
+                                   'validation': {'receipt_id': 'receipt'}, 'reviewed': '--quality' in argv}) + '\n')
         (out / 'manifest.json').write_text(json.dumps({'schema': 'pw-receipt-export/1', 'identity': binding,
                                                      'inputs': {str(source): file_sha256(source)}, 'rows_sha256': file_sha256(rows)}))
     def judge(factory, rows, transcript, destination):

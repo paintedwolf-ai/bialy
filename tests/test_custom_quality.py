@@ -17,7 +17,7 @@ def test_quality_review_binds_request_response_and_allows_same_family(tmp_path):
 
     class Chat:
         def turn(self, messages, **kwargs):
-            assert kwargs["schema"] == custom_quality.REVIEW_SCHEMA
+            assert kwargs["schema"] == custom_quality.review_schema(["validation-1"])
             assert kwargs["max_tokens"] == 4096
             calls.append(json.loads(messages[1]["content"]))
             return {"text": json.dumps({"verdict": "pass", "evidence_ids": ["validation-1"], "reason": "fixture assessment"})}
@@ -53,3 +53,10 @@ def test_quality_review_rejects_invalid_verdicts(tmp_path, verdict):
     with pytest.raises(ValueError, match="quality judge returned"):
         custom_quality.judge_rows(factory, rows, transcripts, out)
     assert out.read_text() == ""
+
+def test_review_schema_restricts_references_to_supplied_receipts():
+    schema = custom_quality.review_schema(["receipt-a", "receipt-b", "receipt-a"])
+    references = schema["properties"]["evidence_ids"]
+    assert references == {"type": "array", "minItems": 1,
+                          "items": {"type": "string", "enum": ["receipt-a", "receipt-b"]}}
+    assert "enum" not in custom_quality.REVIEW_SCHEMA["properties"]["evidence_ids"]["items"]
