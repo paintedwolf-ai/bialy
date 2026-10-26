@@ -27,5 +27,7 @@ def test_quality_review_binds_request_response_and_allows_same_family(tmp_path):
     assert quality["request_sha256"] == row["request_capture"]["sha256"]
     assert quality["response_sha256"] == row["validation"]["response_sha256"]
     assert calls[0]["response"] == row["target"]
+    assert next(iter(calls[0])) == "session"
+    assert quality["review_input_sha256"] == custom_quality.digest(calls[0])
     factory.reviewer = lambda: SimpleNamespace(id="judge", family="gemma", revision="b")
     assert custom_quality.judge_rows(factory, rows, transcripts, tmp_path / "same-family") == {"pass": 1}

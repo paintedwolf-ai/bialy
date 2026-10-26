@@ -29,13 +29,17 @@ overdue, and the shard is not driven again.
 
 ## Preflight and live faults
 
-Runner sessions execute as an ordinary user with no capabilities. The entrypoint
-prepares the shard's writable directories, then drops privileges before repository
-setup or application startup. Container security profiles permit the application's
-own user namespaces, mount isolation, and syscall supervision. They retain the
-Docker syscall allowlist and protect system paths through AppArmor; the container
-does not receive host administrative capabilities. AppArmor must be enabled on the
-runner machine. Profiles are content-addressed and loaded before a shard starts.
+Runner containers permit the application's own user namespaces, mount isolation,
+and syscall supervision. Their security profiles retain the Docker syscall
+allowlist and protect system paths through AppArmor. AppArmor must be enabled on
+the runner machine. Profiles are content-addressed and loaded before a shard
+starts. `SETFCAP` permits the nested namespace to map the container's root user;
+the container receives no `SYS_ADMIN` capability. Root and non-root sessions are
+both valid execution configurations, subject to behavioral qualification.
+
+The runner places ephemeral application caches under `/tmp/user-cache`. Bundled
+self-extracting tools need a writable cache even on their first invocation inside
+the application sandbox. Package-manager caches remain under `/cache`.
 
 Container qualification compares representative operations with the same application
 build running directly as an ordinary user. Compare effects, typed outcomes,
