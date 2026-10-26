@@ -16,6 +16,7 @@ it starts, if any, and follow-ups.
 import concurrent.futures
 import hashlib
 import json
+import math
 import random
 import re
 import subprocess
@@ -57,7 +58,74 @@ def reply_schema(max_follow_ups):
             "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": max_follow_ups}}}}},
     }
 
-PATHLIKE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:py|go|js|ts|tsx|rs|rb|java|kt|php|md|toml|yaml|yml|json|lock|cfg|ini|txt))(?![\w/])")
+# Supported 44-language matrix from lycaon/internal/filekind/supported.go and docs/supported-languages.md.
+SUPPORTED_LANGUAGES = (
+    "apex", "bash", "c", "c_sharp", "cairo", "circom", "clojure", "commonlisp",
+    "cpp", "dart", "dockerfile", "elixir", "go", "groovy", "hack", "hcl", "html", "java",
+    "javascript", "json", "jsonnet", "julia", "kotlin", "lua", "move", "ocaml",
+    "perl", "php", "powershell", "promql", "proto", "python", "ql", "r", "ruby", "rust", "scala",
+    "scheme", "solidity", "swift", "typescript", "vue", "xml", "yaml",
+)
+
+# 37 of 44 languages with OpenGrep SAST/security rule coverage in docs/supported-languages.md.
+UNSCANNED_SECURITY_LANGUAGES = frozenset({"commonlisp", "lua", "ocaml", "promql", "proto", "ql", "scheme"})
+SECURITY_SUPPORTED_LANGUAGES = tuple(lang for lang in SUPPORTED_LANGUAGES if lang not in UNSCANNED_SECURITY_LANGUAGES)
+
+# Canonical file extensions per supported grammar in the 44-language matrix.
+LANGUAGE_FILE_EXTENSIONS = {
+    "apex": ("cls", "trigger", "apex"),
+    "bash": ("sh", "bash", "zsh", "ksh", "bats"),
+    "c": ("c", "h"),
+    "c_sharp": ("cs", "csx", "csproj", "sln"),
+    "cairo": ("cairo",),
+    "circom": ("circom",),
+    "clojure": ("clj", "cljs", "cljc", "edn"),
+    "commonlisp": ("lisp", "lsp", "cl", "asd"),
+    "cpp": ("cpp", "cc", "cxx", "hpp", "hh", "hxx"),
+    "dart": ("dart",),
+    "dockerfile": ("dockerfile",),
+    "elixir": ("ex", "exs"),
+    "go": ("go", "mod", "sum"),
+    "groovy": ("groovy", "gradle", "gvy"),
+    "hack": ("hack", "hhi"),
+    "hcl": ("tf", "tfvars", "hcl"),
+    "html": ("html", "htm"),
+    "java": ("java",),
+    "javascript": ("js", "mjs", "cjs", "jsx"),
+    "json": ("json",),
+    "jsonnet": ("jsonnet", "libsonnet"),
+    "julia": ("jl",),
+    "kotlin": ("kt", "kts"),
+    "lua": ("lua", "rockspec"),
+    "move": ("move",),
+    "ocaml": ("ml", "mli", "opam"),
+    "perl": ("pl", "pm", "t", "psgi", "cgi", "fcgi", "PL"),
+    "php": ("php", "phtml"),
+    "powershell": ("ps1", "psm1", "psd1"),
+    "promql": ("promql", "rules"),
+    "proto": ("proto",),
+    "python": ("py", "pyi"),
+    "ql": ("ql", "qll"),
+    "r": ("r", "R", "Rmd"),
+    "ruby": ("rb", "rake", "gemspec"),
+    "rust": ("rs",),
+    "scala": ("scala", "sc", "sbt"),
+    "scheme": ("scm", "ss", "sld"),
+    "solidity": ("sol",),
+    "swift": ("swift",),
+    "typescript": ("ts", "mts", "cts", "tsx"),
+    "vue": ("vue",),
+    "xml": ("xml", "xsd", "xsl", "plist", "svg"),
+    "yaml": ("yaml", "yml"),
+}
+
+_ALL_PATH_EXTENSIONS = sorted(
+    {ext for exts in LANGUAGE_FILE_EXTENSIONS.values() for ext in exts}
+    | {"sql", "css", "scss", "less", "svelte", "md", "rst", "toml", "lock", "cfg", "ini", "txt"}
+)
+PATHLIKE = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:" + "|".join(_ALL_PATH_EXTENSIONS) + r"))(?![\w/])"
+)
 LANGUAGE_NAMES = {"es": "Spanish", "de": "German", "fr": "French", "pt": "Portuguese", "ja": "Japanese", "zh": "Chinese", "ko": "Korean", "it": "Italian"}
 
 
@@ -181,8 +249,8 @@ def generate(factory, repos_dir, out_dir, seed=7, workers=48):
                 count = min(6, remaining)
                 other = rng.random() < factory.languages["other_rate"]
                 language = rng.choice(factory.languages["choices"]) if other else None
-                author = generators[(n + len(jobs)) % len(generators)].id
                 key = "%s/%s/%d" % (workspace.name, arch.id, n)
+                author = pick_generator(factory, arch.id, [m.id for m in generators], random.Random("%s:author:%s" % (seed, key)))
                 job_seed = rng.randrange(1 << 30)
                 # A stack's batches each draw their own idea and scale, so its tasks spread over many projects.
                 drawn = {"domain": rng.choice(factory.seeds["domains"]), "scale": rng.choice(factory.seeds["scales"])} \
@@ -210,8 +278,8 @@ def generate(factory, repos_dir, out_dir, seed=7, workers=48):
     for workspace in factory.workspaces():
         raw = []
         path = raw_dir / (workspace.name + ".jsonl")
-        for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else []):
-            entry = json.loads(line)
+        entries = [json.loads(line) for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else [])]
+        for entry in sorted(entries, key=lambda entry: entry["job"]):
             raw += [{**t, "archetype": entry["archetype"], "lang": entry["lang"], "author": entry["author"], "seed": entry.get("seed")}
                     for t in entry["tasks"]]
         files = repo_files(Path(repos_dir) / workspace.name) if workspace.kind == "repository" else []
@@ -237,11 +305,73 @@ def workflow_versions(factory):
     return versions
 
 
+def pick_generator(factory, archetype_id, generators, rng):
+    """Choose a driving generator for a task, honoring per-archetype and run-wide weights when configured."""
+    run_cfg = getattr(factory, "run", None) or {}
+    arch_map = (run_cfg.get("archetype_generators") or {}).get(archetype_id)
+    base_weights = run_cfg.get("generator_weights") or {}
+    if not generators:
+        raise ConfigError("at least one generator is required")
+    if arch_map is None and not base_weights:
+        return rng.choice(generators)
+    unknown = (set(arch_map) if isinstance(arch_map, (dict, list, tuple)) else set()) - set(generators)
+    unknown |= set(base_weights) - set(generators)
+    if unknown:
+        raise ConfigError("generator routing names inactive models: %s" % ", ".join(sorted(unknown)))
+    values = list(base_weights.values()) + (list(arch_map.values()) if isinstance(arch_map, dict) else [])
+    if any(not isinstance(w, (int, float)) or isinstance(w, bool) or not math.isfinite(w) or w < 0 for w in values):
+        raise ConfigError("generator weights must be finite nonnegative numbers")
+    if isinstance(arch_map, dict):
+        candidates = [g for g in generators if float(arch_map.get(g, 0)) > 0]
+        weights = [float(arch_map[g]) for g in candidates]
+    elif isinstance(arch_map, (list, tuple)):
+        allowed = set(arch_map)
+        candidates = [g for g in generators if g in allowed]
+        weights = [float(base_weights.get(g, 1.0)) for g in candidates]
+    else:
+        candidates = [g for g in generators if float(base_weights.get(g, 1.0)) > 0]
+        weights = [float(base_weights.get(g, 1.0)) for g in candidates]
+    if not candidates or sum(weights) <= 0:
+        raise ConfigError("generator routing for %s selects no models" % archetype_id)
+    return rng.choices(candidates, weights=weights, k=1)[0]
+
+
+def format_reference(path, is_dir=False):
+    """Name an existing path without claiming the host delivered attachment content."""
+    kind = "folder" if is_dir else "file"
+    return "Please include the existing %s `%s` in your review." % (kind, path)
+
+
+def maybe_reference(prompt, files, reference_rate, rng):
+    """Append an explicit file or folder reference to a share of generated requests."""
+    if reference_rate <= 0 or not files or rng.random() >= reference_rate:
+        return prompt
+    file_set = set(files)
+    by_base = {f.rsplit("/", 1)[-1]: f for f in files}
+    dirs = sorted({f.rsplit("/", 1)[0] for f in files if "/" in f})
+    matched_files = []
+    for token in PATHLIKE.findall(prompt):
+        clean_tok = token.strip("./")
+        if clean_tok in file_set:
+            matched_files.append(clean_tok)
+        elif clean_tok in by_base:
+            matched_files.append(by_base[clean_tok])
+    if matched_files:
+        chosen = matched_files[0]
+        return "%s\n\n%s" % (prompt, format_reference(chosen, is_dir=False))
+    if dirs and rng.random() < 0.25:
+        chosen_dir = rng.choice(dirs)
+        return "%s\n\n%s" % (prompt, format_reference(chosen_dir, is_dir=True))
+    chosen_file = rng.choice(files)
+    return "%s\n\n%s" % (prompt, format_reference(chosen_file, is_dir=False))
+
+
 def finalize(factory, workspace, raw, files, out_path, seed):
     """Validate, group, and assign one workspace's tasks, then write them. `files` lists a
     repository's files; a stack's workspace starts empty."""
     versions = workflow_versions(factory)
     rng = random.Random("%s:assign:%s" % (seed, workspace.name))
+    attach_rng = random.Random("%s:attach:%s" % (seed, workspace.name))
     archetypes = {a.id: a for a in factory.archetypes}
 
     def usable(text, arch):
@@ -266,13 +396,14 @@ def finalize(factory, workspace, raw, files, out_path, seed):
         pick = rng.choices([None, *names], [1 - sum(arch.workflows.values()), *(arch.workflows[n] for n in names)])[0]
         follow = t["follow_ups"] if rng.random() < arch.follow_up_rate else []
         tid = hashlib.sha1(("%s\n%s" % (workspace.name, t["prompt"])).encode()).hexdigest()[:16]
-        model = rng.choice(generators)
+        model = pick_generator(factory, arch.id, generators, rng)
+        prompt_text = maybe_reference(t["prompt"], files, getattr(arch, "reference_rate", 0.0), attach_rng) if files else t["prompt"]
         meta = {"task_id": tid, "workspace": workspace.name, "workspace_kind": workspace.kind, "split": workspace.split,
                 "archetype": arch.id, "prompt_group": group_key, "lang": t["lang"], "author_model": t["author"], "workflow": pick,
                 "prompt_timeout": arch.timeout(pick)}
         if t.get("seed"):
             meta["seed"] = t["seed"]
-        task = {"id": tid, "prompt": t["prompt"], "follow_ups": [{"prompt": f} for f in follow],
+        task = {"id": tid, "prompt": prompt_text, "follow_ups": [{"prompt": f} for f in follow],
                 "provider_id": factory.provider_id(factory.model(model)), "model": model, "meta": meta}
         if pick:
             task["workflow"] = pick

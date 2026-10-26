@@ -57,20 +57,57 @@ def test_replan_rewrites_every_shard_without_rows(factory, tmp_path, monkeypatch
     assert not (started / "rows.jsonl").exists()
 
 
-def test_engine_on_pass_raises_only_turn_decision_deadlines(tmp_path):
+def overlay_config(tmp_path):
     config = tmp_path / "config"
     (config / "packs/painted-wolf/platform/host").mkdir(parents=True)
     (config / "packs/painted-wolf/platform/host/decisions.yaml").write_text(
         "turn:\n  deadline_ms: 2500\nrerank:\n  summarize:\n    deadline_ms: 300\nrequest:\n  deadline_ms: 2500\n")
+    (config / "packs/painted-wolf/platform/host/compaction.yaml").write_text(
+        "enabled: true\nwindow_source: auto\nlive_budget_pct: 75\nmodel_context_window: 131072\nbudget_trigger_pct: 60\n")
     (config / "packs/painted-wolf/skills.yaml").write_text("skills: []\n")
-    (config / "packs/painted-wolf/platform/host/compaction.yaml").write_text("enabled: true\nbudget_trigger_pct: 60\n")
-    fleet.stage_runner_config(config, tmp_path / "engine", 30000)
-    compaction = (tmp_path / "engine" / fleet.COMPACTION).read_text()
-    assert compaction == "enabled: true\nbudget_trigger_pct: 60\n"
-    # The whole tree travels, since the config root replaces the embedded configuration.
+    return config
+
+
+def test_engine_on_pass_raises_only_turn_decision_deadlines(tmp_path):
+    fleet.stage_config_overlay(overlay_config(tmp_path), tmp_path / "engine", deadline_ms=30000)
+    assert (tmp_path / "engine" / fleet.COMPACTION).read_text() == (
+        "enabled: true\nwindow_source: auto\nlive_budget_pct: 75\nmodel_context_window: 131072\nbudget_trigger_pct: 60\n"
+    )
     assert (tmp_path / "engine/overlay/config/packs/painted-wolf/skills.yaml").exists()
     text = (tmp_path / "engine" / fleet.DECISIONS).read_text()
     assert text.count("deadline_ms: 30000") == 2 and "deadline_ms: 300\n" in text
+    assert "window_source: auto" in (tmp_path / "engine" / fleet.COMPACTION).read_text()
+
+
+def test_a_collection_budgets_context_as_the_students_sessions_would(tmp_path):
+    import yaml
+    fleet.stage_config_overlay(overlay_config(tmp_path), tmp_path / "engine", context_window=32768)
+    compaction = yaml.safe_load((tmp_path / "engine" / fleet.COMPACTION).read_text())
+    assert compaction["window_source"] == "explicit" and compaction["model_context_window"] == 32768 * 75 // 100
+    assert compaction["budget_trigger_pct"] == 60
+    assert "deadline_ms: 2500" in (tmp_path / "engine" / fleet.DECISIONS).read_text()
+
+
+def test_the_student_serving_provider_is_declared_but_never_driven(factory, tmp_path):
+    import dataclasses
+
+    import yaml
+
+    from bialy import run as runmod
+    run = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name="t",
+                     settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
+    scaled = runmod.scaled_factory(run)
+    providers, policy, _, chosen, _ = fleet.sidecar_files(scaled, {}, 0)
+    assert "  - id: student\n    kind: openai-compatible\n" in providers
+    entry = next(p for p in yaml.safe_load(providers)["providers"] if p["id"] == "student")
+    assert entry["models"] == [{"id": "gemma-4-e4b-it", "context_length": 32768,
+                                 "thinking": {"state": "supported", "can_disable": True}}]
+    parsed = yaml.safe_load(policy)
+    assert parsed["thinking_overrides"] == [{"provider_id": "student", "model": "gemma-4-e4b-it", "mode": "fixed", "enabled": False}]
+    assert "student" not in chosen.values() and parsed["coordinator"]["provider_id"] != "student"
+    assert all(m["provider_id"] != "student" for m in parsed["agent_pool"]["models"])
+    plain = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name="p", settings=runmod.settings_for(factory, {}))
+    assert "id: student" not in fleet.sidecar_files(runmod.scaled_factory(plain), {}, 0)[0]
 
 
 def test_collect_joins_rows_to_their_task_and_lists_what_it_drove(tmp_path):
@@ -171,6 +208,21 @@ def test_the_scanner_can_be_declined_but_nothing_else(tmp_path):
     fleet.check_engine(tmp_path, scanner=False)
 
 
+def test_the_staged_release_layout_satisfies_the_scanner(tmp_path):
+    for rel in fleet.ENGINE_PAYLOAD:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    release = tmp_path / "bundled/opengrep-1.30.0+paintedwolf.40"
+    release.mkdir(parents=True)
+    for name in fleet.SCANNER_FILES[:-1]:
+        (release / name).write_text("x")
+    with pytest.raises(ValueError, match="scanner"):
+        fleet.check_engine(tmp_path)
+    (release / fleet.SCANNER_FILES[-1]).write_text("x")
+    fleet.check_engine(tmp_path)
+    assert fleet.scanner_dirs(tmp_path) == [release]
+
+
 def test_pilot_env_names_the_heads_the_pilot_carries(tmp_path):
     assert fleet.pilot_env(None) == {"LYCAON_DECIDE_DISABLED": "1"}
     (tmp_path / "heads").mkdir()
@@ -178,6 +230,7 @@ def test_pilot_env_names_the_heads_the_pilot_carries(tmp_path):
     (tmp_path / "heads/guide-load.safetensors").write_bytes(b"h")
     env = fleet.pilot_env(tmp_path)
     assert env["LYCAON_DECIDE_BINARY"] == "/opt/decide/bialy" and env["LYCAON_DECIDE_MODEL_DIR"] == "/opt/decide/model"
+    assert env["LYCAON_DECIDE_DEVICE"] == "cpu"
     assert env["LYCAON_DECIDE_HEADS"] == "guide-load=/opt/decide/heads/guide-load.safetensors,turn-load=/opt/decide/heads/turn-load.safetensors"
     with pytest.raises(ValueError):
         fleet.pilot_env(tmp_path / "empty")

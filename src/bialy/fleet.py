@@ -13,11 +13,14 @@ import json
 import os
 import random
 import shutil
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
 
-from . import config, llm
+import yaml
+
+from . import config, faults, llm
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -38,12 +41,21 @@ DECISIONS = Path("overlay/config/packs/painted-wolf/platform/host/decisions.yaml
 COMPACTION = Path("overlay/config/packs/painted-wolf/platform/host/compaction.yaml")
 
 
-def stage_runner_config(config_dir, engine_dir, deadline_ms=None):
-    """Stage the pinned configuration and experiment decision deadlines."""
+def stage_config_overlay(config_dir, engine_dir, deadline_ms=None, context_window=None):
+    """Stage `config_dir`, the lycaon/config tree of the commit the binaries were built
+    from, with the run's runtime settings.
+
+    deadline_ms raises every turn decision's deadline: a runner's CPU answers a turn in
+    seconds, and past the deadline the engine abstains. The deadline decides only whether
+    an answer arrives, never what it is, so an engine-on pass raises it.
+
+    context_window is the true window of the model a collection trains. Sessions budget
+    their context exactly as that model's sessions would (its window times the host's
+    live-budget share), so teachers act on the history a student will be given."""
     overlay = Path(engine_dir) / "overlay" / "config"
     shutil.rmtree(overlay, ignore_errors=True)
     shutil.copytree(config_dir, overlay, symlinks=False)
-    if deadline_ms is not None:
+    if deadline_ms:
         path = Path(engine_dir) / DECISIONS
         lines = path.read_text(encoding="utf-8").splitlines()
         section = None
@@ -53,13 +65,24 @@ def stage_runner_config(config_dir, engine_dir, deadline_ms=None):
             elif section in DECISION_SECTIONS and line.startswith("  deadline_ms:"):
                 lines[i] = "  deadline_ms: %d" % deadline_ms
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if context_window:
+        path = Path(engine_dir) / COMPACTION
+        compaction = yaml.safe_load(path.read_text(encoding="utf-8"))
+        budget = int(context_window) * int(compaction["live_budget_pct"]) // 100
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines()
+                 if not line.startswith(("window_source:", "model_context_window:"))]
+        lines += ["window_source: explicit", "model_context_window: %d" % budget]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # What the sidecar needs to offer the tools it advertises; without them sessions still
 # produce rows, from failing tools, so the image refuses to build. Only the scanner can
 # be declined, and the sidecar then reports it unavailable.
 ENGINE_PAYLOAD = ("schemas", "gitengine/bin/git", "browser/chrome-headless-shell")
-SCANNER_PAYLOAD = ("opengrep/opengrep", "opengrep/provenance.json", "opengrep/source-lock.json")
+# The checkout stages its pinned release at bundled/opengrep-<version>/, where the sidecar
+# finds it under LYCAON_ENGINE_ROOT; a development candidate sits at opengrep/.
+SCANNER_FILES = ("opengrep", "provenance.json", "source-lock.json")
+SCANNER_PAYLOAD = tuple("opengrep/" + f for f in SCANNER_FILES)
 
 
 PILOT_MOUNT = "/opt/decide"
@@ -67,24 +90,39 @@ PILOT_MOUNT = "/opt/decide"
 
 def pilot_env(pilot):
     """The sidecar's decision engine for a pass: off, or the engine and heads in `pilot`
-    (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT."""
+    (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT.
+
+    Runners have only a CPU, so the engine is pinned to it. Picking a device itself, the
+    engine refuses one slower than the product's reference speed, which a shared two-core
+    runner always is; a pinned device serves at whatever speed, and the raised decision
+    deadline gives each answer the time it needs."""
     if not pilot:
         return {"LYCAON_DECIDE_DISABLED": "1"}
     heads = sorted(p.stem for p in (Path(pilot) / "heads").glob("*.safetensors"))
     if not heads:
         raise ValueError("pilot %s carries no heads" % pilot)
     return {"LYCAON_DECIDE_BINARY": PILOT_MOUNT + "/bialy", "LYCAON_DECIDE_MODEL_DIR": PILOT_MOUNT + "/model",
+            "LYCAON_DECIDE_DEVICE": "cpu",
             "LYCAON_DECIDE_HEADS": ",".join("%s=%s/heads/%s.safetensors" % (h, PILOT_MOUNT, h) for h in heads)}
 
 
+def scanner_dirs(engine_dir):
+    """Scanner directories in the payload that carry every scanner file: staged releases,
+    then a development candidate."""
+    engine_dir = Path(engine_dir)
+    found = sorted(engine_dir.glob("bundled/opengrep-*")) + [engine_dir / "opengrep"]
+    return [d for d in found if all((d / f).is_file() for f in SCANNER_FILES)]
+
+
 def check_engine(engine_dir, scanner=True):
-    wanted = ENGINE_PAYLOAD + (SCANNER_PAYLOAD if scanner else ())
-    missing = [rel for rel in wanted if not (Path(engine_dir) / rel).exists()]
+    missing = [rel for rel in ENGINE_PAYLOAD if not (Path(engine_dir) / rel).exists()]
+    if scanner and not scanner_dirs(engine_dir):
+        missing += ["a scanner (bundled/opengrep-<version>/ or %s)" % ", ".join(SCANNER_PAYLOAD)]
     if missing:
         raise ValueError("engine payload %s lacks %s; see README (engine/)" % (engine_dir, ", ".join(missing)))
 
 
-def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, config_dir=None, scanner=True):
+def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, config_dir=None, scanner=True, context_window=None):
     """Assemble the build context from runner/, the pinned lycaon binaries, and the
     engine payload, then build the runner image."""
     check_engine(engine_dir, scanner)
@@ -96,8 +134,8 @@ def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, con
     for name in ("lycaon", "lycaon-debug"):
         shutil.copy2(Path(lycaon_bin) / name, ctx / "bin" / name)
     shutil.copytree(engine_dir, ctx / "engine", symlinks=False)
-    if deadline_ms:
-        stage_runner_config(config_dir, ctx / "engine", deadline_ms)
+    if deadline_ms or context_window:
+        stage_config_overlay(config_dir, ctx / "engine", deadline_ms, context_window)
     shutil.copy2(CONFIG / "unattended.yaml", ctx / "unattended.yaml")
     subprocess.run(["docker", "build", "-q", "-t", tag or factory.fleet["image"], str(ctx)], check=True)
 
@@ -161,6 +199,12 @@ def endpoint_provider(factory, model, port):
     return base if port == model.port else "%s-%d" % (base, port)
 
 
+def student_serving(factory):
+    """The provider a custom-model collection's student will be served through, or None."""
+    custom = (getattr(factory, "run", None) or {}).get("custom_model") or {}
+    return custom.get("student_serving") if custom.get("enabled") else None
+
+
 def sidecar_files(factory, decide_env, lane):
     """providers.local.yaml, model-policy.yaml, and sidecar.env for a shard. `lane` picks
     which server of each model the shard's sessions use, so shards spread over replicas."""
@@ -179,16 +223,34 @@ def sidecar_files(factory, decide_env, lane):
         ports = m.ports()
         port = ports[lane % len(ports)]
         chosen[m.id] = endpoint_provider(factory, m, port)
-        wire_model[m.id] = m.id
+        wire_model[m.id] = m.wire_model
         providers += ["  - id: %s" % chosen[m.id], "    kind: openai-compatible",
                       "    base_url: %s" % factory.base_url(m, port), "    reasoning_wire: reasoning_content",
                       "    models: [{id: %s}]" % m.id]
+    student = student_serving(factory)
+    if student:
+        # Never called: the host renders each captured request through this entry,
+        # so the training input is what the student's own serving would send.
+        providers += ["  - id: %s" % student["provider"], "    kind: %s" % student["kind"],
+                      "    base_url: %s" % student["base_url"], "    reasoning_wire: reasoning_content",
+                      '    api_key_env: ""',
+                      "    models: [{id: %s, context_length: %d, thinking: {state: supported, can_disable: true}}]" % (student["model"], int(student["context_window"]))]
     gens = factory.generators()
     first = gens[0]
+    local_only = bool((getattr(factory, "run", None) or {}).get("local_workers_only"))
+    local_gens = [m for m in gens if not m.hosted]
+    if local_only and not local_gens:
+        raise config.ConfigError("local_workers_only requires at least one local generator")
+    worker_gens = local_gens if local_only else gens
+    lite_model = worker_gens[0]
     policy = ["coordinator: {provider_id: %s, model: %s}" % (chosen[first.id], wire_model[first.id]),
-              "lite: {provider_id: %s, model: %s}" % (chosen[first.id], wire_model[first.id]),
+              "lite: {provider_id: %s, model: %s}" % (chosen[lite_model.id], wire_model[lite_model.id]),
               "agent_pool:", "  selection: random", "  models:"]
-    policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], wire_model[m.id]) for m in gens]
+    policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], wire_model[m.id]) for m in worker_gens]
+    if student:
+        # Native fixed control belongs to the serving policy, not the teacher.
+        policy += ["thinking_overrides:", "  - {provider_id: %s, model: %s, mode: fixed, enabled: false}" %
+                   (student["provider"], student["model"])]
     # The sidecar takes provider keys only from its own credential store, so the shard
     # names which provider gets which environment variable's key; run-shard.sh stores it
     # through the API after the sidecar starts. The names travel, never the keys.
@@ -201,7 +263,7 @@ def sidecar_files(factory, decide_env, lane):
 def plan_shards(factory, tasks_dir, run_dir, decide_env, workspaces=None, skip=()):
     """Split every workspace's tasks into shards under run_dir/shards. Shards named in
     `skip` keep their files, and still advance the replica lanes."""
-    per = int(factory.fleet["tasks_per_shard"])
+    per = int(factory.run.get("tasks_per_runner") or factory.fleet["tasks_per_shard"])
     count = planned = 0
     for workspace in factory.workspaces():
         if workspaces and workspace.name not in workspaces:
@@ -213,7 +275,7 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, workspaces=None, skip=(
         # Task files are grouped by archetype; mixed shards take similar time. Shards are
         # cut per prompt budget, so a shard of quick tasks never waits on a long budget.
         random.Random("shards:" + workspace.name).shuffle(lines)
-        budget = lambda line: (json.loads(line).get("meta") or {}).get("prompt_timeout") or factory.fleet["prompt_timeout"]  # noqa: E731
+        budget = lambda line: factory.run.get("task_timeout") or (json.loads(line).get("meta") or {}).get("prompt_timeout") or factory.fleet["prompt_timeout"]  # noqa: E731
         lines.sort(key=lambda line: -config.minutes(budget(line)))
         # A shard of long-budget tasks could otherwise run for most of a day; its size is
         # what fits shard_minutes at the budget, from tasks_per_shard down to one task.
@@ -246,6 +308,8 @@ def plan_shards(factory, tasks_dir, run_dir, decide_env, workspaces=None, skip=(
             (shard / "sidecar.env").write_text(env, encoding="utf-8")
             timeout = max((budget(line) for line in group), key=config.minutes)
             spec = {"workspace": workspace.name, "kind": workspace.kind, "prompt_timeout": timeout}
+            if factory.run.get("task_timeout"):
+                spec["task_timeout"] = factory.run["task_timeout"]
             if workspace.kind == "repository":
                 spec["commit"] = workspace.commit
             (shard / "workspace.json").write_text(json.dumps(spec), encoding="utf-8")
@@ -379,12 +443,18 @@ def container_args(factory, run_name, shard, extra_mounts, image=None):
             "-v", "%s:/cache" % cache,
             "-e", "WORKSPACE=" + spec["workspace"], "-e", "WORKSPACE_KIND=" + spec["kind"],
             "-e", "PROMPT_TIMEOUT=" + (spec.get("prompt_timeout") or fleet["prompt_timeout"])]
+    if spec.get("task_timeout"):
+        args += ["-e", "TASK_TIMEOUT=" + spec["task_timeout"]]
     if spec["kind"] == "repository":
         args += ["-e", "COMMIT=" + spec["commit"]]
     for host_path, container_path in extra_mounts:
         args += ["-v", "%s:%s:ro" % (host_path, container_path)]
     # Hosted generators: the key travels as an environment variable, never in a shard file.
     for key_env in sorted({m.hosted["key_env"] for m in factory.generators() if m.hosted}):
+        if os.environ.get(key_env):
+            args += ["-e", key_env]
+    # The setup shell transfers optional search credentials into the sidecar vault.
+    for key_env in ("GITHUB_SEARCH_API_KEY", "GITLAB_SEARCH_API_KEY", "STACKEXCHANGE_API_KEY"):
         if os.environ.get(key_env):
             args += ["-e", key_env]
     return name, work, args + [image or fleet["image"]]
@@ -417,6 +487,9 @@ def shard_tasks(shard):
 
 def shard_deadline(factory, shard, started):
     """When a shard started at `started` (epoch seconds) counts as stuck."""
+    spec = json.loads((shard / "workspace.json").read_text(encoding="utf-8"))
+    if spec.get("task_timeout"):
+        return started + 60 * len(shard_tasks(shard)) * config.minutes(spec["task_timeout"]) + 120
     prompts = sum(1 + len(task.get("follow_ups") or []) for task in shard_tasks(shard))
     return started + 60 * (OVERDUE_FACTOR * prompts * shard_minutes(factory, shard) + OVERDUE_GRACE_MINUTES)
 
@@ -495,6 +568,47 @@ def keep_overdue(shard, exported):
     return True
 
 
+def health_snapshot(shard, name, proc, code):
+    """A removed --rm container is healthy only when its saved store is readable."""
+    if code is not None and not (shard / "store.db").is_file():
+        raise faults.RunFault("health_store_unavailable", shard.name)
+    try:
+        return faults.snapshot(shard, name if code is None else None), code
+    except faults.RunFault as exc:
+        if exc.code != "health_store_unavailable" or code is not None:
+            raise
+        try:
+            code = proc.wait(timeout=1)
+        except subprocess.TimeoutExpired as timeout:
+            raise exc from timeout
+        if not (shard / "store.db").is_file():
+            raise exc
+        return faults.snapshot(shard), code
+
+
+def stop_shard(name, child, shard, work, output):
+    """Preserve this owned container's live evidence before stopping it."""
+    if child.poll() is None:
+        export_live(name, shard, output)
+        sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+        sh("docker", "stop", "--time", "10", name, check=False)
+        child.wait()
+    release_work(work)
+
+
+def record_task_abort(shard, fault):
+    if not (shard / "store.db").is_file():
+        return False
+    rows = shard / "rows.jsonl"
+    if rows.exists():
+        rows.rename(shard / "task-aborted-rows.jsonl")
+    # An empty manifest truthfully records that no driver outcome was published
+    # before the host stopped this task. It never invents a completed session.
+    (shard / "manifest.jsonl").touch(exist_ok=True)
+    (shard / "task-aborted.json").write_text(json.dumps(fault, indent=2) + "\n")
+    return True
+
+
 def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     """Run every shard without rows, at most `runners` at a time, until all have finished.
 
@@ -513,6 +627,9 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     run_dir = Path(run_dir)
     run_name = run_dir.name
     ledger = Ledger(run_dir)
+    if (run_dir / "fault.json").exists():
+        fault = json.loads((run_dir / "fault.json").read_text())
+        raise faults.RunFault(fault["code"], fault["shard"])
     adopted = running_containers(run_dir)
     for name in Ledger(run_dir).containers():
         if name not in adopted.values() and sh("docker", "container", "inspect", name, check=False).returncode == 0:
@@ -527,13 +644,14 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
                         shard, factory.root / "work" / run_name / shard_name, shard_deadline(factory, shard, time.time()))
     # Longest budgets first: the shards that run longest start while the fleet is full,
     # instead of trailing a nearly idle fleet at the end of the pass.
-    pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and s.name not in adopted),
+    pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and not (s / "task-aborted.json").exists() and s.name not in adopted),
                      key=lambda s: (-shard_minutes(factory, s), s.name))
     for shard in pending:
-        for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part", "overdue-rows.part"):
+        for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part", "overdue-rows.part", "ready.json", "health.json", "task-fault.json"):
             (shard / stale).unlink(missing_ok=True)
     limit = int(runners or factory.fleet["runners"])
-    done = failed = 0
+    done = sum((shard / "rows.jsonl").exists() for shard in (run_dir / "shards").iterdir())
+    failed = sum((shard / "task-aborted.json").exists() for shard in (run_dir / "shards").iterdir())
     refused = None
     while (pending and not refused) or active:
         while pending and len(active) < limit and not refused:
@@ -545,6 +663,36 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
         time.sleep(5)
         for name, (proc, shard, work, deadline) in list(active.items()):
             code = proc.poll()
+            health_settings = dict(factory.run.get("fail_fast") or {})
+            if health_settings.get("enabled") and (shard / "ready.json").exists():
+                try:
+                    report, code = health_snapshot(shard, name, proc, code)
+                    (shard / "health.json").write_text(json.dumps(report, indent=2) + "\n")
+                    health_settings.update(require_engine=bool((factory.run.get("engine_on") or {}).get("enabled") and extra_mounts),
+                                           require_captures=bool((factory.run.get("custom_model") or {}).get("enabled")))
+                    reason = faults.reason(report, health_settings)
+                except (faults.RunFault, ValueError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
+                    report, reason = {"observation_error": type(exc).__name__}, "health_observation_failed"
+                if reason:
+                    fault = dict(code=reason, shard=shard.name, report=report)
+                    one_task = len([line for line in (shard / "tasks.jsonl").read_text().splitlines() if line.strip()]) == 1
+                    if one_task and faults.isolated_task_failure(report, health_settings):
+                        stop_shard(name, proc, shard, work, "task-aborted-rows.part")
+                        if record_task_abort(shard, fault):
+                            ledger.append(event="task_abort", container=name, shard=shard.name, code=reason)
+                            del active[name]
+                            failed += 1
+                            print("%s task aborted; failed=%d pending=%d" % (shard.name, failed, len(pending)), flush=True)
+                            continue
+                        reason = "health_store_unavailable"
+                        fault = dict(code=reason, shard=shard.name, report=report)
+                    (run_dir / "fault.json").write_text(json.dumps(fault, indent=2) + "\n")
+                    # Only containers owned by this run's ledger are stopped. Preserve
+                    # their live stores and exports before releasing their workspaces.
+                    for other, (child, current, current_work, _) in active.items():
+                        stop_shard(other, child, current, current_work, "aborted-rows.part")
+                        ledger.append(event="health_abort", container=other, shard=current.name, code=reason)
+                    raise faults.RunFault(reason, shard.name)
             if code is None and time.time() > deadline:
                 exported = export_live(name, shard, "overdue-rows.part")
                 sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
@@ -725,7 +873,10 @@ def join_rows(shard, path, meta, model_of, out):
         if row["root_session"] not in meta:
             raise ValueError("%s: rows from session %s, which the manifest does not list" % (shard.name, row["root_session"]))
         row["meta"] = meta[row["root_session"]]
-        row["model"] = model_of[row["root_session"]]
+        if row.get("schema") == "pw-decide-request/1":
+            row["generator_model"] = model_of[row["root_session"]]
+        else:
+            row["model"] = model_of[row["root_session"]]
         out.write(json.dumps(row, ensure_ascii=False) + "\n")
         count += 1
     return count

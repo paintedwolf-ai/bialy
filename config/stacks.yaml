@@ -53,6 +53,24 @@ stacks:
     split: train
     brief: a Rust command-line tool built with cargo
     warm: cargo init --name app && cargo add clap --features derive && cargo add serde --features derive && cargo add serde_json anyhow && cargo fetch
+  - name: ts-node
+    language: typescript
+    split: train
+    brief: a TypeScript HTTP service or command-line tool managed with npm and tested with Vitest
+    warm: npm init -y && npm install express fastify commander zod && npm install -D typescript tsx @types/node @types/express vitest
+  - name: c-cli
+    language: c
+    split: train
+    brief: a C command-line tool or library built with gcc and Make, with a test target
+  - name: cpp-cli
+    language: cpp
+    split: train
+    brief: a C++20 command-line tool or library built with g++ and Make, with a test target
+  - name: php-app
+    language: php
+    split: train
+    brief: a PHP web service or command-line tool managed with Composer and tested with PHPUnit
+    warm: composer init --name=example/app --no-interaction && composer require slim/slim slim/psr7 && composer require --dev phpunit/phpunit
   # Held out: a frontend framework, a language, and a build tool the training stacks lack.
   - name: vue-vite
     language: typescript

@@ -1,0 +1,5 @@
+id: recon-auto
+version: 1.0.0
+extends: recon-pack@1.0.0
+name: Recon
+description: Coordinated codebase orientation across parallel scout workers.
