@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, faults, llm
+from . import config, faults, llm, runner_security
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -406,11 +406,12 @@ def warm_cache(factory, image=None):
     procs = {}
     for name, script in scripts.items():
         args = ["docker", "run", "--rm", "--name", "bialy-warm-%s" % name, "--network", factory.network["name"], "--read-only",
-                "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+                "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "SETPCAP",
+                "--cap-add", "SETUID", "--cap-add", "SETGID",
                 "--security-opt", "no-new-privileges", "--tmpfs", "/work:rw,exec,size=16g", "--tmpfs", "/shard:rw,size=1g",
-                "--tmpfs", "/tmp:rw,exec,size=4g", "--tmpfs", "/root:rw,exec,size=4g",
+                "--tmpfs", "/tmp:rw,exec,size=4g", "--tmpfs", "/home/user:rw,exec,size=4g", "--tmpfs", "/cfg:rw,size=1g",
                 "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/cache" % (factory.root / "cache"),
-                "--entrypoint", "bash", image or factory.fleet["image"], "-c", script]
+                image or factory.fleet["image"], "bash", "-c", script]
         # Each workspace's log stays under <root>/warm/ for a failed warm to be read.
         procs[name] = subprocess.Popen(args, stdout=open(factory.root / "warm" / (name + ".log"), "w"), stderr=subprocess.STDOUT)
     return {name: proc.wait() for name, proc in procs.items()}
@@ -424,6 +425,7 @@ def shard_minutes(factory, shard):
 
 def container_args(factory, run_name, shard, extra_mounts, image=None):
     fleet = factory.fleet
+    security = runner_security.arguments(factory.root)
     spec = json.loads((shard / "workspace.json").read_text(encoding="utf-8"))
     work = factory.root / "work" / run_name / shard.name
     if work.exists():
@@ -434,10 +436,11 @@ def container_args(factory, run_name, shard, extra_mounts, image=None):
     args = ["docker", "run", "--rm", "--name", name, "--label", "bialy.run=" + run_name,
             "--network", factory.network["name"], "--cpus", str(fleet["cpus"]), "--memory", fleet["memory"],
             "--pids-limit", str(fleet["pids"]), "--cap-drop", "ALL",
-            "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID",
-            "--cap-add", "KILL", "--cap-add", "SETUID", "--cap-add", "SETGID",
+            "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "SETPCAP",
+            "--cap-add", "SETUID", "--cap-add", "SETGID",
             "--security-opt", "no-new-privileges", "--read-only",
-            "--tmpfs", "/tmp:rw,exec,size=8g", "--tmpfs", "/root:rw,exec,size=4g", "--tmpfs", "/cfg:rw,size=4g",
+            *security,
+            "--tmpfs", "/tmp:rw,exec,size=8g", "--tmpfs", "/home/user:rw,exec,size=4g", "--tmpfs", "/cfg:rw,size=4g",
             "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/shard" % shard, "-v", "%s:/work" % (work / "work"),
             "-v", "%s:/cache" % cache,
             "-e", "WORKSPACE=" + spec["workspace"], "-e", "WORKSPACE_KIND=" + spec["kind"],

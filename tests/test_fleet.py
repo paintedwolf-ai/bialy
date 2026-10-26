@@ -182,6 +182,7 @@ def test_an_engine_payload_missing_a_tool_is_refused(tmp_path):
 
 
 def test_hosted_generator_shard_files_name_the_provider_and_keep_the_key_out(factory, monkeypatch, tmp_path):
+    monkeypatch.setattr(fleet.runner_security, "arguments", lambda root: ["--security-opt", "apparmor=test"])
     providers, policy, env, chosen, wire_model = fleet.sidecar_files(factory, {"LYCAON_DECIDE_DISABLED": "1"}, 0)
     assert chosen["glm-5.3-flash"] == "fireworks-glm-5-3-flash" and wire_model["glm-5.3-flash"] == "accounts/fireworks/models/glm-5p3-flash"
     assert "api_key_env: FIREWORKS_API_KEY" in providers and "accounts/fireworks/models/glm-5p3-flash" in policy
@@ -325,6 +326,7 @@ def test_a_task_failing_for_its_own_reasons_keeps_the_fleet_going(factory, monke
 
 
 def test_a_stack_shard_starts_in_an_empty_workspace(factory, monkeypatch, tmp_path):
+    monkeypatch.setattr(fleet.runner_security, "arguments", lambda root: ["--security-opt", "apparmor=test"])
     import dataclasses
 
     write_tasks(tmp_path / "tasks", "react-vite", 3)

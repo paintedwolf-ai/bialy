@@ -29,6 +29,22 @@ overdue, and the shard is not driven again.
 
 ## Preflight and live faults
 
+Runner sessions execute as an ordinary user with no capabilities. The entrypoint
+prepares the shard's writable directories, then drops privileges before repository
+setup or application startup. Container security profiles permit the application's
+own user namespaces, mount isolation, and syscall supervision. They retain the
+Docker syscall allowlist and protect system paths through AppArmor; the container
+does not receive host administrative capabilities. AppArmor must be enabled on the
+runner machine. Profiles are content-addressed and loaded before a shard starts.
+
+Container qualification compares representative operations with the same application
+build running directly as an ordinary user. Compare effects, typed outcomes,
+rejections, and model-visible feedback; paths and generated identifiers may differ.
+This comparison must cover the task families admitted to collection. A passing
+scanner probe alone does not establish behavioral fidelity. Unattended approval
+settings and fixed question answers are explicit collection assumptions, and the
+mechanical pilot does not establish equivalence to every human configuration.
+
 Campaign episode collection checks the pinned host's SQLite schema before
 starting a runner. Runs selecting `command-v1` require the command program and
 child-execution fields consumed by grading and export; a missing field produces
