@@ -175,6 +175,54 @@ real ambiguity between tools that do the same job.
 - Checkpoints are chosen by tool plus guide validation loss, so selection
   mostly follows guides. More worker rows of the right kinds, not heavier
   ones, is the worker fix.
+- Retention rows capture later use as positive observational evidence. Missing use
+  is not a negative label. R1 qualification requires verified task truth or an
+  independent judge for every held-out label; unverified hindsight cannot qualify
+  a head. The host records all candidates when `LYCAON_RETENTION_RECORD=all`.
+
+## Retention pilot
+
+The pilot collects observations and replays experimental candidates. It does
+not qualify a compaction head until verified labels and recovery outcomes are
+available. The compaction head remains optional and is not part of the runtime
+baseline.
+
+```bash
+bialy run --run retention-observations --recipes R1 --no-judge --until collect-off \
+  --follow-up-rate 1.0 --follow-ups 3 --task-cap 2 --runners 4 --spend-ceiling 40
+```
+
+Follow-ups collect longer sessions and canonical recovery observations. Missing
+later use is unknown, and successful recall is part of the recovery path. This
+collection run does not train a head.
+
+R1 is an explicit experiment, excluded from the default recipes. Training needs
+verified positive and negative labels in both splits. Negative labels must have
+scenario or judge provenance; repetition and file mutation do not establish
+irrelevance. Unjudged observational rows cannot qualify a head.
+
+The search grid trains the optional retention head and evaluates it on separate
+validation and held-out workspaces. Replay reports a counterfactual token proxy,
+not provider savings, and emits no runtime policy or structural deletion rule.
+A deployed comparison must separately demonstrate provider-reported savings,
+task continuity, and successful recovery. The host's deterministic compaction
+remains complete without the head.
+
+- A run that stops at a failed stage still writes the report; `bialy run`
+  with the same name resumes it. When the host or factory code changed under
+  a run, `bialy fleet reexport --run <name>/fleet-off --lycaon-debug <binary>`
+  rewrites every driven shard's rows from the store it kept, so the pass is
+  never driven twice; `train-host/retention_pilot.sh resume` rebuilds, does
+  that, and continues the run.
+- A prompt that times out is aborted with a two-minute bound; a session that
+  will not stop (a dev server the model left running) is recorded on its task
+  and the shard moves on, instead of holding the runner until the fleet's
+  overdue deadline.
+- Rows from stores the earlier pilots kept export the same way:
+  `lycaon-debug decide export --db <store.db> --retention rows.jsonl --requests requests.jsonl`
+  reconstructs candidates for receipts written before the host recorded
+  them (`reconstructed: true`), so label rates can be read before any paid
+  call.
 
 ## Training hardware
 
@@ -196,3 +244,11 @@ Power-off erases `/scratch`, where a pass writes everything, so archive and
 verify each host's data first, replica-only hosts after the last judge and
 training hosts last. Scaleway bills an instance until it is powered off, and
 its volumes and IPs until deleted.
+
+### Compaction head readiness
+
+Compaction runs compare the trained head with the host's deterministic context policy. Repeated calls and file mutations do not establish that an earlier observation is expendable. Labels require structured task outcomes, explicit need, or an independent schema-constrained judge; absence of a later citation is not a negative label.
+
+The future head ranks eligible inline detail. Canonical transcript retention, recovery scope, coverage boundaries, and baseline context fitting remain host responsibilities. Missing or untrained heads use the complete deterministic policy. A release must demonstrate useful retention decisions across receiver windows and verify recovery of necessary material; increased successful recall alone is not a failure.
+
+The compaction head is not trained or enabled by these changes. Dataset experiments must record the Painted Wolf Code commit, source scenario, writer and judge families, receiver and summarizer budgets, failure injection, and recovery outcome. Evaluation includes unavailable and stalled summarizers and sessions longer than any receiver window.

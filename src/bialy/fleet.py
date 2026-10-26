@@ -494,11 +494,28 @@ def shard_deadline(factory, shard, started):
     return started + 60 * (OVERDUE_FACTOR * prompts * shard_minutes(factory, shard) + OVERDUE_GRACE_MINUTES)
 
 
+# The rows a shard exports beside its training rows: the retention rows and the
+# request rows, each by its own flag and its own file.
+SIDE_ROWS = (("retention", "--retention"), ("requests", "--requests"))
+
+
+def retention_file(rows_path):
+    """The retention rows exported beside a rows file."""
+    return side_file(rows_path, "retention")
+
+
+def side_file(rows_path, kind):
+    return Path("%s.%s" % (rows_path, kind))
+
+
 def export_live(container, shard, out_name, roots=None):
-    """Export rows from a running container's live store into the shard: the sessions
-    rooted at `roots`, or every session the store holds. Returns whether it succeeded."""
-    args = ["docker", "exec", container, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", "/cfg/store.db",
-            "--out", "/shard/" + out_name]
+    """Export rows from a running container's live store into the shard, with the
+    retention and request rows beside them (`<out_name>.retention`,
+    `<out_name>.requests`): the sessions rooted at `roots`, or every session the store
+    holds. Returns whether it succeeded."""
+    args = ["docker", "exec", container, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", "/cfg/store.db", "--out", "/shard/" + out_name]
+    for kind, flag in SIDE_ROWS:
+        args += [flag, "/shard/%s.%s" % (out_name, kind)]
     if roots is not None:
         (shard / (out_name + ".roots")).write_text("".join(r + "\n" for r in roots), encoding="utf-8")
         args += ["--roots", "/shard/%s.roots" % out_name]
@@ -518,6 +535,9 @@ def keep_overdue(shard, exported):
     manifest = shard / "manifest.jsonl"
     entries = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()] if manifest.exists() else []
     rows = [line for line in exported.read_text(encoding="utf-8").splitlines() if line.strip()] if exported.exists() else []
+    side = {kind: side_file(exported, kind) for kind, _ in SIDE_ROWS}
+    side_rows = {kind: [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] if path.exists() else []
+                 for kind, path in side.items()}
     listed = {e["root_session"] for e in entries}
     unlisted = sorted({json.loads(line)["root_session"] for line in rows} - listed)
     finished = {e["task_id"] for e in entries}
@@ -527,13 +547,24 @@ def keep_overdue(shard, exported):
         rows = [line for line in rows if json.loads(line)["root_session"] in listed]
         unlisted = []
     if not rows:
+        exported.unlink(missing_ok=True)
+        for path in side.values():
+            path.unlink(missing_ok=True)
         return False
     with open(manifest, "a", encoding="utf-8") as fh:
         for n, task_id in enumerate(pending):
             root = unlisted[0] if n == 0 and unlisted else None
             fh.write(json.dumps({"task_id": task_id, "root_session": root, "status": "overdue"}) + "\n")
     (shard / "rows.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    # The side rows follow the sessions the rows kept.
+    kept = listed | set(unlisted)
+    for kind, lines in side_rows.items():
+        lines = [line for line in lines if json.loads(line)["root_session"] in kept]
+        if lines:
+            (shard / ("%s.jsonl" % kind)).write_text("\n".join(lines) + "\n", encoding="utf-8")
     exported.unlink()
+    for path in side.values():
+        path.unlink(missing_ok=True)
     return True
 
 
@@ -741,6 +772,9 @@ def salvage(run_dir, into):
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copy2(manifest, dest / "manifest.jsonl")
         shutil.copy2(shard / "salvage-rows.jsonl", dest / "rows.jsonl")
+        for kind, _ in SIDE_ROWS:
+            if side_file(shard / "salvage-rows.jsonl", kind).exists():
+                shutil.copy2(side_file(shard / "salvage-rows.jsonl", kind), dest / ("%s.jsonl" % kind))
         saved += 1
     settled = set()
     for manifest in (run_dir / "shards").glob("*/manifest.jsonl"):
@@ -751,10 +785,38 @@ def salvage(run_dir, into):
     return saved, settled
 
 
+def reexport(run_dir, lycaon_debug):
+    """Export every finished shard's rows again from the store it kept, with the
+    exporter given, replacing the shard's rows, retention, and request files. A label
+    or row-shape change therefore reaches a pass without driving anything; `collect`
+    then reads the new files like any other. Returns the shards exported."""
+    run_dir = Path(run_dir)
+    done = []
+    for shard in sorted((run_dir / "shards").iterdir()):
+        store, manifest = shard / "store.db", shard / "manifest.jsonl"
+        if not store.exists() or not manifest.exists() or not (shard / "rows.jsonl").exists():
+            continue
+        roots = [json.loads(line)["root_session"] for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+        (shard / "roots.txt").write_text("".join(r + "\n" for r in roots if r), encoding="utf-8")
+        args = [str(lycaon_debug), "decide", "export", "--db", str(store), "--roots", str(shard / "roots.txt"), "--out", str(shard / "rows.part")]
+        for kind, flag in SIDE_ROWS:
+            args += [flag, str(shard / ("%s.part" % kind))]
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError("%s: export failed: %s" % (shard.name, result.stderr.strip()[-400:]))
+        for name in ("rows", *(kind for kind, _ in SIDE_ROWS)):
+            os.replace(shard / ("%s.part" % name), shard / ("%s.jsonl" % name))
+        done.append(shard.name)
+    return done
+
+
 def collect(run_dir, pass_name, tasks_dir):
     """Every shard's rows, each carrying its task's metadata, and tasks-driven.jsonl: the
     full specification of every task the run drove, with its outcome, so a release can
-    say exactly which tasks it contains however the run ended."""
+    say exactly which tasks it contains however the run ended. A shard's side rows, the
+    retention rows (retention.jsonl, pw-retention-row/1) and the request rows
+    (requests.jsonl, pw-request-row/1), are collected the same way into
+    run_dir/<kind>.jsonl; a shard driven before the host wrote them contributes none."""
     run_dir = Path(run_dir)
     specs = {}
     for path in Path(tasks_dir).glob("*.jsonl"):
@@ -763,10 +825,9 @@ def collect(run_dir, pass_name, tasks_dir):
                 task = json.loads(line)
                 specs[task["id"]] = task
     out = run_dir / "rows.jsonl"
-    stats = {"rows": 0, "shards": 0, "tasks": 0, "settled": 0}
+    stats = {"rows": 0, "retention_rows": 0, "request_rows": 0, "shards": 0, "tasks": 0, "settled": 0}
     driven = []
-    requests_out = []
-    retention_out = []
+    side_out = {kind: open(run_dir / ("%s.jsonl" % kind), "w", encoding="utf-8") for kind, _ in SIDE_ROWS}
     with open(out, "w", encoding="utf-8") as fh:
         for shard in sorted((run_dir / "shards").iterdir()):
             rows = shard / "rows.jsonl"
@@ -789,28 +850,34 @@ def collect(run_dir, pass_name, tasks_dir):
                     model_of[entry["root_session"]] = specs[entry["task_id"]]["model"]
                 driven.append(dict(specs[entry["task_id"]], outcome={"status": entry["status"], "run": run_dir.name, "shard": shard.name,
                                                                     "pass_name": pass_name, "root_session": entry["root_session"]}))
-            for line in rows.read_text(encoding="utf-8").splitlines():
-                row = json.loads(line)
-                if row["root_session"] not in meta:
-                    raise ValueError("%s: rows from session %s, which the manifest does not list" % (shard.name, row["root_session"]))
-                row["meta"] = meta[row["root_session"]]
-                row["model"] = model_of[row["root_session"]]
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-                stats["rows"] += 1
-            requests_path = shard / "requests.jsonl"
-            if requests_path.exists():
-                for line in requests_path.read_text(encoding="utf-8").splitlines():
-                    if line.strip():
-                        requests_out.append(line)
-            retention_path = shard / "retention.jsonl"
-            if retention_path.exists():
-                for line in retention_path.read_text(encoding="utf-8").splitlines():
-                    if line.strip():
-                        retention_out.append(line)
-    for name, lines in (("requests.jsonl", requests_out), ("retention.jsonl", retention_out)):
-        (run_dir / name).write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+            stats["rows"] += join_rows(shard, rows, meta, model_of, fh)
+            for kind, _ in SIDE_ROWS:
+                path = shard / ("%s.jsonl" % kind)
+                if path.exists():
+                    stats[{"retention": "retention_rows", "requests": "request_rows"}[kind]] += join_rows(shard, path, meta, model_of, side_out[kind])
+    for handle in side_out.values():
+        handle.close()
     with open(run_dir / "tasks-driven.jsonl", "w", encoding="utf-8") as fh:
         for task in driven:
             fh.write(json.dumps(task, ensure_ascii=False) + "\n")
     return out, stats
+
+
+def join_rows(shard, path, meta, model_of, out):
+    """Write one shard's rows with their task's metadata and factory model id; returns how many."""
+    count = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row["root_session"] not in meta:
+            raise ValueError("%s: rows from session %s, which the manifest does not list" % (shard.name, row["root_session"]))
+        row["meta"] = meta[row["root_session"]]
+        if row.get("schema") == "pw-decide-request/1":
+            row["generator_model"] = model_of[row["root_session"]]
+        else:
+            row["model"] = model_of[row["root_session"]]
+        out.write(json.dumps(row, ensure_ascii=False) + "\n")
+        count += 1
+    return count
 

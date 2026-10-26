@@ -298,7 +298,7 @@ def test_hybrid_generator_weights_local_workers_and_sidecar_request_metering(fac
     (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t0", "root_session": "s1", "status": "settled", "meta": {"workspace": "flask"}}) + "\n")
     (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s1", "receipt": 1}) + "\n")
     (shard / "requests.jsonl").write_text(
-        json.dumps({"schema": "pw-decide-request/1", "model": "accounts/fireworks/models/glm-5p3-flash", "input_tokens": 1000000, "output_tokens": 1000000})
+        json.dumps({"schema": "pw-decide-request/1", "root_session": "s1", "model": "accounts/fireworks/models/glm-5p3-flash", "input_tokens": 1000000, "output_tokens": 1000000})
         + "\n"
     )
     fleet.collect(run.path("fleet-off"), "engine-off", tasks_dir)

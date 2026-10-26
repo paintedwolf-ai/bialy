@@ -121,6 +121,9 @@ class Archetype:
     workflow_prompt_timeout: str
     new_files: bool = False
     reference_rate: float = 0.0
+    # The follow-ups a task may carry; every follow-up is a retention decision
+    # with the earlier turns to look back on.
+    max_follow_ups: int = 2
 
     def timeout(self, workflow):
         """The per-prompt budget for one of this archetype's tasks."""
@@ -251,6 +254,12 @@ RUN_DEFAULTS = {
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
     "coderank": {"per_repo": 40},
     "evaluate": {"rows": 500},
+    "judge": {"enabled": True},
+    # The retention head: how its sessions are shaped, how its head is searched, and how
+    # its verdict is read (src/bialy/retention.py).
+    "retention": {"follow_up_rate": None, "follow_ups": None,
+                  "search": {"lr": [2e-4, 5e-4, 1e-3], "pos_weight": [2.0, 6.0], "truth": ["needed", "later"]},
+                  "bootstrap": 500, "min_rows": 20},
     "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
     "custom_model": {"enabled": False, "diagnostic_only": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
@@ -382,6 +391,7 @@ def load():
         out.archetypes.append(Archetype(id=raw["id"], brief=" ".join(raw["brief"].split()), workspace=workspace,
                                         per_workspace=int(raw["per_workspace"]), workflows=workflows,
                                         follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"])),
+                                        max_follow_ups=int(raw.get("max_follow_ups", defaults.get("max_follow_ups", 2))),
                                         prompt_timeout=timeout, workflow_prompt_timeout=max(timeout, workflow_timeout, key=minutes),
                                         new_files=workspace == "stack" or bool(raw.get("new_files", False)),
                                         reference_rate=float(raw.get("reference_rate", 0.0))))

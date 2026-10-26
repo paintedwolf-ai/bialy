@@ -37,6 +37,7 @@ from . import (
     publishing,
     release,
     repos,
+    retention,
     skillreq,
     split,
     tasks,
@@ -44,9 +45,9 @@ from . import (
 )
 
 STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
-          "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "judge_on",
+          "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on",
           "split", "custom_model", "coderank", "release", "train", "evaluate", "release_heads", "report")
-ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "judge_on")
+ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on")
 
 
 class RunError(RuntimeError):
@@ -207,6 +208,7 @@ def scaled_factory(run):
     if unknown:
         raise RunError("run.archetypes names unknown archetypes: %s" % ", ".join(sorted(unknown)))
     archetypes = [a for a in archetypes if not chosen or a.id in chosen]
+    archetypes = retention.shape_archetypes(archetypes, run.setting("retention", {}))
     names = set(run.setting("workspaces") or [])
     return dataclasses.replace(f, models=models, archetypes=archetypes, repos=[r for r in f.repos if not names or r.name in names],
                                stacks=[s for s in f.stacks if not names or s.name in names], run=run.settings)
@@ -216,7 +218,8 @@ def scaled_factory(run):
 
 CHECKOUT_FILES = ("lycaon/cmd/lycaon", "lycaon/cmd/lycaon-debug", "lycaon/cmd/decide-rerank", "lycaon/cmd/opengrep-artifact",
                   "lycaon/internal/decide/native/Cargo.toml", "lycaon/config/gitengine/pin.yaml", "rust-toolchain.toml", "schemas",
-                  "scripts/bialy/train.py", "scripts/bialy/row.schema.json", "scripts/bialy/replay_eval.py", "scripts/bialy/rerank/train_rerank.py")
+                  "scripts/bialy/train.py", "scripts/bialy/row.schema.json", "scripts/bialy/replay_eval.py", "scripts/bialy/rerank/train_rerank.py",
+                  "scripts/bialy/retention-row.schema.json", "scripts/bialy/retention_eval.py")
 
 
 def stage_check(run):
@@ -368,8 +371,20 @@ def corpus(run):
     return json.loads(run.path("corpus.json").read_text(encoding="utf-8"))
 
 
+def recipes(run):
+    return run.setting("train", {}).get("recipes") or []
+
+
+def judging_off(run):
+    """Whether this run passes rows through unjudged: judging is a paid stage only the
+    tool, guide, and skill recipes need."""
+    return not run.setting("judge", {}).get("enabled", True)
+
+
 def stage_skillreq(run):
     """Requests for every skill, written by the writer model; the judges label them later."""
+    if "E4" not in recipes(run):
+        return {"skipped": "E4 is not in run.train.recipes; skill requests are only for the unit-rank head"}
     settings = run.setting("skillreq", {})
     out = run.path("skillreq", "requests.jsonl")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -443,7 +458,7 @@ def collect_pass(run, pass_name):
         stats["engine_states"] = engine_states(out)
         if set(stats["engine_states"]) <= {"abstained/engine unavailable"}:
             raise RunError("every engine-on row says the engine was unavailable; the pilot did not load in the runners")
-    return {"rows": str(out), "stats": stats}
+    return {"rows": str(out), "retention": str(out.parent / "retention.jsonl"), "stats": stats}
 
 
 def engine_states(rows):
@@ -511,10 +526,23 @@ def stage_collect(run):
 
 
 def stage_judge(run):
-    return engine_off_or_skip(run) or judge_rows(run, run.path("fleet-off", "rows.jsonl"), run.path("judged-off.jsonl"))
+    return engine_off_or_skip(run) or judge_or_pass(run, run.path("fleet-off", "rows.jsonl"), run.path("judged-off.jsonl"))
+
+
+def judge_or_pass(run, rows_in, out):
+    """Judge the rows, or with run.judge.enabled off copy them through unjudged, so the
+    split and release stages read the same file either way."""
+    if judging_off(run):
+        shutil.copy2(rows_in, out)
+        return {"skipped": "run.judge.enabled is off; rows pass through unjudged", "judged": str(out)}
+    return judge_rows(run, rows_in, out)
 
 
 def stage_judge_skillreq(run):
+    if "E4" not in recipes(run) or not run.path("skillreq", "requests.jsonl").exists():
+        return {"skipped": "no skill requests were written"}
+    if judging_off(run):
+        return {"skipped": "run.judge.enabled is off; unjudged skill requests train nothing"}
     return judge_rows(run, run.path("skillreq", "requests.jsonl"), run.path("skillreq", "judged.jsonl"), units=("skills",))
 
 
@@ -524,9 +552,18 @@ def engine_on_or_skip(run):
     return None
 
 
+def split_rows(run, out_dir, judged, retention_rows):
+    """The judged rows split into out_dir, and the retention rows split by the same
+    groups into out_dir/retention when any pass wrote them."""
+    out = {"split": str(out_dir), "counts": split.split(run.factory, [str(p) for p in judged], out_dir), "passes": len(judged)}
+    if retention_rows:
+        out["retention"] = split.split(run.factory, [str(p) for p in retention_rows], out_dir / "retention")
+    return out
+
+
 def stage_split_pilot(run):
-    return engine_on_or_skip(run) or engine_off_or_skip(run) or {"split": str(run.path("split-pilot")),
-                                       "counts": split.split(run.factory, [str(run.path("judged-off.jsonl"))], run.path("split-pilot"))}
+    return engine_on_or_skip(run) or engine_off_or_skip(run) or split_rows(run, run.path("split-pilot"), [run.path("judged-off.jsonl")],
+                                                [p for p in (run.path("fleet-off", "retention.jsonl"),) if training.has_rows(p)])
 
 
 def stage_train_pilot(run):
@@ -555,8 +592,14 @@ def stage_engine(run):
 def stage_pilot(run):
     if not run.engine_on:
         return {"skipped": "run.engine_on is off"}
+    # The pilot retention head is chosen here, once the host engine exists to replay
+    # the search on the pilot split; the engine-on pass then drives with it.
+    pilot_search = sorted(run.path("pilot-heads", "search").glob("retention-*.safetensors"))
+    retained = retention_select(run, pilot_search, run.path("split-pilot"), run.path("pilot-heads"), run.path("eval", "retention-pilot")) if pilot_search else {}
     engine_bin = run.path("build", "runner-engine", "bialy") if not build.host_is_runner_platform() else run.path("build", "host-engine", "bialy")
     report = build.pilot(engine_bin, model_dir(run), pilot_heads_dir(run), run.path("build", "pilot"))
+    if retained:
+        report["retention"] = {k: retained.get(k) for k in ("chosen", "fitted", "facts")}
     deadline = int(run.setting("engine_on", {}).get("deadline_ms") or 0)
     tag = run.image("on")
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
@@ -579,16 +622,36 @@ def stage_collect_on(run):
 
 
 def stage_judge_on(run):
-    return engine_on_or_skip(run) or judge_rows(run, run.path("fleet-on", "rows.jsonl"), run.path("judged-on.jsonl"))
+    return engine_on_or_skip(run) or judge_or_pass(run, run.path("fleet-on", "rows.jsonl"), run.path("judged-on.jsonl"))
 
 
 def judged_files(run):
     return [p for p in (run.path("judged-off.jsonl"), run.path("judged-on.jsonl")) if p.exists()]
 
 
+def retention_files(run):
+    """Observational retention rows collected by each pass."""
+    return [p for p in (run.path("fleet-off", "retention.jsonl"), run.path("fleet-on", "retention.jsonl")) if training.has_rows(p)]
+
+
+def stage_compare(run):
+    """The engine-on pass against the engine-off pass over the requests both drove:
+    what the retention head's releases did to prompt tokens, recalls, and repeated
+    calls (retention.compare)."""
+    if not run.engine_on:
+        return {"skipped": "run.engine_on is off"}
+    off = retention.load_rows(run.path("fleet-off", "requests.jsonl"))
+    on = retention.load_rows(run.path("fleet-on", "requests.jsonl"))
+    if not off or not on:
+        return {"skipped": "a pass wrote no request rows; the host that drove it predates them"}
+    comparison = retention.compare(off, on)
+    run.path("compare.json").write_text(json.dumps(comparison, indent=2) + "\n", encoding="utf-8")
+    return {"comparison": comparison, "report": str(run.path("compare.json"))}
+
+
 def stage_split(run):
-    counts = split.split(run.factory, [str(p) for p in judged_files(run)], run.path("split"))
-    return {"split": str(run.path("split")), "counts": counts, "passes": len(judged_files(run))}
+    # The same seed and groups, so a request's retention row lands beside its turn rows.
+    return split_rows(run, run.path("split"), judged_files(run), retention_files(run))
 
 
 def stage_custom_model(run):
@@ -637,15 +700,17 @@ def stage_release(run):
         raise RunError("no tasks-driven.jsonl; the release names every task the run drove")
     agreement = [str(p) + ".agreement.jsonl" for p in judged_files(run) if Path(str(p) + ".agreement.jsonl").exists()]
     pairs = run.path("coderank", "pairs")
+    retention = run.path("split", "retention")
     release.build(run.factory, run.path("split"), version, out, run.checkout / "scripts/bialy/row.schema.json", run.path("corpus.json"),
                   run.setting("code_ref", "HEAD"), agreement=agreement, stages=[str(p) for p in stages], driven=[str(p) for p in driven],
-                  coderank=str(pairs) if pairs.exists() else None, stopping=run.setting("stopping", ""))
+                  coderank=str(pairs) if pairs.exists() else None, stopping=run.setting("stopping", ""),
+                  retention=retention if retention.exists() else None, retention_schema=run.checkout / "scripts/bialy/retention-row.schema.json")
     return {"release": str(out), "version": version, "anchor": str(anchor.path("dataset", version))}
 
 
 def train_heads(run, split_dir, heads_dir, label):
     """Every recipe in run.train.recipes over `split_dir`, into `heads_dir`, within the budget."""
-    settings = run.setting("train", {})
+    settings = dict(run.setting("train", {}), retention=run.setting("retention", {}))
     recipes = settings.get("recipes") or []
     if not recipes:
         return {"skipped": "run.train.recipes is empty"}
@@ -655,7 +720,8 @@ def train_heads(run, split_dir, heads_dir, label):
               "train": split_dir / "train.jsonl", "val": split_dir / "val.jsonl",
               "skillreq_train": judged_skillreq if judged_skillreq.exists() else None,
               "skillreq_eval": training.skillreq_eval(judged_skillreq, run.path("skillreq", "eval.jsonl")) if judged_skillreq.exists() else None,
-              "dumps": run.path("coderank", "dumps") if run.path("coderank", "dumps").exists() else None}
+              "dumps": run.path("coderank", "dumps") if run.path("coderank", "dumps").exists() else None,
+              "retention_train": split_dir / "retention" / "train.jsonl", "retention_val": split_dir / "retention" / "val.jsonl"}
     budget = float(settings.get("max_hours", 24)) * 3600
     started = time.time()
     trained = {}
@@ -677,13 +743,20 @@ def stage_train(run):
 
 def stage_evaluate(run):
     heads_dir = run.path("heads")
+    search = sorted((heads_dir / "search").glob("retention-*.safetensors")) if heads_dir.exists() else []
+    # The retention head is chosen here, from the search, before the launcher that
+    # carries every final head is written.
+    retained = retention_select(run, search, run.path("split"), heads_dir, run.path("eval", "retention")) if search else \
+        {"viability": {"viable": False, "reasons": ["no retention head was trained"], "numbers": {}}}
     trained = {p.stem: str(p) for p in heads_dir.glob("*.safetensors")} if heads_dir.exists() else {}
     if not trained:
-        return {"skipped": "no heads were trained"}
+        return {"skipped": "no heads were trained", "retention": retained}
     launcher = build.launcher(run.path("build", "host-engine", "bialy"), model_dir(run), trained, run.path("build", "launcher.sh"))
     limit = int(run.setting("evaluate", {}).get("rows") or 0)
     evals = {}
-    for name in ("val", "holdout"):
+    # The turn replay asks the turn-load and unit-rank heads; without both it has nothing to score.
+    turn_heads = {"turn-load", "unit-rank"} <= set(trained)
+    for name in ("val", "holdout") if turn_heads else ():
         out = run.path("eval", "%s.json" % name)
         out.parent.mkdir(parents=True, exist_ok=True)
         rows, total = sample_rows(run.path("split", "%s.jsonl" % name), run.path("eval", "%s.sample.jsonl" % name), limit,
@@ -694,8 +767,54 @@ def stage_evaluate(run):
         if result.returncode != 0:
             raise RunError("replay on %s failed: %s" % (name, result.stderr.strip()[-400:]))
         evals[name] = {"report": str(out), "rows": min(total, limit) if limit else total, "of": total}
+    if not turn_heads:
+        evals["skipped"] = "turn-load and unit-rank were not both trained; the turn replay has nothing to score"
     rerank = rerank_evals(run, trained) if "code-rank" in trained else {}
-    return {"evals": evals, "launcher": str(launcher), "rerank": rerank}
+    return {"evals": evals, "launcher": str(launcher), "rerank": rerank, "retention": retained}
+
+
+def retention_select(run, search, split_dir, heads_dir, out_dir):
+    """Every searched retention head replayed on split_dir's validation rows with its
+    policy fitted there, the best fitted objective promoted to heads_dir/retention.safetensors,
+    that head scored on the held-out rows with an interval, and the verdict read from
+    the held-out score and the pass comparison. Everything the choice rests on is
+    written under out_dir."""
+    settings = run.setting("retention", {})
+    val, holdout = split_dir / "retention" / "val.jsonl", split_dir / "retention" / "holdout.jsonl"
+    if not training.has_rows(val):
+        return {"viability": {"viable": False, "reasons": ["no validation retention rows to fit on"], "numbers": {}}}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    env = training.environment(run.factory.root, run.setting("train", {}))
+    reports = {}
+    for head in search:
+        name = head.stem[len("retention-"):]
+        launcher = build.launcher(run.path("build", "host-engine", "bialy"), model_dir(run), {"retention": str(head)}, out_dir / ("%s.launcher.sh" % name))
+        out = out_dir / ("%s.json" % name)
+        args = [sys.executable, "scripts/bialy/retention_eval.py", "--corpus", str(run.path("corpus.json")), "--examples", str(val), "--fit",
+                "--bootstrap", str(int(settings.get("bootstrap") or 500)), "--seed", str(run.setting("seed", 7)), "--json", str(out),
+                "--dump", str(out_dir / ("%s.candidates.jsonl" % name)), "--engine", str(launcher)]
+        if training.has_rows(holdout):
+            args += ["--holdout", str(holdout)]
+        result = subprocess.run(args, cwd=str(run.checkout), capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            raise RunError("retention replay of %s failed: %s" % (name, result.stderr.strip()[-400:]))
+        reports[name] = json.loads(out.read_text(encoding="utf-8"))
+    chosen, objective = retention.select(reports)
+    report = reports[chosen]
+    shutil.copy2(heads_dir / "search" / ("retention-%s.safetensors" % chosen), heads_dir / "retention.safetensors")
+    selection = {"chosen": chosen, "validation_objective_tokens": objective, "fitted": {k: report["fitted"][k] for k in ("drop_below", "confidence_floor")},
+                 "recommendation": report.get("recommendation"),
+                 "search": {name: {"validation_objective_tokens": ((r.get("fitted") or {}).get("tally") or {}).get("objective_tokens"),
+                                   "auc": (r.get("overall") or {}).get("auc"),
+                                   "holdout_objective_per_request": ((r.get("holdout") or {}).get("engine") or {}).get("objective_per_request"),
+                                   "holdout_interval": ((r.get("holdout") or {}).get("bootstrap") or {}).get("engine")}
+                            for name, r in sorted(reports.items())}}
+    (out_dir / "selection.json").write_text(json.dumps(selection, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "decisions-fragment.yaml").write_text((report.get("recommendation") or {}).get("fragment", "") + "\n", encoding="utf-8")
+    comparison = (run.outputs("compare") or {}).get("comparison")
+    return {"chosen": chosen, "report": str(out_dir / ("%s.json" % chosen)), "selection": str(out_dir / "selection.json"),
+            "fragment": str(out_dir / "decisions-fragment.yaml"), "fitted": selection["fitted"], "facts": (report.get("recommendation") or {}).get("facts"),
+            "viability": retention.viability(report, comparison, settings)}
 
 
 def sample_rows(rows, out, limit, seed):
@@ -747,11 +866,17 @@ def stage_release_heads(run):
         return {"skipped": "no heads were trained"}
     version = run.setting("heads_version") or run.name
     dataset_version = run.setting("dataset_version") or run.name
-    evals = run.outputs("evaluate").get("evals") or {}
-    rerank = run.outputs("evaluate").get("rerank") or {}
+    evaluate = run.outputs("evaluate")
+    evals = {name: e["report"] for name, e in (evaluate.get("evals") or {}).items() if isinstance(e, dict) and e.get("report")}
+    rerank = evaluate.get("rerank") or {}
+    retained = evaluate.get("retention") or {}
+    notes = {name: retained[key] for name, key in (("retention", "report"), ("retention-selection", "selection")) if retained.get(key)}
+    if run.path("compare.json").exists():
+        notes["retention-comparison"] = str(run.path("compare.json"))
     commit = (run.outputs("build").get("runner") or {}).get("lycaon_commit") or build.checkout_commit(run.checkout) or "unknown"
     out = run.path("dist", "heads-" + version)
-    heads.build(heads_dir, version, dataset_version, commit, evals, {}, "base checkpoint", rerank, out)
+    heads.build(heads_dir, version, dataset_version, commit, evals, {}, "base checkpoint", rerank, out, notes=notes,
+                retention=retained.get("report"), verdict=retained.get("viability"))
     return {"release": str(out), "version": version, "anchor": str(anchor.path("heads", version))}
 
 
@@ -824,6 +949,7 @@ def stage_report(run, publish=True):
         lines.append("\nIncludes collected runner sidecar usage; live calls can exceed the ceiling before the next stage check.")
     else:
         lines.append("No provider calls were recorded.")
+    lines += retention_report(run)
     dataset = run.outputs("release")
     head_release = run.outputs("release_heads")
     releases = {kind: rel["release"] for kind, rel in (("dataset", dataset), ("heads", head_release)) if rel.get("release")}
@@ -841,6 +967,44 @@ def stage_report(run, publish=True):
         lines.append("Nothing to publish.")
     run.path("REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"report": str(run.path("REPORT.md")), "published": published}
+
+
+def retention_report(run):
+    """The report's retention section: the verdict and every reason, the fitted policy
+    with its held-out interval, each structural fact priced, the pass comparison, and
+    the search table, so the choice can be read without opening the JSON."""
+    retained = run.outputs("evaluate").get("retention") or {}
+    verdict = retained.get("viability")
+    if verdict is None:
+        return []
+    lines = ["", "## Retention head", "", "**%s.**" % ("Viable" if verdict.get("viable") else "Not viable")]
+    lines += ["- " + reason for reason in verdict.get("reasons") or []]
+    numbers = verdict.get("numbers") or {}
+    if retained.get("chosen"):
+        lines += ["", "Chosen `%s`; fitted policy %s; structural facts to release on their own: %s." % (
+            retained["chosen"], json.dumps(retained.get("fitted")), json.dumps(retained.get("facts")))]
+    if numbers:
+        lines += ["", "| Held-out measure | Value |", "|---|---|"]
+        lines += ["| %s | %s |" % (k, json.dumps(v)) for k, v in sorted(numbers.items()) if k != "comparison"]
+    report = json.loads(Path(retained["report"]).read_text(encoding="utf-8")) if retained.get("report") and Path(retained["report"]).exists() else {}
+    structural = ((report.get("holdout") or report.get("overall") or {}).get("structural")) or {}
+    if structural:
+        lines += ["", "| Structural facts | Released | Needed among them | Objective per request |", "|---|---|---|---|"]
+        lines += ["| %s | %s | %s | %s |" % (name, t.get("released"), t.get("needed_released"), t.get("objective_per_request")) for name, t in structural.items()]
+    comparison = numbers.get("comparison") or {}
+    if comparison.get("measures"):
+        lines += ["", "Engine-off against engine-on over %d matched requests (%d with a release):" % (comparison["requests"], comparison.get("released_requests", 0)),
+                  "", "| Per request | Off | On | Delta | Wants |", "|---|---|---|---|---|"]
+        lines += ["| %s | %s | %s | %s | %s |" % (m, v["off"], v["on"], v["delta"], v["wants"]) for m, v in comparison["measures"].items()]
+    selection = json.loads(Path(retained["selection"]).read_text(encoding="utf-8")) if retained.get("selection") and Path(retained["selection"]).exists() else {}
+    if selection.get("search"):
+        lines += ["", "| Search point | Validation objective | AUC | Held-out objective per request | Held-out interval |", "|---|---|---|---|---|"]
+        lines += ["| %s | %s | %s | %s | %s |" % (name, s.get("validation_objective_tokens"), s.get("auc"), s.get("holdout_objective_per_request"), json.dumps(s.get("holdout_interval")))
+                  for name, s in selection["search"].items()]
+    counts = run.outputs("split").get("retention") or {}
+    if counts:
+        lines.append("\nRetention rows by split: %s" % json.dumps({k: v.get("rows") for k, v in counts.items()}))
+    return lines
 
 
 STAGE_FUNCS = {name: globals()["stage_" + name] for name in STAGES}

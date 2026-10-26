@@ -50,8 +50,19 @@ run:
     per_repo: 40                   # written request pairs per repository
   evaluate:
     rows: 500                      # validation and held-out rows each replayed through the host engine; 0 replays every row
+  judge:
+    enabled: true                  # false keeps observational rows unjudged
+  retention:                       # the retention head (src/bialy/retention.py)
+    follow_up_rate: null           # override every archetype's follow-up rate; 1.0 keeps every follow-up, and each is a retention decision
+    follow_ups: null               # override the follow-ups a task may carry (archetypes.yaml defaults.max_follow_ups); longer sessions reach the watermark
+    search:                        # the trainer grid; every head is replayed and the best fitted objective on validation is kept
+      lr: [0.0002, 0.0005, 0.001]
+      pos_weight: [2.0, 6.0]
+      truth: [needed, later]
+    bootstrap: 500                 # resampled rows behind every interval the verdict reads
+    min_rows: 20                   # held-out rows under which no interval is trusted
   train:
-    recipes: [B5, B7G, E4, code-rank]   # turn-load, guide-load, unit-rank, code-rank
+    recipes: [B5, B7G, E4, code-rank]   # retention is an explicit R1 experiment
     device: auto                   # cuda (including ROCm builds of torch), mps, or cpu
     max_hours: 24                  # for all recipes of one training stage together
     torch_index: null              # a torch wheel index; detected from the accelerator when null

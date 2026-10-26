@@ -30,7 +30,8 @@
 defaults:
   prompt_timeout: 120m
   workflow_prompt_timeout: 300m
-  follow_up_rate: 0.3        # share of tasks that continue with one or two follow-ups
+  follow_up_rate: 0.3
+  max_follow_ups: 3
   languages:                 # share of tasks written in another language than English
     other_rate: 0.15
     choices: [es, de, fr, pt, ja, zh, ko, it]
