@@ -26,6 +26,17 @@ def tree(path):
     return result
 
 
+def checkpoint(spec, student, root):
+    model = spec['models'][student]
+    receipt = json.loads((Path(root) / (model['directory'] + '.source.json')).read_text())
+    files = tree(Path(root) / model['directory'])
+    if (receipt.get('schema') != 'pw-student-source/1'
+            or receipt.get('source') != {'repository': model['repository'], 'revision': model['revision']}
+            or receipt.get('files') != files):
+        raise JobError('student checkpoint source or content changed')
+    return files
+
+
 def create(root, spec, student, checkout, models, splits, mirror, device, pilot):
     checkout, models, splits, mirror = map(lambda path: Path(path).resolve(), (checkout, models, splits, mirror))
     revision = subprocess.run(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
@@ -36,8 +47,8 @@ def create(root, spec, student, checkout, models, splits, mirror, device, pilot)
     directory.mkdir(parents=True, exist_ok=False)
     plan = {'schema': 'pw-student-job/1', 'student': student, 'specification': spec, 'specification_sha256': identity(spec),
             'host_commit': revision, 'checkout': str(checkout), 'models': str(models), 'splits': str(splits),
-            'dataset': {name: file_sha256(splits / name) for name in ('train.jsonl', 'val.jsonl', 'holdout.jsonl')},
-            'model': tree(models / spec['models'][student]['directory']), 'device': device, 'pilot': pilot,
+            'dataset': {name: file_sha256(splits / name) for name in ('train.jsonl', 'val.jsonl', 'holdout.jsonl', 'source.json')},
+            'model': checkpoint(spec, student, models), 'device': device, 'pilot': pilot,
             'mirror': str(mirror / directory.name), 'out': str(directory / 'training')}
     write(directory / 'plan.json', plan)
     return directory
@@ -53,8 +64,7 @@ def validate_inputs(plan):
         raise JobError('trainer source changed')
     if any(file_sha256(Path(plan['splits']) / name) != value for name, value in plan['dataset'].items()):
         raise JobError('dataset changed')
-    model_path = Path(plan['models']) / plan['specification']['models'][plan['student']]['directory']
-    if tree(model_path) != plan['model']:
+    if checkpoint(plan['specification'], plan['student'], plan['models']) != plan['model']:
         raise JobError('student checkpoint changed')
 
 
@@ -63,18 +73,26 @@ def validate_result(plan):
     terminal = json.loads((root / 'terminal.json').read_text())
     result = json.loads((root / 'result.json').read_text())
     inputs = json.loads((root / 'inputs.json').read_text())
+    validate_training_inputs(plan, inputs)
     if (terminal.get('schema') != 'pw-training-terminal/1' or terminal.get('status') != 'complete'
             or terminal.get('result_sha256') != file_sha256(root / 'result.json')
             or terminal.get('inputs_sha256') != identity(inputs) or result.get('inputs_sha256') != identity(inputs)
             or result.get('resources', {}).get('status') != 'complete'
-            or result.get('adapter') != tree(root / 'adapter')
-            or inputs.get('model') != plan['model']
-            or inputs.get('config', {}).get('max_length') != plan['specification']['context']['max_sequence_tokens']):
+            or result.get('adapter') != tree(root / 'adapter')):
         raise JobError('training terminal receipt or artifact identity mismatch')
+    return terminal
+
+
+def validate_training_inputs(plan, inputs):
+    expected = {'mode': 'sft', 'targets': plan['specification']['models'][plan['student']]['targets'],
+                'max_length': plan['specification']['context']['max_sequence_tokens'], 'rank': 16,
+                'epochs': 1, 'seed': 7, 'learning_rate': 2e-5, 'beta': 0.1, 'anchor': 0.0,
+                'device': plan['device']}
+    if inputs.get('model') != plan['model'] or any(inputs.get('config', {}).get(key) != value for key, value in expected.items()):
+        raise JobError('training input identity mismatch')
     for key, name in (('train_sha256', 'train.jsonl'), ('validation_sha256', 'val.jsonl'), ('holdout_sha256', 'holdout.jsonl')):
         if inputs.get(key) != plan['dataset'][name]:
             raise JobError('training result used a different dataset')
-    return terminal
 
 
 def train(directory, run=subprocess.run, sleep=time.sleep):

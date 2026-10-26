@@ -95,3 +95,17 @@ def test_delayed_allocation_remains_owned_until_observed_and_removed(tmp_path):
     provider.servers.append(delayed)
     assert Resources(tmp_path, provider, clock=lambda: 221).reap()[0]['state'] == 'released'
     assert not provider.servers
+
+
+def test_controller_recovery_requires_the_same_live_resource(tmp_path):
+    provider = Provider()
+    resources = Resources(tmp_path, provider, clock=lambda: 100)
+    resources.reap()
+    intent = resources.intent({}, 120)
+    resources.allocate(intent)
+    assert resources.recover(intent['token'], 180)['expires_at'] == 280
+    provider.servers.clear()
+    with pytest.raises(ResourceError, match='missing or ambiguous'):
+        resources.recover(intent['token'], 180)
+    with pytest.raises(ResourceError, match='cannot be recovered'):
+        Resources(tmp_path, provider, clock=lambda: 281).recover(intent['token'], 180)

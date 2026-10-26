@@ -32,6 +32,7 @@ def main(argv=None):
     reap.add_argument('--once', action='store_true')
     rent = commands.add_parser('rent')
     rent.add_argument('--configuration', type=Path, required=True)
+    rent.add_argument('--resume', type=Path)
     rent.add_argument('--student', choices=('e4b', '12b'), required=True)
     for name in ('splits', 'source-key', 'out'):
         rent.add_argument('--' + name, type=Path, required=True)
@@ -48,7 +49,7 @@ def main(argv=None):
     elif args.action == 'reap':
         result = reaper.reap(args.configuration, args.once)
     elif args.action == 'rent':
-        result = rental.train(args.configuration, args.student, args.splits, args.source_key, args.out)
+        result = rental.train(args.configuration, args.student, args.splits, args.source_key, args.out, resume=args.resume)
     else:
         result = exporting.export(args.directory, args.llama, args.revision)
     print(json.dumps(result, indent=2))

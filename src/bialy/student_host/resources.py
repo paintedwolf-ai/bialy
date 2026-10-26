@@ -84,6 +84,19 @@ class Resources:
             current['expires_at'] = self.clock() + lease_seconds
             write(path, current)
 
+    def recover(self, token, lease_seconds):
+        with self.locked():
+            path = self.root / (token + '.json')
+            current = json.loads(path.read_text())
+            if current['state'] != 'active' or current['expires_at'] <= self.clock():
+                raise ResourceError('resource lease cannot be recovered')
+            servers = self.provider.find(token)
+            if len(servers) != 1 or servers[0]['id'] != current['server']['id']:
+                raise ResourceError('owned resource is missing or ambiguous')
+            current.update(server=servers[0], expires_at=self.clock() + lease_seconds)
+            write(path, current)
+            return current
+
     def release(self, token):
         with self.locked():
             path = self.root / (token + '.json')

@@ -20,8 +20,11 @@ def fixture(tmp_path):
     model = models / load()['models']['e4b']['directory']
     model.mkdir(parents=True)
     (model / 'config.json').write_text('{}')
+    selected = load()['models']['e4b']
+    write(models / (selected['directory'] + '.source.json'), {'schema': 'pw-student-source/1',
+          'source': {'repository': selected['repository'], 'revision': selected['revision']}, 'files': jobs.tree(model)})
     splits.mkdir()
-    for name in ('train.jsonl', 'val.jsonl', 'holdout.jsonl'):
+    for name in ('train.jsonl', 'val.jsonl', 'holdout.jsonl', 'source.json'):
         (splits / name).write_text(name)
     return checkout, models, splits
 
@@ -75,7 +78,9 @@ def test_complete_receipt_must_bind_dataset_and_adapter(tmp_path):
     root = Path(plan['out'])
     (root / 'adapter').mkdir(parents=True)
     (root / 'adapter/weights').write_text('weights')
-    inputs = {'model': plan['model'], 'config': {'max_length': load()['context']['max_sequence_tokens']},
+    inputs = {'model': plan['model'], 'config': {'max_length': load()['context']['max_sequence_tokens'],
+              'mode': 'sft', 'targets': load()['models']['e4b']['targets'], 'rank': 16, 'epochs': 1,
+              'seed': 7, 'learning_rate': 2e-5, 'beta': 0.1, 'anchor': 0.0, 'device': 'cpu'},
               'train_sha256': plan['dataset']['train.jsonl'], 'validation_sha256': plan['dataset']['val.jsonl'],
               'holdout_sha256': plan['dataset']['holdout.jsonl']}
     write(root / 'inputs.json', inputs)

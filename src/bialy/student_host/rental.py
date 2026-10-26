@@ -1,4 +1,5 @@
 """Lease-owned remote training with continuous checkpoint replication."""
+import fcntl
 import ipaddress
 import json
 import shlex
@@ -8,9 +9,10 @@ import time
 import uuid
 from pathlib import Path
 
-from .jobs import JobError, validate_inputs, validate_result
+from .jobs import JobError, tree, validate_inputs, validate_result, validate_training_inputs
 from .reaper import provider
 from .resources import Resources, write
+from .specification import identity
 from .transfer import checkpoints
 
 SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
@@ -86,24 +88,63 @@ class Renewal:
 
 
 def collect_checkpoint(remote, remote_directory, destination):
+    probe = ('import json,pathlib; p=pathlib.Path(' + repr(remote_directory) + '); '
+             'i=p/"training/inputs.json"; print(json.dumps({"plan":json.loads((p/"plan.json").read_text()), '
+             '"inputs":json.loads(i.read_text()) if i.exists() else None}))')
+    snapshot = json.loads(remote.command(['python3', '-c', probe]))
+    if snapshot['inputs'] is None:
+        return []
+    validate_training_inputs(snapshot['plan'], snapshot['inputs'])
+    binding = Path(destination) / 'checkpoint-inputs.json'
+    if binding.exists() and json.loads(binding.read_text()) != snapshot:
+        raise JobError('remote checkpoint inputs changed')
+    write(binding, snapshot)
     incoming = Path(destination) / 'incoming'
     remote.receive(remote_directory + '/training/checkpoints/', incoming)
-    return checkpoints(incoming, Path(destination) / 'checkpoints')
+    return checkpoints(incoming, Path(destination) / 'checkpoints', identity(snapshot['inputs']))
 
 
-def train(configuration_path, student, splits, source_key, out, *, sleep=time.sleep):
+def train(configuration_path, student, splits, source_key, out, *, resume=None, sleep=time.sleep):
+    destination = Path(resume) if resume else Path(out) / (student + "-" + uuid.uuid4().hex)
+    if not resume:
+        destination.mkdir(parents=True, exist_ok=False)
+    with (destination / ".controller.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise JobError("another controller owns this rental") from exc
+        try:
+            return train_owned(configuration_path, student, splits, source_key, destination, resume, sleep)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def train_owned(configuration_path, student, splits, source_key, destination, resume, sleep):
     configuration = json.loads(Path(configuration_path).read_text())
     resources = Resources(configuration['registry'], provider(configuration))
-    destination = Path(out) / (student + '-' + uuid.uuid4().hex)
-    destination.mkdir(parents=True, exist_ok=False)
-    record = resources.intent(configuration['rental'], 300)
-    write(destination / 'resource.json', record)
-    outcome = {'schema': 'pw-rented-training/1', 'student': student, 'token': record['token'], 'status': 'running'}
-    write(destination / 'outcome.json', outcome)
+    binding = {'configuration': identity(configuration), 'student': student, 'splits': tree(splits)}
+    if resume:
+        if json.loads((destination / 'binding.json').read_text()) != binding:
+            raise JobError('rental restart inputs changed')
+        record = json.loads((destination / 'resource.json').read_text())
+        outcome = json.loads((destination / 'outcome.json').read_text())
+        if outcome['status'] == 'complete' and outcome.get('cleanup') == 'confirmed':
+            plan = json.loads((destination / 'job/plan.json').read_text())
+            validate_inputs(plan)
+            validate_result(plan)
+            return {'directory': str(destination), **outcome}
+        if outcome['status'] != 'running':
+            raise JobError('rental has a terminal outcome')
+    else:
+        write(destination / 'binding.json', binding)
+        record = resources.intent(configuration['rental'], 300)
+        write(destination / 'resource.json', record)
+        outcome = {'schema': 'pw-rented-training/1', 'student': student, 'token': record['token'], 'status': 'running'}
+        write(destination / 'outcome.json', outcome)
     try:
         with Renewal(resources, record['token'], 300) as renewal:
             try:
-                allocation = resources.allocate(record)
+                allocation = resources.recover(record['token'], 300) if resume else resources.allocate(record)
             except (ConnectionError, subprocess.TimeoutExpired):
                 allocation = resources.allocate(record)
             write(destination / 'resource.json', allocation)
@@ -121,22 +162,25 @@ def train(configuration_path, student, splits, source_key, out, *, sleep=time.sl
                     sleep(10)
             if not ready:
                 raise JobError('rental did not become reachable')
-            bootstrap(remote, configuration)
-            renewal.check()
-            remote.command(['mkdir', '-p', '/scratch/data', '/scratch/private', '/scratch/runs', '/scratch/spool'])
-            remote.upload(str(Path(splits)) + '/', '/scratch/data/')
-            remote.upload(source_key, '/scratch/private/source.key')
-            remote.command(['chmod', '600', '/scratch/private/source.key'])
-            prefix = ['/root/.local/bin/uv', 'run', '--project', '/scratch/bialy', '--locked', 'python', '-m', 'bialy.student_host']
-            created = json.loads(remote.command([*prefix, 'create', '--student', student, '--root', '/scratch/runs',
-                                                 '--checkout', '/scratch/host', '--models', '/scratch/models',
-                                                 '--splits', '/scratch/data', '--mirror', '/scratch/spool']))
-            remote_directory = created['directory']
-            write(destination / 'remote.json', {'host': remote.host, 'directory': remote_directory})
-            command = shlex.join(['env', 'PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-                                 'PW_TRAINING_SOURCE_KEY=/scratch/private/source.key', *prefix, 'train', remote_directory])
-            script = 'nohup ' + command + ' >' + shlex.quote(remote_directory + '/launcher.log') + ' 2>&1 </dev/null &'
-            remote.command(['bash', '-lc', script])
+            if resume:
+                remote_directory = json.loads((destination / 'remote.json').read_text())['directory']
+            else:
+                bootstrap(remote, configuration)
+                renewal.check()
+                remote.command(['mkdir', '-p', '/scratch/data', '/scratch/private', '/scratch/runs', '/scratch/spool'])
+                remote.upload(str(Path(splits)) + '/', '/scratch/data/')
+                remote.upload(source_key, '/scratch/private/source.key')
+                remote.command(['chmod', '600', '/scratch/private/source.key'])
+                prefix = ['/root/.local/bin/uv', 'run', '--project', '/scratch/bialy', '--locked', 'python', '-m', 'bialy.student_host']
+                created = json.loads(remote.command([*prefix, 'create', '--student', student, '--root', '/scratch/runs',
+                                                     '--checkout', '/scratch/host', '--models', '/scratch/models',
+                                                     '--splits', '/scratch/data', '--mirror', '/scratch/spool']))
+                remote_directory = created['directory']
+                write(destination / 'remote.json', {'host': remote.host, 'directory': remote_directory})
+                command = shlex.join(['env', 'PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                     'PW_TRAINING_SOURCE_KEY=/scratch/private/source.key', *prefix, 'train', remote_directory])
+                script = 'nohup ' + command + ' >' + shlex.quote(remote_directory + '/launcher.log') + ' 2>&1 </dev/null &'
+                remote.command(['bash', '-lc', script])
             transport_failures = 0
             while True:
                 renewal.check()
