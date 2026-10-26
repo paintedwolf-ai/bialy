@@ -41,5 +41,5 @@ jobs:
           BIALY_HF_MODEL_REPO: ${{ vars.HF_MODEL_REPO }}
         run: uv run bialy check
 
-      - name: Runner scripts
-        run: shellcheck runner/*.sh
+      - name: Runner and training-host scripts
+        run: shellcheck runner/*.sh && shellcheck -x train-host/student/*.sh

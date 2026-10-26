@@ -460,3 +460,26 @@ and runtime evidence are in the `20260929-release` archive.
 The initial independent-tool head still misses useful preloads on many clear
 requests; request retrieval remains the main recovery path. No new generated
 examples or hosted judgments were used in this final control experiment.
+
+## Student
+
+`student/` trains the custom coordinator student with the Painted Wolf Code
+trainer (`scripts/bialy/custom_model/` at a recorded commit) over the rows a
+`custom_model` run produces. Example `run:` sections for qualification, smoke,
+and the two halves of a collection are in `config/runs/`.
+
+The scripts name roles, never machines or people. Pinned inputs are in
+`student/pins.env`. This deployment's settings go in `student/student.local.env`,
+copied from `student.example.env`; git ignores it. The training host is an SSH
+alias from your own `~/.ssh/config`, which supplies its address, user, and key.
+
+| Script | Runs on | Does |
+|---|---|---|
+| `setup.sh` | training host | Installs the toolchain, serving image, llama.cpp CPU tools, both repositories, released heads, the student checkpoint and its inventory, the trainer environment, and optionally an external teacher and a restricted tunnel key |
+| `pilot.sh RUN` | training host | Trains on a run's qualified rows with a planned pause and a hard kill, resumes, merges, converts to GGUF, and loads it |
+| `sft-scaleway.sh RUN SPLIT_DIR HOST_COMMIT` | your machine | Rents a GPU server, trains there, returns the adapter run to the training host, and deletes the server with its volumes and IP on every exit |
+
+`tests/test_identity.py` refuses home directories, logins on real hosts, and
+private addresses outside the factory network in tracked files. List your own
+host and user names in `config/identity.local.txt`, which git ignores, to have
+the tests refuse those too.

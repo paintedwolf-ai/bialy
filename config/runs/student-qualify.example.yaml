@@ -1,0 +1,33 @@
+# The `run:` section of config/factory.yaml for a student qualification pass:
+# one task of every archetype on one repository and one held-out stack, driven
+# with released heads. Set host_commit to the clean host commit the runners are
+# built from.
+run:
+  lycaon_checkout: ../paintedwolf-code
+  generators: [deepseek-v4.1-flash]
+  local_workers_only: false
+  judges: [deepseek-v4.1-flash, glm-5.3-flash]
+  runners: 5
+  task_cap: 1
+  task_timeout: 45m
+  tasks_per_runner: 1
+  preflight: {enabled: true, timeout_seconds: 300}
+  fail_fast: {enabled: true, summary_length_limit: 2, capture_turn_limit: 3}
+  workspaces: [flask, vue-vite]    # one repository and one held-out stack, so the holdout split is nonempty
+  spend_ceiling_usd: 10
+  scanner: pinned
+  engine_on:
+    enabled: true
+    deadline_ms: 120000
+    heads: /scratch/heads/open1-b5-e4-bialy   # released heads: no engine-off pass
+  custom_model:
+    enabled: true
+    epoch: qualify-1
+    tool_surface: legacy
+    host_commit: <host commit>
+    quality_judge: true
+    student: gemma-4-e4b-it
+    teacher: gemma-4-26b-a4b-it-q4
+    preload_from_judge: false
+    shadow: false
+    repair: false
