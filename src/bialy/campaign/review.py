@@ -24,6 +24,14 @@ REVIEW_SCHEMA = {
 }
 
 
+def review_schema(evidence):
+    return {**REVIEW_SCHEMA, 'properties': {
+        **REVIEW_SCHEMA['properties'],
+        'evidence_ids': {'type': 'array', 'minItems': 1,
+                         'items': {'type': 'string', 'enum': list(dict.fromkeys(evidence))}},
+    }}
+
+
 class Reviewers:
     def __init__(self, journal, factory, reviewer_slots, seed=7):
         self.journal, self.factory, self.seed = journal, factory, seed
@@ -37,13 +45,13 @@ class Reviewers:
 
     def identity(self, model):
         return digest({'model': model.id, 'revision': model.revision, 'family': model.family,
-                       'system': SYSTEM, 'schema': REVIEW_SCHEMA, 'seed': self.seed})
+                       'system': SYSTEM, 'schema': REVIEW_SCHEMA, 'evidence_binding': 'provided_receipt_enum', 'seed': self.seed})
 
     def ask(self, model, payload):
         answer = self.factory.chats(model)[0].turn([
             {'role': 'system', 'content': SYSTEM},
             {'role': 'user', 'content': canonical({**payload, 'dimensions': list(DIMENSIONS)})},
-        ], seed=self.seed, max_tokens=4096, schema=REVIEW_SCHEMA)
+        ], seed=self.seed, max_tokens=4096, schema=review_schema(payload['evidence_ids']))
         if answer.get('tool_calls'):
             raise CampaignFault('episode_judge_tool_call')
         try:

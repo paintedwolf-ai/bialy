@@ -5,7 +5,7 @@ import pytest
 
 from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal
-from bialy.campaign.review import REVIEW_SCHEMA, Reviewers
+from bialy.campaign.review import Reviewers, review_schema
 
 
 def controls():
@@ -20,7 +20,7 @@ class Factory:
         return SimpleNamespace(id=name, revision='revision', family=name, roles=['judge'])
     def chats(self, model):
         def turn(messages, **kwargs):
-            assert kwargs['schema'] == REVIEW_SCHEMA
+            assert kwargs['schema'] == review_schema(json.loads(messages[1]['content'])['evidence_ids'])
             payload = json.loads(messages[-1]['content'])
             self.calls.append((model.id, payload))
             verdict = 'pass' if model.id in self.bad else payload.get('fixture', 'pass')
