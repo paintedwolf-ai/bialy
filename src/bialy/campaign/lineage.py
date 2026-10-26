@@ -18,6 +18,8 @@ class Lineage:
           partition TEXT NOT NULL, family TEXT NOT NULL, source_class TEXT NOT NULL,
           spec TEXT NOT NULL, spec_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS lineage_freeze(id INTEGER PRIMARY KEY CHECK(id=1), digest TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS task_sessions(epoch TEXT NOT NULL, session_id TEXT NOT NULL,
+          task_id TEXT NOT NULL REFERENCES tasks(id), PRIMARY KEY(epoch,session_id));
         """)
 
     def roots(self, specifications):
@@ -58,6 +60,26 @@ class Lineage:
         if row is None:
             raise CampaignFault("unregistered_task")
         return dict(row)
+
+    def bind_session(self, epoch, session_id, task_id):
+        if not self.db.execute("SELECT 1 FROM lineage_freeze").fetchone():
+            raise CampaignFault("task_bank_not_frozen")
+        self.task(task_id)
+        if not epoch or not session_id:
+            raise CampaignFault("invalid_session_identity")
+        with self.db:
+            prior = self.db.execute("SELECT task_id FROM task_sessions WHERE epoch=? AND session_id=?",
+                                    (epoch, session_id)).fetchone()
+            if prior and prior[0] != task_id:
+                raise CampaignFault("session_task_changed")
+            self.db.execute("INSERT OR IGNORE INTO task_sessions VALUES(?,?,?)", (epoch, session_id, task_id))
+
+    def session_task(self, epoch, session_id):
+        row = self.db.execute("SELECT task_id FROM task_sessions WHERE epoch=? AND session_id=?",
+                              (epoch, session_id)).fetchone()
+        if row is None:
+            raise CampaignFault("unregistered_session")
+        return self.task(row[0])
 
     def descendant(self, task_id, parent_id, specification):
         if not self.db.execute("SELECT 1 FROM lineage_freeze").fetchone():
