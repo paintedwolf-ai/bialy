@@ -45,7 +45,7 @@ def examples(number):
                          "raise RuntimeError('publication failed after journal append')\n"},
             f"assert Path('journal.txt').read_text() == {token + chr(10)!r}\nassert Path('result.txt').read_text().strip() == {token!r}\n"),
         'selection_miss': (
-            'Inspect payload.json and create summary.json containing its item count and sum. Find the capabilities you need, '
+            'Inspect payload.json and create summary.json with exactly two fields: count for its item count and sum for its sum. Find the capabilities you need, '
             'then verify the generated JSON against the input.',
             {'payload.json': json.dumps({'items': [number, 2, 3]}) + '\n'},
             f"assert json.loads(Path('summary.json').read_text()) == {{'count':3,'sum':{number + 5}}}\n"),

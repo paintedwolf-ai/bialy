@@ -77,6 +77,7 @@ def test_pilot_composition_uses_only_the_declared_teacher(tmp_path, monkeypatch)
            'corpus': str(corpus), 'server_image': 'server'}
     journal = Journal(tmp_path / 'journal', {'configuration': cfg})
     stages, _ = compose(journal, cfg)
+    assert stages['teacher_baseline'].repetitions == 2
     factory = stages['host_qualification'].run.factory
     assert [model.id for model in factory.generators()] == cfg['teachers']
     assert factory.generators()[0].hosted is not None

@@ -156,7 +156,7 @@ def compose(journal, cfg):
     def assemble(manifests, destination, minimum):
         return dataset.assemble(journal, lineage, manifests, cfg['checkout'], cfg['host_commit'], specification, destination, minimum)
     handlers = {'host_qualification': Host(run, cfg, teachers), 'reviewer_qualification': ReviewerQualification(reviewers),
-                'teacher_baseline': TeacherBaseline(journal, lineage, driver, teachers, minimum_tasks=1, repetitions=1),
+                'teacher_baseline': TeacherBaseline(journal, lineage, driver, teachers, minimum_tasks=1, repetitions=2),
                 'collection_pilot': Collection(journal, lineage, driver, exports, assemble, True,
                                                minimum={'train': 8, 'validation': 8, 'system_test': 8})}
     plan = {'tasks': [{'id': task['id'], 'family': task['family'], 'spec_hash': digest(task)}
