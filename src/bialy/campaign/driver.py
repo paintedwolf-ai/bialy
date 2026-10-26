@@ -9,7 +9,7 @@ import yaml
 
 from .. import fleet
 from ..provenance import file_sha256
-from . import host_facts, oracle
+from . import evidence_reader, host_facts, oracle
 from .containers import Container
 from .episodes import Episodes
 from .execution import atomic_json
@@ -121,13 +121,7 @@ class EpisodeDriver:
         epoch = self.factory_run.setting('custom_model')['epoch']
         checksum = file_sha256(store)
         facts_path = directory / 'host-evidence.json'
-        if not facts_path.exists():
-            result = self.process(['docker', 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-                '-v', str(shard.resolve()) + ':/capture:ro', '-v', str((work / 'work' / workspace.name).resolve()) + ':/project:ro',
-                '--entrypoint', '/opt/bialy/bin/lycaon-debug', inputs['host']['image'], 'eval', 'evidence',
-                '--capture', '/capture', '--session', root, '--project', '/project'], check=True, capture_output=True, text=True)
-            atomic_json(facts_path, json.loads(result.stdout))
-        facts = json.loads(facts_path.read_text())
+        facts = evidence_reader.read(shard, work / 'work' / workspace.name, root, inputs['host']['image'], facts_path, self.process)
         sessions = host_facts.members(facts, root)
         self.lineage.bind_session(epoch, root, task['id'])
         for session in sessions:
