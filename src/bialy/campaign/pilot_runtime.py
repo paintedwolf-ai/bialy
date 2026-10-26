@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .. import config, custom_model_run, preflight
+from .. import config, custom_model_run, faults, preflight
 from ..provenance import file_sha256
 from ..run import Run
 from ..student_host.specification import load, serving
@@ -43,7 +43,10 @@ class Host:
         if image['Config'].get('Labels', {}).get('pw.host_commit') != cfg['host_commit']:
             raise CampaignFault('pilot_runner_source_mismatch')
         path = self.run.path('preflight-off', 'report.json')
-        report = json.loads(path.read_text()) if path.exists() else preflight.qualify(self.run, 'off')
+        try:
+            report = json.loads(path.read_text()) if path.exists() else preflight.qualify(self.run, 'off')
+        except faults.RunFault as exc:
+            raise CampaignFault(exc.code, details={'shard': exc.shard}) from exc
         if report['image_id'] != image['Id'] or report['settings_sha256'] != digest(self.run.settings):
             raise CampaignFault('pilot_host_preflight_changed')
         result = {'image': image['Id'], 'source': source, 'preflight_sha256': file_sha256(path),

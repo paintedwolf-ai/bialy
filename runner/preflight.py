@@ -153,6 +153,19 @@ class Fixture(BaseHTTPRequestHandler):
                                         "usage": {"prompt_tokens": 32, "completion_tokens": 32, "total_tokens": 64}}).encode())
 
 
+def retain_store(source=Path('/cfg/store.db'), destination=Path('/shard/preflight-store.db')):
+    if not source.is_file():
+        return False
+    try:
+        with sqlite3.connect(source.resolve().as_uri() + '?mode=ro', uri=True) as original:
+            with sqlite3.connect(destination) as retained:
+                original.backup(retained)
+        destination.chmod(0o600)
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def main():
     try:
         if sys.argv[1] == "fixture":
@@ -166,7 +179,7 @@ def main():
     except Exception as exc:
         # Provider bodies and credentials never enter the report.
         code = str(exc) if isinstance(exc, ProbeFailure) else "preflight_probe_error"
-        Path("/shard/preflight.json").write_text(json.dumps({"status": "failed", "code": code, "error_type": type(exc).__name__}) + "\n")
+        Path("/shard/preflight.json").write_text(json.dumps({"status": "failed", "code": code, "error_type": type(exc).__name__, "store_retained": retain_store()}) + "\n")
         return 1
     return 0
 

@@ -208,3 +208,21 @@ def test_preflight_requires_receipt_admission_not_just_kept_payloads(factory, tm
     else:
         with pytest.raises(faults.RunFault, match="receipt_not_accepted"):
             preflight.verify_receipts(run, shard)
+
+
+def test_failed_preflight_retains_consistent_private_store(tmp_path):
+    import sqlite3
+    spec = importlib.util.spec_from_file_location('retained_preflight', Path(__file__).parents[1] / 'runner/preflight.py')
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    source, destination = tmp_path / 'store.db', tmp_path / 'retained.db'
+    assert not probe.retain_store(source, destination)
+    with sqlite3.connect(source) as db:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE facts(value TEXT)')
+        db.execute("INSERT INTO facts VALUES('failure')")
+        db.commit()
+        assert probe.retain_store(source, destination)
+    with sqlite3.connect(destination) as db:
+        assert db.execute('SELECT value FROM facts').fetchone()[0] == 'failure'
+    assert destination.stat().st_mode & 0o777 == 0o600
