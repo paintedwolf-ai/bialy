@@ -172,7 +172,7 @@ status to `run.json` there; a failed stage stops the run with its error in
 `REPORT.md`, and the next invocation starts from it.
 
 - `build` cross-compiles `lycaon`, `lycaon-debug`, and `decide-rerank` for the
-  runners and assembles the engine payload (schemas, the pinned git, the
+  runners, builds `pw-document-core` from the same checkout, and assembles the engine payload (schemas, the pinned git, the
   headless browser, Opengrep) from the checkout; `engine` builds the decision
   engine for this host with cargo. The checkout pins Opengrep releases per
   platform, including linux/amd64, and stages the pinned one at
@@ -214,6 +214,11 @@ not. To leave a pass running through logouts, sleep, and reboots, install
 
 On the GPU host (Ubuntu with NVIDIA drivers, Docker, and the CUDA toolkit
 that vLLM's kernels compile against):
+
+The runner binary directory must also contain `pw-document-core`. Build it from
+the same Painted Wolf Code commit for Linux/amd64 using `./task build:document-core`
+on that platform, then copy the printed artifact into the binary directory.
+Preflight runs its confined edit, restore, and undo diagnostic before paid driving.
 
 ```bash
 # The engine the runners carry: Painted Wolf Code built from a clean commit.
