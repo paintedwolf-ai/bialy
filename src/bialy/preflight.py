@@ -37,7 +37,7 @@ def run_phase(run, pass_name, phase, pilot):
     if custom.get("enabled"):
         serving = custom["student_serving"]
         environment.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"],
-                           PW_TRAINING_STUDENT_PROVIDER=serving["provider"], PW_TRAINING_STUDENT_MODEL=serving["model"])
+                           PW_TRAINING_STUDENTS=json.dumps([{"provider": serving["provider"], "model": serving["model"]}]))
     providers, policy, _, chosen, models = fleet.sidecar_files(run.factory, environment, 0)
     if phase == "fixture":
         teacher = run.factory.generators()[0]

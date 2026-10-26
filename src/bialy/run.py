@@ -423,7 +423,7 @@ def plan_pass(run, pass_name, pilot):
     if custom.get("enabled"):
         serving = custom["student_serving"]
         decide_env.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"],
-                          PW_TRAINING_STUDENT_PROVIDER=serving["provider"], PW_TRAINING_STUDENT_MODEL=serving["model"])
+                          PW_TRAINING_STUDENTS=json.dumps([{"provider": serving["provider"], "model": serving["model"]}]))
     if (run_dir / "shards").exists():
         # A plan stage runs again only when its pass is being redone, so earlier shards
         # of the pass are stale; containers still running are kept and adopted.
