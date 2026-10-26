@@ -97,7 +97,7 @@ class Serving:
     def access(self, plan, enabled):
         if self.configuration['gateway'] == '127.0.0.1':
             return
-        rule = ['INPUT', '-i', 'br-' + self.configuration['network'], '-d', self.configuration['gateway'],
+        rule = ['INPUT', '-i', 'br-' + self.configuration['name'], '-d', self.configuration['gateway'],
                 '-p', 'tcp', '--dport', str(plan['port']), '-m', 'comment', '--comment', plan['name'], '-j', 'ACCEPT']
         prefix = self.configuration.get('firewall_prefix', ['sudo', '-n']) + ['iptables']
         found = self.run([*prefix, '-C', *rule], capture_output=True, text=True)

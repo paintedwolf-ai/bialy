@@ -13,7 +13,7 @@ CONTEXT = {'max_sequence_tokens': 65536, 'thinking': False, 'truncation': 'forbi
 def fixture(tmp_path):
     model = tmp_path / 'model.gguf'
     model.write_bytes(b'model')
-    cfg = {'image': 'sha256:server', 'network': 'private', 'gateway': '127.0.0.1'}
+    cfg = {'image': 'sha256:server', 'name': 'private', 'gateway': '127.0.0.1'}
     calls, container = [], {'state': None}
     def run(args, **kwargs):
         calls.append(args)
@@ -83,3 +83,24 @@ def test_unhealthy_server_returns_typed_failure_and_still_stops(tmp_path):
         with serving.session(model, file_sha256(model), CONTEXT, 'student'):
             pytest.fail('unhealthy server used')
     assert container['state'] is None
+
+
+def test_firewall_rule_is_narrow_and_only_removes_its_exact_rule(tmp_path):
+    from types import SimpleNamespace
+    calls = []
+    present = False
+    def process(args, **kwargs):
+        nonlocal present
+        calls.append(args)
+        if '-C' in args:
+            return SimpleNamespace(returncode=0 if present else 1)
+        present = '-I' in args
+        return SimpleNamespace(returncode=0)
+    server = Serving(tmp_path, {'name': 'bialy', 'gateway': '172.30.0.1'}, run=process)
+    plan = {'port': 12345, 'name': 'bialy-student-one'}
+    server.access(plan, True)
+    server.access(plan, True)
+    server.access(plan, False)
+    assert sum('-I' in call for call in calls) == 1
+    assert sum('-D' in call for call in calls) == 1
+    assert all('br-bialy' in call and '12345' in call and 'bialy-student-one' in call for call in calls)
