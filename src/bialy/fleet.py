@@ -12,6 +12,7 @@ to the run's ledger first, and cleanup touches only ledger entries.
 import json
 import os
 import random
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -256,7 +257,7 @@ def sidecar_files(factory, decide_env, lane):
     # through the API after the sidecar starts. The names travel, never the keys.
     hosted = ",".join("%s:%s" % (chosen[m.id], m.hosted["key_env"]) for m in gens if m.hosted)
     lines = dict(decide_env, BIALY_HOSTED_PROVIDERS=hosted) if hosted else dict(decide_env)
-    env = "\n".join("%s=%s" % kv for kv in sorted(lines.items()))
+    env = "\n".join("%s=%s" % (key, shlex.quote(str(value))) for key, value in sorted(lines.items()))
     return "\n".join(providers) + "\n", "\n".join(policy) + "\n", env + "\n", chosen, wire_model
 
 

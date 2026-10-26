@@ -496,3 +496,14 @@ def test_a_hosted_model_drives_at_its_configured_reasoning_effort(factory):
     assert "models: [{id: accounts/fireworks/models/glm-5p3-flash, reasoning_effort: none}]" in providers
     providers, *_ = fleet.sidecar_files(factory, {}, 0)
     assert "models: [{id: accounts/fireworks/models/glm-5p3-flash}]" in providers
+
+
+def test_student_capture_json_survives_shell_environment_loading(tmp_path, factory):
+    students = [{'provider': 'student', 'model': 'e4b'}, {'provider': 'student', 'model': '12b'}]
+    value = json.dumps(students)
+    _, _, environment, _, _ = fleet.sidecar_files(factory, {'PW_TRAINING_STUDENTS': value}, 0)
+    path = tmp_path / 'sidecar.env'
+    path.write_text(environment)
+    result = subprocess.run(['bash', '-c', '. "$1"; printf "%s" "$PW_TRAINING_STUDENTS"', 'fixture', str(path)],
+                            check=True, text=True, capture_output=True)
+    assert json.loads(result.stdout) == students
