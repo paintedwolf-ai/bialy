@@ -9,7 +9,11 @@ from bialy.student_host.specification import identity
 
 
 def test_restart_observes_existing_worker_without_launching_again(tmp_path, monkeypatch):
-    config = {'registry': str(tmp_path / 'registry')}
+    config = {'registry': str(tmp_path / 'registry'), 'profile': 'test', 'project': 'project', 'zone': 'zone',
+              'host_repository': 'https://example.invalid/host.git', 'host_commit': 'a' * 40,
+              'bialy_repository': 'https://example.invalid/bialy.git', 'bialy_commit': 'b' * 40,
+              'host_checkout': str(tmp_path / 'host'), 'models': str(tmp_path / 'models'),
+              'rental': {'type': 'gpu', 'image': 'image', 'root_volume': 'volume'}}
     config_path = tmp_path / 'configuration.json'
     write(config_path, config)
     splits = tmp_path / 'splits'

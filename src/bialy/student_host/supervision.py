@@ -19,6 +19,8 @@ def train(directory):
     heartbeat.start()
     try:
         return jobs.train(directory)
+    except jobs.JobBusy:
+        raise
     except Exception as exc:
         path = directory / 'execution.json'
         state = json.loads(path.read_text()) if path.exists() else {'attempts': 0}

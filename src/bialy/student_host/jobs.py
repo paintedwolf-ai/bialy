@@ -15,6 +15,10 @@ class JobError(RuntimeError):
     pass
 
 
+class JobBusy(JobError):
+    pass
+
+
 def tree(path):
     path = Path(path)
     files = list(path.rglob('*'))
@@ -101,7 +105,7 @@ def train(directory, run=subprocess.run, sleep=time.sleep):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise JobError('another controller owns this training job') from exc
+            raise JobBusy('another controller owns this training job') from exc
         try:
             return train_owned(directory, run, sleep)
         finally:

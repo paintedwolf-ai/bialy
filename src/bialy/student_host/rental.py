@@ -19,6 +19,27 @@ SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
        '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20', '-o', 'ServerAliveCountMax=3']
 
 
+def validate_configuration(configuration):
+    required = {'profile', 'project', 'zone', 'registry', 'host_repository', 'host_commit',
+                'bialy_repository', 'bialy_commit', 'host_checkout', 'models', 'rental'}
+    if set(configuration) != required:
+        raise JobError('rental configuration fields do not match the deployment contract')
+    for name in required - {'rental'}:
+        if not isinstance(configuration[name], str) or not configuration[name]:
+            raise JobError('rental configuration value is missing: ' + name)
+    for name in ('host_commit', 'bialy_commit'):
+        value = configuration[name]
+        if len(value) != 40 or any(char not in '0123456789abcdef' for char in value):
+            raise JobError('remote source must be pinned to a full commit')
+    for name in ('registry', 'host_checkout', 'models'):
+        if not Path(configuration[name]).is_absolute():
+            raise JobError('deployment paths must be absolute')
+    specification = configuration['rental']
+    if (not isinstance(specification, dict) or set(specification) != {'type', 'image', 'root_volume'}
+            or any(not isinstance(value, str) or not value for value in specification.values())):
+        raise JobError('rental specification is incomplete')
+
+
 class Remote:
     def __init__(self, address, run=subprocess.run):
         self.host = 'root@' + str(ipaddress.ip_address(address))
@@ -121,6 +142,7 @@ def train(configuration_path, student, splits, source_key, out, *, resume=None, 
 
 def train_owned(configuration_path, student, splits, source_key, destination, resume, sleep):
     configuration = json.loads(Path(configuration_path).read_text())
+    validate_configuration(configuration)
     resources = Resources(configuration['registry'], provider(configuration))
     binding = {'configuration': identity(configuration), 'student': student, 'splits': tree(splits)}
     if resume:
