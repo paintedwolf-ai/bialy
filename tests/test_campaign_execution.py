@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from bialy.campaign.execution import Executor, ReceiptBackend
@@ -53,4 +55,24 @@ def test_successful_stage_revalidates_artifacts_on_restart(tmp_path):
     handler.output = {'artifact': 'changed'}
     with pytest.raises(CampaignFault, match='artifact_changed'):
         executor.run('collect', {})
+    journal.close()
+
+def test_unclassified_failure_retains_private_diagnostic_without_retry(tmp_path):
+    journal = Journal(tmp_path, {})
+    handler = Handler()
+    def fail(inputs, attempt):
+        handler.calls += 1
+        raise ValueError("invalid reviewer evidence")
+    handler.execute = fail
+    executor = Executor(journal, ReceiptBackend(tmp_path / "receipts", {"review": handler}))
+    result = executor.run("review", {})
+    fault = result["fault"]
+    assert fault["code"] == "stage_execution_unclassified"
+    assert fault["retryable"] is False
+    diagnostic = Path(fault["details"]["diagnostic"])
+    assert "ValueError: invalid reviewer evidence" in diagnostic.read_text()
+    assert diagnostic.stat().st_mode & 0o777 == 0o600
+    assert "invalid reviewer evidence" not in str(fault)
+    assert executor.run("review", {}) == result
+    assert handler.calls == 1
     journal.close()

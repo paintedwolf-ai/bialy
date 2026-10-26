@@ -2,6 +2,7 @@
 import json
 import os
 import time
+import traceback
 from pathlib import Path
 
 from .journal import CampaignFault, canonical, digest
@@ -49,9 +50,16 @@ class Executor:
                     return result
                 self.sleep(2 ** retry)
             except Exception as exc:
+                diagnostic = self.journal.directory / 'diagnostics' / (current['attempt'] + '.txt')
+                diagnostic.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(diagnostic, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, 'w') as stream:
+                    stream.write(''.join(traceback.format_exception(exc)))
+                    stream.flush()
+                    os.fsync(stream.fileno())
                 return self.journal.settle(name, current['attempt'], 'failed', fault={
                     'code': 'stage_execution_unclassified', 'retryable': False,
-                    'details': {'exception_type': type(exc).__name__}})
+                    'details': {'exception_type': type(exc).__name__, 'diagnostic': str(diagnostic)}})
             previous = None
         return self.journal.stage(name)
 
