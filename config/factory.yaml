@@ -17,11 +17,11 @@ split:
   val_fraction: 0.15
   seed: 7
 judge:
-  second_judge_fraction: 0.10      # rows the other family also judges, for agreement
+  second_judge_fraction: 0.10      # rows another reviewer slot judges for agreement
 
 # `bialy run`: one pass on this machine, resumable. Paths resolve against the
 # repository. The generators named here must be hosted or served on this host;
-# the judge is chosen from another family, and the writer writes skill requests
+# reviewers use configured slots, and the writer writes skill requests
 # and code-rank pairs.
 run:
   lycaon_checkout: ../paintedwolf-code   # built into the runner binaries, engine, and trainer the run uses
