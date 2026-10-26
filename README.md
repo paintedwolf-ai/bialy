@@ -91,6 +91,54 @@ of any head and every loadable tool a turn uses arrives through a
 (`--pilot`): its needs are the tools a live head missed, which is exactly what
 the rank head ranks in production.
 
+## Custom-model candidates
+
+The optional `custom_model` stage exports transcript-derived SFT and preference
+**candidates** alongside the decision-head dataset. It does not train or release
+a custom coordinator model. Leave `run.custom_model.enabled` off for ordinary
+head-only passes. When enabling it, declare a unique `epoch`, `tool_surface`
+(`legacy` or `command-v1`), and full `host_commit` matching the clean checkout.
+Non-diagnostic runs require the pinned host capture/export capability in
+`scripts/bialy/custom_model/collect.py`. Diagnostic collection remains ineligible
+for custom-model training or publication. Exact host receipts produce SFT
+candidates; passing independent quality evidence and nonempty train, validation
+and holdout splits are required for offline SFT admission.
+The run binds its source/configuration before stages execute; changed inputs
+require a new run name. Custom export attempts retain content manifests instead
+of reusing a transcript archive merely because it exists.
+
+Candidate extraction is not qualification. Stored messages omit parts of the
+provider request; decision candidates are not offered tool schemas. Model replay
+requires exact captured messages and schemas, and training admission requires
+acceptance evidence bound to the same request and response. Teacher repairs and
+heuristic divergences remain proposals until independently validated. Missing
+capture/validation evidence means `not_ready`, including when archive extraction
+itself succeeds. No permissive schemas, synthetic preloading, translated legacy
+calls or fabricated multi-root failures may establish training eligibility.
+
+Command adoption requires a fresh collection epoch using the integrated host,
+prompt/catalog/exporter versions and executed child-operation facts. Preserve
+stable task families and split assignments for comparison, but never reuse old
+answers as command-surface labels. The existing Bialy training/release pipeline
+owns matching decision heads; custom-model SFT/DPO training is a separate
+consumer with additional qualification requirements.
+
+Use `custom_model.quality_judge: true` for explicit cross-family review during
+collection, or `bialy dpo quality --sft ROWS --transcripts ARCHIVE --out REPORTS`
+for a separate review stage. These operations make provider calls. Reviews bind
+verdicts to exact request/response digests and actual evidence identifiers;
+acceptance alone is not quality. The host repository owns training and export.
+
+A consumer-GPU server launched outside the factory is a model with
+`serve.external` in `models.yaml`: `model` (the alias the server advertises on
+`/models`), `artifact` (the GGUF file name) and `artifact_sha256`. Its `port` is
+the bridge port the runners call. The tunnel to it (`ssh`, `key`, `remote` as
+loopback host:port) belongs in the uncommitted `replicas.local.yaml` under
+`external`, keyed by model id. The factory owns only that SSH tunnel and checks
+the alias from `/models`; it never starts or stops the server. Before collection,
+verify the loaded artifact and server binary hashes on the serving host. The
+large vLLM configuration is not a consumer-GPU preset.
+
 ## Running it
 
 ### One command
@@ -118,7 +166,7 @@ bialy run --run pass3 --push               # the same pass, publishing at the en
 Stages, in order: `check`, `repos`, `build`, `image`, `corpus`, `tasks`,
 `skillreq`, `warm`, `plan`, `drive`, `collect`, `judge`, `judge_skillreq`,
 `split_pilot`, `train_pilot`, `engine`, `pilot`, `plan_on`, `drive_on`,
-`collect_on`, `judge_on`, `split`, `coderank`, `release`, `train`, `evaluate`,
+`collect_on`, `judge_on`, `split`, `custom_model`, `coderank`, `release`, `train`, `evaluate`,
 `release_heads`, `report`. Each writes under `<root>/runs/<name>/` and its
 status to `run.json` there; a failed stage stops the run with its error in
 `REPORT.md`, and the next invocation starts from it.
@@ -127,9 +175,11 @@ status to `run.json` there; a failed stage stops the run with its error in
   runners and assembles the engine payload (schemas, the pinned git, the
   headless browser, Opengrep) from the checkout; `engine` builds the decision
   engine for this host with cargo. The checkout pins Opengrep releases per
-  platform; until it pins a Linux one, `run.scanner: candidate` with
-  `run.scanner_candidate` pointing at a linux/amd64 artifact directory from the
-  downstream Opengrep repository's `engine/build.py` carries that build, and
+  platform, including linux/amd64, and stages the pinned one at
+  `bundled/opengrep-<version>/`, where the sidecar finds it under
+  `LYCAON_ENGINE_ROOT`. `run.scanner: candidate` with `run.scanner_candidate`
+  pointing at a linux/amd64 artifact directory from the downstream Opengrep
+  repository's `engine/build.py` carries a development build instead, and
   `run.scanner: none` runs without a scanner, which the sidecar then reports
   unavailable.
 - The first pass drives with the engine off. `train_pilot` trains the recipes

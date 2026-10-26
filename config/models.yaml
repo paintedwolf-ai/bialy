@@ -29,11 +29,39 @@ models:
     license: Apache-2.0
     outputs_trainable: true
     reviewed: "2026-09-27: Apache-2.0 model card; no terms on outputs"
-    roles: [generator]
+    roles: [generator, teacher]
     serve:
       gpu: 1
       port: 8002
       args: [--quantization, fp8, --kv-cache-dtype, fp8, --tool-call-parser, gemma4, --reasoning-parser, gemma4]
+  # Consumer-GPU teachers for custom-model collection: pinned GGUF artifacts served
+  # by llama-server outside the factory (serve.external), reached through the
+  # tunnel in replicas.local.yaml. Their quality reviewer is deepseek-v4.1-flash,
+  # the first judge outside each family.
+  - id: qwen3.6-35b-a3b-q4
+    hf: ggml-org/Qwen3.6-35B-A3B-GGUF
+    revision: 7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5
+    family: qwen
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-20: Apache-2.0 model card; a llama.cpp conversion of Qwen/Qwen3.6-35B-A3B (Apache-2.0); no terms on outputs"
+    roles: [generator, teacher]
+    serve:
+      port: 8011
+      external: {model: qwen3.6-35b-a3b-q4, artifact: Qwen3.6-35B-A3B-Q4_K_M.gguf,
+                 artifact_sha256: 671e47e0ec53c665d048b98c3ecbfd5236b5ca9c3e02ed19fc8f81f7b85140c7}
+  - id: gemma-4-26b-a4b-it-q4
+    hf: google/gemma-4-26B-A4B-it-qat-q4_0-gguf
+    revision: d1c082be9cf3c8a514acf63b8761f4b41935842e
+    family: gemma
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-20: Apache-2.0 model card; Google's own QAT q4_0 of google/gemma-4-26B-A4B-it (Apache-2.0); no terms on outputs"
+    roles: [generator, teacher]
+    serve:
+      port: 8012
+      external: {model: gemma-4-26b-a4b-it-q4, artifact: gemma-4-26B_q4_0-it.gguf,
+                 artifact_sha256: 3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d}
   - id: glm-5.3-flash
     hf: zai-org/GLM-5.3-Flash
     revision: eb9eb208eb0d988989d07a6a12d0fdeb5f52574a
@@ -51,9 +79,33 @@ models:
     license: MIT
     outputs_trainable: true
     reviewed: "2026-10-01: MIT license on the model card; no terms on outputs (Chris Beckman)"
-    roles: [judge]
+    roles: [generator, judge]
     hosted: {provider: fireworks, base_url: "https://api.fireworks.ai/inference/v1", model: accounts/fireworks/models/deepseek-v4p1-flash, key_env: FIREWORKS_API_KEY,
              price_per_million: {input: 0.30, output: 1.20}, reasoning_effort: none}
+  - id: gemma-4-31b-it
+    hf: google/gemma-4-31B-it
+    revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
+    family: gemma
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-19: Apache-2.0 model card; no terms on outputs"
+    roles: [teacher]
+    serve:
+      gpu: 1
+      port: 8003
+      args: [--quantization, fp8, --kv-cache-dtype, fp8, --tool-call-parser, gemma4, --reasoning-parser, gemma4]
+  - id: gemma-4-e4b-it
+    hf: google/gemma-4-E4B-it
+    revision: ee0ef6023621cff504d758262d4e04895a5af4a2
+    family: gemma
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-19: Apache-2.0 model card; no terms on outputs"
+    roles: [student]
+    serve:
+      gpu: 1
+      port: 8004
+      args: [--tool-call-parser, gemma4, --reasoning-parser, gemma4]
 
 # Unreviewed hosted candidates, pinned and licensed as each model card states.
 # The configuration accepts one only once `reviewed` is filled in and the entry

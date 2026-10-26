@@ -23,12 +23,31 @@ import sys
 import time
 from pathlib import Path
 
-from . import anchor, build, coderank, config, fleet, heads, judge, provenance, publishing, release, repos, retention, skillreq, split, tasks, training
+from . import (
+    anchor,
+    build,
+    coderank,
+    config,
+    custom_model_run,
+    fleet,
+    heads,
+    judge,
+    preflight,
+    provenance,
+    publishing,
+    release,
+    repos,
+    retention,
+    skillreq,
+    split,
+    tasks,
+    training,
+)
 
-STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "plan", "drive", "collect", "judge",
-          "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "plan_on", "drive_on", "collect_on", "compare", "judge_on",
-          "split", "coderank", "release", "train", "evaluate", "release_heads", "report")
-ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "plan_on", "drive_on", "collect_on", "compare", "judge_on")
+STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
+          "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on",
+          "split", "custom_model", "coderank", "release", "train", "evaluate", "release_heads", "report")
+ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on")
 
 
 class RunError(RuntimeError):
@@ -107,6 +126,17 @@ class Run:
     def engine_on(self):
         return bool(self.setting("engine_on", {}).get("enabled"))
 
+    @property
+    def collection_window(self):
+        """The student's declared context window when this run collects custom-model data."""
+        custom = self.setting("custom_model") or {}
+        return int(custom["student_serving"]["context_window"]) if custom.get("enabled") else None
+
+    @property
+    def engine_on_only(self):
+        """The engine-on pass drives with released heads, so no engine-off pass or pilot training runs."""
+        return self.engine_on and bool(self.setting("engine_on", {}).get("heads"))
+
     def image(self, pass_name):
         return "%s:%s-%s" % (self.factory.fleet["image"], self.name, pass_name)
 
@@ -127,9 +157,10 @@ def stamp():
 
 def run_generators(run):
     named = run.setting("generators") or []
-    generators = run.factory.generators()
     if named:
-        generators = [m for m in generators if m.id in named]
+        generators = [m for m in run.factory.models if m.id in named and ("generator" in m.roles or "teacher" in m.roles)]
+    else:
+        generators = run.factory.generators()
     return [m for m in generators if m.hosted or m.serve]
 
 
@@ -138,7 +169,7 @@ def writer_model(run):
     first writer that is hosted or served here."""
     named = run.setting("skillreq", {}).get("writer")
     for m in run.factory.models:
-        if "writer" in m.roles and (m.hosted or m.serve) and (not named or m.id == named):
+        if (m.hosted or m.serve) and ((named and m.id == named) or (not named and "writer" in m.roles)):
             return m
     raise RunError("no writer model is usable; give one the writer role in models.yaml")
 
@@ -151,7 +182,12 @@ def roster(run):
     judges = set(run.setting("judges") or [])
     out = []
     for m in run.factory.models:
-        roles = tuple(r for r in m.roles if not (r == "generator" and m.id not in generators) and not (r == "judge" and judges and m.id not in judges))
+        base_roles = list(m.roles)
+        if m.id in generators and "generator" not in base_roles:
+            base_roles.append("generator")
+        if m.id in judges and "judge" not in base_roles and (m.serve or "generator" in base_roles or "teacher" in base_roles):
+            base_roles.append("judge")
+        roles = tuple(r for r in base_roles if not (r == "generator" and m.id not in generators) and not (r == "judge" and judges and m.id not in judges))
         if roles:
             out.append(dataclasses.replace(m, roles=roles))
     return out
@@ -160,13 +196,22 @@ def roster(run):
 def scaled_factory(run):
     """The factory with generation limited to the run's cap, roster, and workspaces."""
     f = run.factory
-    cap = run.setting("task_cap")
+    cap, share = run.setting("task_cap"), run.setting("task_share")
+    if share is not None and not 0 < float(share) <= 1:
+        raise RunError("run.task_share is a fraction of every archetype's tasks, above 0 and at most 1")
     models = roster(run)
-    archetypes = [dataclasses.replace(a, per_workspace=min(a.per_workspace, int(cap))) if cap else a for a in f.archetypes]
+    # A share keeps the configured mix at a smaller volume; a cap flattens it to at most n per archetype.
+    archetypes = [dataclasses.replace(a, per_workspace=max(1, round(a.per_workspace * float(share)))) if share else a for a in f.archetypes]
+    archetypes = [dataclasses.replace(a, per_workspace=min(a.per_workspace, int(cap))) if cap else a for a in archetypes]
+    chosen = set(run.setting("archetypes") or [])
+    unknown = chosen - {a.id for a in f.archetypes}
+    if unknown:
+        raise RunError("run.archetypes names unknown archetypes: %s" % ", ".join(sorted(unknown)))
+    archetypes = [a for a in archetypes if not chosen or a.id in chosen]
     archetypes = retention.shape_archetypes(archetypes, run.setting("retention", {}))
     names = set(run.setting("workspaces") or [])
     return dataclasses.replace(f, models=models, archetypes=archetypes, repos=[r for r in f.repos if not names or r.name in names],
-                               stacks=[s for s in f.stacks if not names or s.name in names])
+                               stacks=[s for s in f.stacks if not names or s.name in names], run=run.settings)
 
 
 # ---- check --------------------------------------------------------------------
@@ -181,15 +226,38 @@ def stage_check(run):
     f = run.factory
     faults = []
     generators = run_generators(run)
+    cfg = run.setting("custom_model") or {}
+    if cfg.get("enabled"):
+        try:
+            custom_model_run.validate_settings(cfg)
+        except custom_model_run.DatasetError as exc:
+            faults.append(str(exc))
     if not generators:
         faults.append("no generator model is usable: name hosted generators in run.generators or serve one locally")
     used = list(generators)
     scaled = scaled_factory(run)
+    generator_ids = [model.id for model in generators]
+    inactive = set(run.setting("generators") or []) - set(generator_ids)
+    if inactive:
+        faults.append("run.generators names unavailable generators: %s" % ", ".join(sorted(inactive)))
+    routing = run.setting("archetype_generators") or {}
+    unknown_archetypes = set(routing) - {a.id for a in scaled.archetypes}
+    if unknown_archetypes:
+        faults.append("run.archetype_generators names unknown archetypes: %s" % ", ".join(sorted(unknown_archetypes)))
+    if generators:
+        for archetype in scaled.archetypes:
+            try:
+                if archetype.id in routing and not isinstance(routing[archetype.id], (dict, list)):
+                    raise config.ConfigError("generator routing for %s must be a list or weight mapping" % archetype.id)
+                tasks.pick_generator(scaled, archetype.id, generator_ids, random.Random(0))
+            except config.ConfigError as exc:
+                faults.append(str(exc))
+                break
     unknown = set(run.setting("workspaces") or []) - {w.name for w in f.workspaces()}
     if unknown:
         faults.append("run.workspaces names %s, which no repository or stack is" % ", ".join(sorted(unknown)))
     for name in run.setting("judges") or []:
-        if not any(m.id == name and "judge" in m.roles for m in f.models):
+        if not any(m.id == name and ("judge" in m.roles or m.serve) for m in f.models):
             faults.append("run.judges names %s, which is not a judge in models.yaml" % name)
     for model in generators:
         try:
@@ -200,6 +268,15 @@ def stage_check(run):
         used.append(writer_model(run))
     except RunError as exc:
         faults.append(str(exc))
+    for role, action in (("student", "shadow"), ("teacher", "repair")):
+        if cfg.get("enabled") and cfg.get(action):
+            try:
+                model = f.model(cfg[role])
+                if not model.hosted and not model.serve:
+                    faults.append("custom-model %s has no configured endpoint" % role)
+                used.append(model)
+            except (config.ConfigError, KeyError) as exc:
+                faults.append(str(exc))
     for model in {m.id: m for m in used}.values():
         if model.hosted and not os.environ.get(model.hosted["key_env"]):
             faults.append("model %s needs %s in the environment" % (model.id, model.hosted["key_env"]))
@@ -233,7 +310,7 @@ def stage_check(run):
             "scanner": run.setting("scanner") if scanner else "none",
             "accelerator": training.accelerator(), "go": "host" if shutil.which("go") else build.GO_IMAGE,
             "cargo": "rustup" if shutil.which("rustup") else build.rust_image(run.checkout), "priced_models": priced,
-            "spend_note": "provider usage inside runner sessions is not metered here; the provider's dashboard is the record for driving"}
+            "spend_note": "usage is checked between stages; spend_ceiling_usd is not a hard provider spending cap"}
 
 
 # ---- sources -------------------------------------------------------------------
@@ -248,7 +325,10 @@ def stage_repos(run):
 def stage_build(run):
     """The runner binaries and engine payload from the pinned checkout, plus binaries for
     this host when it is not the runner platform."""
-    out = {"runner": build.binaries(run.checkout, run.bin_dir, run.cache_root)}
+    # A pinned scanner's identity is linked into the runner binaries; a development
+    # candidate is passed to the sidecar at run time instead.
+    identity = build.scanner_identity(run.checkout, run.cache_root) if run.scanner and not run.scanner_candidate else None
+    out = {"runner": build.binaries(run.checkout, run.bin_dir, run.cache_root, scanner_identity=identity)}
     if not build.host_is_runner_platform():
         goos = platform.system().lower()
         goarch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
@@ -263,8 +343,9 @@ def stage_image(run):
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
     if present and not run.rebuild_image:
         return {"image": tag, "built": False}
-    fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, scanner=run.scanner)
-    return {"image": tag, "built": True, "scanner": run.scanner}
+    fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, config_dir=run.checkout / "lycaon/config",
+                      scanner=run.scanner, context_window=run.collection_window)
+    return {"image": tag, "built": True, "scanner": run.scanner, "context_window": run.collection_window}
 
 
 def stage_corpus(run):
@@ -338,6 +419,11 @@ def plan_pass(run, pass_name, pilot):
     run_dir = run.path("fleet-" + pass_name)
     run_dir.mkdir(parents=True, exist_ok=True)
     decide_env = fleet.pilot_env(pilot)
+    custom = run.setting("custom_model") or {}
+    if custom.get("enabled"):
+        serving = custom["student_serving"]
+        decide_env.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"],
+                          PW_TRAINING_STUDENT_PROVIDER=serving["provider"], PW_TRAINING_STUDENT_MODEL=serving["model"])
     if (run_dir / "shards").exists():
         # A plan stage runs again only when its pass is being redone, so earlier shards
         # of the pass are stale; containers still running are kept and adopted.
@@ -354,9 +440,10 @@ def plan_pass(run, pass_name, pilot):
 
 
 def drive_pass(run, pass_name, pilot):
+    preflight.require(run, pass_name)
     fleet.ensure_network(run.factory)
     mounts = [(str(pilot), fleet.PILOT_MOUNT)] if pilot else []
-    done, failed = fleet.run(run.factory, run.path("fleet-" + pass_name), int(run.setting("runners") or run.factory.fleet["runners"]),
+    done, failed = fleet.run(scaled_factory(run), run.path("fleet-" + pass_name), int(run.setting("runners") or run.factory.fleet["runners"]),
                              mounts, run.image(pass_name))
     if not done:
         raise RunError("no shard produced rows (%d failed)" % failed)
@@ -412,20 +499,34 @@ def judge_rows(run, rows_in, out, units=judge.UNITS):
     return {"judged": str(out), "report": report}
 
 
+def engine_off_or_skip(run):
+    if run.engine_on_only:
+        return {"skipped": "run.engine_on.heads drives the engine-on pass only"}
+    return None
+
+
+def stage_preflight(run):
+    return engine_off_or_skip(run) or preflight.qualify(dataclasses.replace(run, factory=scaled_factory(run)), "off")
+
+
+def stage_preflight_on(run):
+    return engine_on_or_skip(run) or preflight.qualify(dataclasses.replace(run, factory=scaled_factory(run)), "on", run.path("build", "pilot"))
+
+
 def stage_plan(run):
-    return plan_pass(run, "off", None)
+    return engine_off_or_skip(run) or plan_pass(run, "off", None)
 
 
 def stage_drive(run):
-    return drive_pass(run, "off", None)
+    return engine_off_or_skip(run) or drive_pass(run, "off", None)
 
 
 def stage_collect(run):
-    return collect_pass(run, "off")
+    return engine_off_or_skip(run) or collect_pass(run, "off")
 
 
 def stage_judge(run):
-    return judge_or_pass(run, run.path("fleet-off", "rows.jsonl"), run.path("judged-off.jsonl"))
+    return engine_off_or_skip(run) or judge_or_pass(run, run.path("fleet-off", "rows.jsonl"), run.path("judged-off.jsonl"))
 
 
 def judge_or_pass(run, rows_in, out):
@@ -461,12 +562,23 @@ def split_rows(run, out_dir, judged, retention_rows):
 
 
 def stage_split_pilot(run):
-    return engine_on_or_skip(run) or split_rows(run, run.path("split-pilot"), [run.path("judged-off.jsonl")],
+    return engine_on_or_skip(run) or engine_off_or_skip(run) or split_rows(run, run.path("split-pilot"), [run.path("judged-off.jsonl")],
                                                 [p for p in (run.path("fleet-off", "retention.jsonl"),) if training.has_rows(p)])
 
 
 def stage_train_pilot(run):
-    return engine_on_or_skip(run) or train_heads(run, run.path("split-pilot"), run.path("pilot-heads"), "pilot")
+    return engine_on_or_skip(run) or engine_off_or_skip(run) or train_heads(run, run.path("split-pilot"), run.path("pilot-heads"), "pilot")
+
+
+def pilot_heads_dir(run):
+    """The heads the engine-on runners decide with: released heads when configured, else this run's pilot."""
+    heads = run.setting("engine_on", {}).get("heads")
+    if not heads:
+        return run.path("pilot-heads")
+    path = Path(heads)
+    if not path.is_dir() or not any(path.glob("*.safetensors")):
+        raise RunError("run.engine_on.heads must be a directory of released head .safetensors files: %s" % heads)
+    return path
 
 
 def stage_engine(run):
@@ -485,14 +597,15 @@ def stage_pilot(run):
     pilot_search = sorted(run.path("pilot-heads", "search").glob("retention-*.safetensors"))
     retained = retention_select(run, pilot_search, run.path("split-pilot"), run.path("pilot-heads"), run.path("eval", "retention-pilot")) if pilot_search else {}
     engine_bin = run.path("build", "runner-engine", "bialy") if not build.host_is_runner_platform() else run.path("build", "host-engine", "bialy")
-    report = build.pilot(engine_bin, model_dir(run), run.path("pilot-heads"), run.path("build", "pilot"))
+    report = build.pilot(engine_bin, model_dir(run), pilot_heads_dir(run), run.path("build", "pilot"))
     if retained:
         report["retention"] = {k: retained.get(k) for k in ("chosen", "fitted", "facts")}
     deadline = int(run.setting("engine_on", {}).get("deadline_ms") or 0)
     tag = run.image("on")
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
     if not present or run.rebuild_image:
-        fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, deadline, run.checkout / "lycaon/config", scanner=run.scanner)
+        fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, deadline, run.checkout / "lycaon/config", scanner=run.scanner,
+                          context_window=run.collection_window)
     return dict(report, pilot=str(run.path("build", "pilot")), image=tag)
 
 
@@ -539,6 +652,10 @@ def stage_compare(run):
 def stage_split(run):
     # The same seed and groups, so a request's retention row lands beside its turn rows.
     return split_rows(run, run.path("split"), judged_files(run), retention_files(run))
+
+
+def stage_custom_model(run):
+    return custom_model_run.collect(run, judge_factory=scaled_factory(run))
 
 
 # ---- code-rank pairs -----------------------------------------------------------
@@ -766,20 +883,22 @@ def stage_release_heads(run):
 # ---- accounting and report -----------------------------------------------------
 
 def usage_summary(run):
-    path = run.path("usage.jsonl")
-    if not path.exists():
-        return {}
     totals = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            entry = json.loads(line)
-        except ValueError:
+    for path in (run.path("usage.jsonl"), run.path("requests.jsonl"), run.path("fleet-off", "requests.jsonl"), run.path("fleet-on", "requests.jsonl")):
+        if not path.exists():
             continue
-        usage = entry.get("usage") or {}
-        t = totals.setdefault(entry.get("model", "?"), {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
-        t["calls"] += 1
-        t["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
-        t["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            usage = entry.get("usage") or {}
+            prompt_toks = int(usage.get("prompt_tokens") if "prompt_tokens" in usage else (entry.get("input_tokens") or 0))
+            comp_toks = int(usage.get("completion_tokens") if "completion_tokens" in usage else (entry.get("output_tokens") or 0))
+            t = totals.setdefault(entry.get("model", "?"), {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+            t["calls"] += 1
+            t["prompt_tokens"] += prompt_toks
+            t["completion_tokens"] += comp_toks
     return totals
 
 
@@ -827,7 +946,7 @@ def stage_report(run, publish=True):
         spend = estimated_spend(run, totals)
         if spend is not None:
             lines.append("\nEstimated spend: $%.2f" % spend)
-        lines.append("\nCalls the runners' sidecars made while driving tasks are not in this table.")
+        lines.append("\nIncludes collected runner sidecar usage; live calls can exceed the ceiling before the next stage check.")
     else:
         lines.append("No provider calls were recorded.")
     lines += retention_report(run)
@@ -909,6 +1028,11 @@ def plan(run, start=None, until=None, redo=()):
 
 def execute(run, start=None, until=None, funcs=None, redo=()):
     funcs = funcs or STAGE_FUNCS
+    if run.setting("custom_model", {}).get("enabled"):
+        try:
+            custom_model_run.binding(run)
+        except custom_model_run.DatasetError as exc:
+            raise RunError(str(exc)) from exc
     os.environ["BIALY_USAGE_JSONL"] = str(run.path("usage.jsonl"))
     state = run.load_state()
     for name in (STAGES[STAGES.index(start):] if start else ()) + tuple(redo):
@@ -923,8 +1047,12 @@ def execute(run, start=None, until=None, funcs=None, redo=()):
             check_spend(run)
             outputs = funcs[name](run)
             state = run.load_state()
-            state["stages"][name] = {"status": "done", "at": stamp(), "seconds": round(time.time() - started), "outputs": outputs}
+            status = "not_ready" if outputs and outputs.get("status") == "not_ready" else "done"
+            state["stages"][name] = {"status": status, "at": stamp(), "seconds": round(time.time() - started), "outputs": outputs}
             run.save_state(state)
+            if status == "not_ready":
+                stage_report(run, publish=False)
+                return run.load_state()
             if outputs and outputs.get("skipped"):
                 print("%s: %s skipped: %s" % (run.name, name, outputs["skipped"]), flush=True)
         except Exception as exc:  # any stage failure stops the run where it stands

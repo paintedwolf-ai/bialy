@@ -6,6 +6,7 @@ Go builds run with the host's Go when it has one, otherwise inside a pinned Go
 image with the checkout mounted at its own path, so the same commands and
 relative paths hold either way. The runner platform is linux/amd64.
 """
+import hashlib
 import json
 import os
 import platform
@@ -65,19 +66,34 @@ def go_run(checkout, cache_root, args, cwd, goos=None, goarch=None, mounts=()):
     for path in {str(checkout), str(cache_root), *(str(Path(m).resolve()) for m in mounts)}:
         Path(path).mkdir(parents=True, exist_ok=True)
         docker += ["-v", "%s:%s" % (path, path)]
+    # The container runs as root over a checkout another user may own; git refuses such
+    # a repository, and Go's VCS stamping then fails the build.
+    env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=str(checkout))
     for key, value in env.items():
         docker += ["-e", "%s=%s" % (key, value)]
     return sh(docker + [GO_IMAGE] + list(args))
 
 
-def binaries(checkout, out_dir, cache_root, goos=RUNNER_GOOS, goarch=RUNNER_GOARCH):
-    """lycaon, lycaon-debug, and decide-rerank for one platform, with BUILD.json."""
+VERSION_SYMBOL = "github.com/lycaon/lycaon/internal/version.Version"
+SCANNER_IDENTITY_SYMBOL = "github.com/lycaon/lycaon/internal/scan/bundled.buildIdentityBase64"
+
+
+def binaries(checkout, out_dir, cache_root, goos=RUNNER_GOOS, goarch=RUNNER_GOARCH, scanner_identity=None):
+    """lycaon, lycaon-debug, and decide-rerank for one platform, with BUILD.json. They carry
+    the checkout's version and, with a pinned scanner, its build identity, as the checkout's
+    own builds stamp them: a binary without the identity gives its bundled scanner no engine
+    byte identity, and the host refuses every scan."""
     checkout, out_dir = Path(checkout).resolve(), Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    version = (checkout / "VERSION").read_text(encoding="utf-8").strip() if (checkout / "VERSION").exists() else ""
+    ldflags = ["-X %s=%s" % (VERSION_SYMBOL, version)] if version else []
+    if scanner_identity:
+        ldflags.append("-X %s=%s" % (SCANNER_IDENTITY_SYMBOL, scanner_identity))
     for name in BINARIES:
-        go_run(checkout, cache_root, ["go", "build", "-o", str(out_dir / name), "./cmd/" + name], cwd=checkout / "lycaon", goos=goos, goarch=goarch,
-               mounts=[out_dir])
-    build = {"lycaon_commit": checkout_commit(checkout), "goos": goos, "goarch": goarch,
+        go_run(checkout, cache_root, ["go", "build", "-ldflags=" + " ".join(ldflags), "-o", str(out_dir / name), "./cmd/" + name],
+               cwd=checkout / "lycaon", goos=goos, goarch=goarch, mounts=[out_dir])
+    build = {"lycaon_commit": checkout_commit(checkout), "goos": goos, "goarch": goarch, "version": version,
+             "scanner_identity_sha256": hashlib.sha256(scanner_identity.encode()).hexdigest() if scanner_identity else None,
              "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "go_image": None if shutil.which("go") else GO_IMAGE}
     (out_dir / "BUILD.json").write_text(json.dumps(build, indent=2) + "\n", encoding="utf-8")
     return build
@@ -106,20 +122,33 @@ def gitengine(checkout, out_dir, platform_key="linux-amd64"):
     return {"platform": platform_key, "git_version": pin["git_version"], "sha256": entry["sha256"]}
 
 
-def opengrep(checkout, engine_dir, cache_root, triple=RUNNER_TRIPLE):
-    """The pinned Opengrep release for the runner platform, staged by the checkout's own
-    tool. The checkout pins one artifact per platform it releases; a platform without one
-    stops the build and says so."""
+def opengrep_artifact(checkout, cache_root, triple=RUNNER_TRIPLE):
+    """The verified pinned Opengrep release for the runner platform, fetched by the
+    checkout's own tool. The checkout pins one artifact per platform it releases; a
+    platform without one stops the build and says so."""
     cache = Path(cache_root).resolve() / "opengrep"
     cache.mkdir(parents=True, exist_ok=True)
     try:
-        artifact = go_run(checkout, cache_root, ["go", "run", "./cmd/opengrep-artifact", "-mode", "fetch", "-cache-root", str(cache), "-target", triple],
-                          cwd=Path(checkout) / "lycaon").strip().splitlines()[-1]
+        return go_run(checkout, cache_root, ["go", "run", "./cmd/opengrep-artifact", "-mode", "fetch", "-cache-root", str(cache), "-target", triple],
+                      cwd=Path(checkout) / "lycaon").strip().splitlines()[-1]
     except BuildError as exc:
         if "no prebuilt opengrep release" in str(exc):
             raise BuildError("the checkout pins no Opengrep release for %s (lycaon/config/runtime/scanners/bundled-manifest.yaml); "
                              "select one there, or set run.scanner: none to run without the scanner" % triple) from exc
         raise
+
+
+def scanner_identity(checkout, cache_root, triple=RUNNER_TRIPLE):
+    """The build identity a host binary embeds for the pinned scanner release, from the
+    checkout's own tool."""
+    artifact = opengrep_artifact(checkout, cache_root, triple)
+    return go_run(checkout, cache_root, ["go", "run", "./cmd/opengrep-artifact", "-mode", "identity", "-artifact-directory", artifact],
+                  cwd=Path(checkout) / "lycaon").strip().splitlines()[-1]
+
+
+def opengrep(checkout, engine_dir, cache_root, triple=RUNNER_TRIPLE):
+    """The pinned Opengrep release for the runner platform, staged by the checkout's own tool."""
+    artifact = opengrep_artifact(checkout, cache_root, triple)
     go_run(checkout, cache_root, ["go", "run", "./cmd/opengrep-artifact", "-mode", "stage", "-artifact-directory", artifact,
                                   "-root", str(Path(engine_dir).resolve()), "-target", triple], cwd=Path(checkout) / "lycaon", mounts=[engine_dir])
     return {"artifact": artifact}
