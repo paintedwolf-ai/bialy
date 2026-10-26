@@ -44,7 +44,7 @@ def test_stacks_are_workspaces_with_their_own_archetypes(factory):
     assert [w.name for w in factory.workspaces()] == [r.name for r in factory.repos] + [s.name for s in factory.stacks]
     assert factory.workspace("react-vite").kind == "stack" and factory.workspace("flask").kind == "repository"
     stack_archetypes = factory.archetypes_for(factory.workspace("react-vite"))
-    assert {a.id for a in stack_archetypes} == {"new_project", "prototype", "scaffold", "port"}
+    assert {a.id for a in stack_archetypes} == {"new_project", "greenfield_auth", "prototype", "public_api_cli", "scaffold", "port"}
     assert all(a.new_files for a in stack_archetypes)
     assert not {a.id for a in stack_archetypes} & {a.id for a in factory.archetypes_for(factory.workspace("flask"))}
     assert all(factory.seeds[key] for key in ("domains", "scales"))
@@ -99,3 +99,15 @@ def test_a_reasoning_effort_must_be_one_a_provider_takes(tmp_path, monkeypatch):
     copied_config(tmp_path, monkeypatch, edit)
     with pytest.raises(config.ConfigError, match="reasoning_effort is one of none, low, medium, high"):
         config.load()
+
+
+@pytest.mark.parametrize("codes", [None, "turn_closeout_tool_call", ["bad code"], [1], ["provider_request_rejected"]])
+def test_task_failure_codes_require_structured_identifiers(codes):
+    with pytest.raises(config.ConfigError, match="supported model failure codes"):
+        config.run_settings({"fail_fast": {"task_failure_codes": codes}})
+
+
+def test_task_local_failure_scope_requires_one_task_per_runner():
+    with pytest.raises(config.ConfigError, match="tasks_per_runner: 1"):
+        config.run_settings({"fail_fast": {"task_failure_codes": ["turn_closeout_tool_call"]}})
+    assert config.run_settings({"tasks_per_runner": 1, "fail_fast": {"task_failure_codes": ["turn_closeout_tool_call"]}})["tasks_per_runner"] == 1

@@ -1,0 +1,5 @@
+id: security-auto
+version: 1.0.0
+extends: security-survey@2.0.0
+name: Security survey
+description: Survey a project against its threat model with parallel security reviewers and a skeptic.

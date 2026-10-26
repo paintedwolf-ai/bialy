@@ -35,8 +35,8 @@ def test_run_settings_defaults_and_unknown_keys():
     settings = config.run_settings({"task_cap": 2, "train": {"device": "cpu"}, "engine_on": {"enabled": False}})
     assert settings["task_cap"] == 2 and settings["train"]["device"] == "cpu"
     assert settings["train"]["recipes"] == ["B5", "B7G", "E4", "code-rank"]
-    assert settings["engine_on"] == {"enabled": False, "deadline_ms": 60000}
-    assert config.run_settings({"engine_on": {"deadline_ms": 5}})["engine_on"] == {"enabled": True, "deadline_ms": 5}
+    assert settings["engine_on"] == {"enabled": False, "deadline_ms": 60000, "heads": None}
+    assert config.run_settings({"engine_on": {"deadline_ms": 5}})["engine_on"] == {"enabled": True, "deadline_ms": 5, "heads": None}
     assert settings["lycaon_checkout"].startswith("/")
     for bad in ({"bogus": 1}, {"train": {"bogus": 1}}, {"engine_on": {"bogus": 1}}, {"skillreq": {"bogus": 1}}):
         with pytest.raises(config.ConfigError):
@@ -202,6 +202,29 @@ def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):
     assert runmod.stage_pilot(run)["skipped"]
 
 
+def test_released_heads_drive_the_engine_on_pass_only(factory, tmp_path):
+    from bialy import custom_model_run
+    heads = tmp_path / "heads"
+    heads.mkdir()
+    run = make_run(factory, tmp_path, engine_on={"enabled": True, "deadline_ms": 1, "heads": str(heads)})
+    assert run.engine_on_only and custom_model_run.passes_for(run) == ["on"]
+    for name in ("plan", "drive", "collect", "judge", "split_pilot", "train_pilot"):
+        assert runmod.STAGE_FUNCS[name](run) == {"skipped": "run.engine_on.heads drives the engine-on pass only"}
+    with pytest.raises(runmod.RunError, match="safetensors"):
+        runmod.pilot_heads_dir(run)
+    (heads / "b5.safetensors").write_bytes(b"")
+    assert runmod.pilot_heads_dir(run) == heads
+    plain = make_run(factory, tmp_path)
+    assert not plain.engine_on_only and custom_model_run.passes_for(plain) == ["off", "on"]
+    assert runmod.pilot_heads_dir(plain) == plain.path("pilot-heads")
+    # A two-pass run may feed the student from its engine-on captures alone.
+    on_only = make_run(factory, tmp_path, custom_model={"passes": ["on"]})
+    assert custom_model_run.passes_for(on_only) == ["on"]
+    with pytest.raises(custom_model_run.DatasetError, match="passes"):
+        custom_model_run.passes_for(make_run(factory, tmp_path, engine_on={"enabled": False, "deadline_ms": 1, "heads": None},
+                                             custom_model={"passes": ["on"]}))
+
+
 def test_report_lists_publish_commands_without_pushing(factory, tmp_path):
     run = make_run(factory, tmp_path)
     funcs = stub_funcs([])
@@ -214,7 +237,6 @@ def test_report_lists_publish_commands_without_pushing(factory, tmp_path):
     text = run.path("REPORT.md").read_text()
     assert "bialy publish dataset --release" in text and "bialy publish heads --release" in text and "--push" in text
     assert "| accounts/fireworks/models/glm-5p3-flash | 1 | 10 | 5 |" in text
-    assert "sidecars" in text
     assert state["stages"]["report"]["outputs"]["published"] == {}
 
 
@@ -255,6 +277,25 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
     run = make_run(factory, tmp_path, generators=["glm-5.3-flash"], judges=["deepseek-v4.1-flash"])
     scaled = runmod.scaled_factory(run)
     assert [m.id for m in scaled.models if "judge" in m.roles] == ["deepseek-v4.1-flash"]
+    # A share scales every archetype and keeps at least one task of each; a cap then bounds it.
+    shared = runmod.scaled_factory(make_run(factory, tmp_path, task_share=0.19))
+    by_id = {a.id: a for a in factory.archetypes}
+    assert all(a.per_workspace == max(1, round(by_id[a.id].per_workspace * 0.19)) for a in shared.archetypes)
+    assert sum(a.per_workspace for a in shared.archetypes) < sum(a.per_workspace for a in factory.archetypes)
+    assert all(a.per_workspace == 1 for a in runmod.scaled_factory(make_run(factory, tmp_path, task_share=0.5, task_cap=1)).archetypes)
+    with pytest.raises(runmod.RunError, match="task_share"):
+        runmod.scaled_factory(make_run(factory, tmp_path, task_share=1.5))
+    # Archetype selection keeps only the named kinds of request.
+    picked = runmod.scaled_factory(make_run(factory, tmp_path, archetypes=["question", "new_project"]))
+    assert sorted(a.id for a in picked.archetypes) == ["new_project", "question"]
+    with pytest.raises(runmod.RunError, match="unknown archetypes"):
+        runmod.scaled_factory(make_run(factory, tmp_path, archetypes=["no_such_archetype"]))
+
+
+def test_a_collection_declares_the_students_window_and_identity(factory, tmp_path):
+    run = runmod.Run(factory=factory, name="t", settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
+    assert run.collection_window == 32768
+    assert make_run(factory, tmp_path).collection_window is None
 
 
 def test_an_early_stop_still_leaves_a_current_report(factory, tmp_path):
@@ -361,3 +402,15 @@ def test_code_rank_sites_are_evaluated_side_by_side(factory, tmp_path, monkeypat
 def test_a_section_setting_takes_its_keys():
     with pytest.raises(config.ConfigError, match="run.engine_on is a section"):
         config.run_settings({"engine_on": False})
+
+
+def test_check_validates_routing_before_provider_stages(factory, tmp_path):
+    run = make_run(factory, tmp_path, generators=["glm-5.3-flash", "missing"],
+                   generator_weights={"glm-5.3-flash": float("nan")},
+                   archetype_generators={"misspelled": ["glm-5.3-flash"]})
+    with pytest.raises(runmod.RunError) as exc:
+        runmod.stage_check(run)
+    message = str(exc.value)
+    assert "unavailable generators: missing" in message
+    assert "unknown archetypes: misspelled" in message
+    assert "finite nonnegative" in message

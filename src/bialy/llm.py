@@ -49,3 +49,26 @@ class Chat:
             raise ValueError("no JSON in reply: %r" % text[:200])
         value, _ = json.JSONDecoder().raw_decode(text[start:])
         return value
+
+    def turn(self, messages, tools=None, temperature=0.0, seed=None, max_tokens=4096, thinking=False):
+        """One assistant turn (text and tool_calls) over a transcript prefix, with thinking off by default."""
+        extra = {"seed": seed} if seed is not None else {}
+        if self.reasoning_effort:
+            extra["extra_body"] = {"reasoning_effort": self.reasoning_effort}
+        elif not thinking:
+            extra["extra_body"] = {"reasoning_effort": "low"} if self.hosted else {"chat_template_kwargs": {"enable_thinking": False}}
+        if tools:
+            extra["tools"] = tools
+        reply = self.client.chat.completions.create(
+            model=self.model, temperature=temperature, top_p=1.0, max_tokens=max_tokens, messages=messages, **extra)
+        record_usage(self.model, reply)
+        choice = reply.choices[0]
+        if choice.finish_reason not in {"stop", "tool_calls"}:
+            raise ValueError("incomplete assistant turn: finish_reason=%s" % choice.finish_reason)
+        msg = choice.message
+        if getattr(msg, "refusal", None):
+            raise ValueError("provider refused the assistant turn")
+        calls = [{"id": getattr(c, "id", "") or "call_%d" % i, "name": c.function.name, "arguments": c.function.arguments}
+                 for i, c in enumerate(getattr(msg, "tool_calls", None) or [])]
+        return {"text": (msg.content or "").strip(), "tool_calls": calls}
+

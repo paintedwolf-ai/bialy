@@ -10,7 +10,7 @@ fleet:
   memory: 8g                       # per runner (a cap, not a reservation)
   pids: 2048                       # per runner
   tasks_per_shard: 8               # most tasks one runner drives, one after another, in one project
-  shard_minutes: 480               # a shard holds only as many tasks as fit, at their prompt budget
+  shard_minutes: 720               # a shard holds only as many tasks as fit, at their prompt budget
   prompt_timeout: 60m              # per prompt; a turn that finishes slowly under load is still a label
   image: bialy-runner
 split:
@@ -25,15 +25,22 @@ judge:
 # and code-rank pairs.
 run:
   lycaon_checkout: ../paintedwolf-code   # built into the runner binaries, engine, and trainer the run uses
-  generators: [glm-5.3-flash]      # hosted generators; with several, tasks alternate between them
-  judges: []                       # judges to use; empty keeps every judge in models.yaml
+  generators: [glm-5.3-flash]      # hosted or served generators; with several, tasks spread across them
+  generator_weights: {}            # optional {model_id: weight} for hybrid local + hosted driving shares
+  archetype_generators: {}         # optional {archetype_id: [model_id, ...] or {model_id: weight}}
+  local_workers_only: false        # when true, sidecar lite and agent_pool use local served generators
+  judges: [deepseek-v4.1-flash, glm-5.3-flash]  # hybrid local runs must explicitly select their local judges
   runners: 4                       # concurrent runner containers on this machine
+  task_timeout: null               # optional whole-task wall-clock cap, including follow-ups, e.g. 45m
+  tasks_per_runner: null           # optional shard size override; use 1 for smokes
+  preflight: {enabled: true, timeout_seconds: 300}
+  fail_fast: {enabled: true, summary_length_limit: 2, capture_turn_limit: 3, task_failure_codes: []}
   spend_ceiling_usd: 0             # 0 leaves the ceiling off; priced models add up in the report
   scanner: pinned                  # the checkout's pinned Opengrep for linux/amd64; candidate takes a local build; none runs without one
   scanner_candidate: null          # for candidate: the downstream repository's artifact directory (opengrep, provenance.json, source-lock.json)
   engine_on:
     enabled: true                  # a second pass with the pilot heads deciding
-    deadline_ms: 60000             # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long
+    deadline_ms: 120000            # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long
   skillreq:
     writer: null                   # the first usable writer in models.yaml
     families: {clear: 2, nearmiss: 1, multi: 1}   # request families per skill and kind
@@ -60,3 +67,16 @@ run:
     max_hours: 24                  # for all recipes of one training stage together
     torch_index: null              # a torch wheel index; detected from the accelerator when null
     epochs: null                   # cap for short checks; null keeps each recipe's own
+  custom_model:
+    enabled: false                 # custom-model collection is opt-in
+    diagnostic_only: false         # must explicitly opt in; training export is blocked pending host integration
+    student: gemma-4-e4b-it        # student model evaluated in shadow mode with thinking off
+    teacher: gemma-4-26b-a4b-it-q4 # teacher model that repairs host rejections and nudges (repair stays off)
+    min_score: 3                   # minimum judge score for synthetic engine-on preloading and skill/tool gates
+    epoch: null                    # explicit collection identity; use a new epoch/run after command rework
+    tool_surface: legacy           # legacy or command-v1; never mix their trajectories
+    host_commit: null              # exact clean Painted Wolf Code commit used by this run
+    preload_from_judge: false      # reconstructed surfaces remain candidates, not training examples
+    max_routine_reads_per_session: 6   # cap mid-loop unscoped single-root read/grep/list_dir steps per session in SFT
+    shadow: false                  # query the student at teacher states to harvest divergence DPO pairs
+    repair: false                  # query the teacher at student rejection states that lack a self-repair

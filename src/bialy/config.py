@@ -8,17 +8,20 @@ model.
 import ipaddress
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+from .faults import MODEL_FAILURE_CODES
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config"
 
 PERMISSIVE = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unlicense", "MIT OR Apache-2.0", "Unlicense OR MIT"}
 # Project workflows the runner image installs in every workspace.
-WORKFLOWS = ("implement-dispatch",)
+WORKFLOWS = ("implement-dispatch", "plan-auto", "recon-auto", "security-auto")
 # Where a task's session runs: a checkout of a pinned public repository, or an
 # empty directory a request starts a new project in, for one stack.
 WORKSPACE_KINDS = ("repository", "stack")
@@ -54,6 +57,16 @@ class Model:
     @property
     def port(self):
         return int(self.serve["port"])
+
+    @property
+    def wire_model(self):
+        return ((self.serve or {}).get("external") or {}).get("model", self.id)
+
+    def tunnels(self):
+        external = (self.serve or {}).get("external")
+        if external and not external.get("ssh"):
+            raise ConfigError("model %s: replicas.local.yaml must give the tunnel (ssh, remote, key) to its external server" % self.id)
+        return ([dict(external, port=self.port)] if external else []) + list(self.replicas)
 
     def ports(self):
         """Every bridge port this model answers on: its own server, then its replicas."""
@@ -107,6 +120,7 @@ class Archetype:
     prompt_timeout: str
     workflow_prompt_timeout: str
     new_files: bool = False
+    reference_rate: float = 0.0
     # The follow-ups a task may carry; every follow-up is a retention decision
     # with the earlier turns to look back on.
     max_follow_ups: int = 2
@@ -167,6 +181,12 @@ class Factory:
     def generators(self):
         return [m for m in self.models if "generator" in m.roles]
 
+    def teachers(self):
+        return [m for m in self.models if "teacher" in m.roles or "generator" in m.roles]
+
+    def students(self):
+        return [m for m in self.models if "student" in m.roles]
+
     def provider_id(self, model):
         return model.hosted["provider"] + "-" + model.id.replace(".", "-") if model.hosted else "vllm-" + model.id.replace(".", "-")
 
@@ -195,7 +215,7 @@ class Factory:
             if not key:
                 raise ConfigError("model %s: set %s to call %s" % (model.id, model.hosted["key_env"], model.hosted["provider"]))
             return [Chat(model.hosted["base_url"], model.hosted["model"], api_key=key, hosted=True, reasoning_effort=model.reasoning_effort)]
-        return [Chat(self.base_url(model, port), model.id) for port in model.ports()]
+        return [Chat(self.base_url(model, port), model.wire_model) for port in model.ports()]
 
 
 HUB_ENV = {"dataset_repo": "BIALY_HF_DATASET_REPO", "model_repo": "BIALY_HF_MODEL_REPO", "code_repo": "BIALY_CODE_REPO"}
@@ -215,18 +235,22 @@ def _read(name):
         return yaml.safe_load(fh)
 
 
-def local_replicas():
-    """This deployment's replicas by model id, from the uncommitted replicas.local.yaml."""
+def local_deployment():
+    """This deployment's replicas and external-server tunnels by model id, from the
+    uncommitted replicas.local.yaml."""
     path = CONFIG / "replicas.local.yaml"
-    if not path.exists():
-        return {}
-    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("replicas") or {}
+    raw = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    return raw.get("replicas") or {}, raw.get("external") or {}
 
 
 RUN_DEFAULTS = {
-    "lycaon_checkout": "../paintedwolf-code", "generators": [], "judges": [], "workspaces": [], "task_cap": None, "seed": 7, "workers": 16,
+    "lycaon_checkout": "../paintedwolf-code", "generators": [], "generator_weights": {}, "archetype_generators": {},
+    "local_workers_only": False, "judges": [], "workspaces": [], "archetypes": [], "task_cap": None, "task_share": None, "seed": 7, "workers": 16,
     "runners": None, "spend_ceiling_usd": 0, "scanner": "pinned", "scanner_candidate": None, "dataset_version": None, "heads_version": None, "code_ref": "HEAD", "stopping": "",
-    "engine_on": {"enabled": True, "deadline_ms": 60000},
+    "task_timeout": None, "tasks_per_runner": None,
+    "fail_fast": {"enabled": True, "summary_length_limit": 2, "capture_turn_limit": 3, "task_failure_codes": []},
+    "preflight": {"enabled": True, "timeout_seconds": 300},
+    "engine_on": {"enabled": True, "deadline_ms": 60000, "heads": None},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
     "coderank": {"per_repo": 40},
     "evaluate": {"rows": 500},
@@ -238,7 +262,17 @@ RUN_DEFAULTS = {
                   "bootstrap": 500, "min_rows": 20},
     "train": {"recipes": ["B5", "B7G", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
+    "custom_model": {"enabled": False, "diagnostic_only": False, "student": "gemma-4-e4b-it", "teacher": "gemma-4-31b-it", "min_score": 3,
+                     "epoch": None, "tool_surface": "legacy", "host_commit": None, "quality_reports": None, "quality_judge": False, "passes": None,
+                     # How the trained student will be served: llama.cpp's server applies the
+                     # checkpoint's own chat template, so the trained tokens are the served ones.
+                     "student_serving": {"provider": "student", "kind": "openai-compatible", "model": "gemma-4-e4b-it",
+                                         "base_url": "http://127.0.0.1:8080/v1", "context_window": 32768},
+                     "preload_from_judge": False, "max_routine_reads_per_session": 6, "shadow": False, "repair": False},
 }
+
+# Map-valued run settings whose inner keys are model or archetype ids, not fixed setting names.
+FREEFORM_MAP_SETTINGS = {"generator_weights", "archetype_generators"}
 
 
 def run_settings(raw):
@@ -248,7 +282,11 @@ def run_settings(raw):
     for key, value in (raw or {}).items():
         if key not in settings:
             raise ConfigError("run.%s is not a setting" % key)
-        if isinstance(settings[key], dict):
+        if key in FREEFORM_MAP_SETTINGS:
+            if value is not None and not isinstance(value, dict):
+                raise ConfigError("run.%s must be a mapping" % key)
+            settings[key] = dict(value or {})
+        elif isinstance(settings[key], dict):
             if value is not None and not isinstance(value, dict):
                 raise ConfigError("run.%s is a section of settings, not a single value" % key)
             for k, v in (value or {}).items():
@@ -257,6 +295,20 @@ def run_settings(raw):
                 settings[key][k] = v
         else:
             settings[key] = value
+    if settings["task_timeout"] is not None and minutes(str(settings["task_timeout"])) <= 0:
+        raise ConfigError("run.task_timeout must be positive")
+    for key in ("tasks_per_runner",):
+        if settings[key] is not None and int(settings[key]) < 1:
+            raise ConfigError("run.%s must be positive" % key)
+    if any(int(settings["fail_fast"][k]) < 1 for k in ("summary_length_limit", "capture_turn_limit")):
+        raise ConfigError("run.fail_fast thresholds must be positive")
+    isolated = settings["fail_fast"]["task_failure_codes"]
+    if not isinstance(isolated, list) or any(not isinstance(code, str) or code not in MODEL_FAILURE_CODES for code in isolated):
+        raise ConfigError("run.fail_fast.task_failure_codes must list supported model failure codes: turn_closeout_tool_call")
+    if isolated and settings["tasks_per_runner"] != 1:
+        raise ConfigError("run.fail_fast.task_failure_codes requires tasks_per_runner: 1")
+    if int(settings["preflight"]["timeout_seconds"]) < 1:
+        raise ConfigError("run.preflight.timeout_seconds must be positive")
     for key in ("lycaon_checkout", "scanner_candidate"):
         value = settings.get(key)
         if value:
@@ -266,7 +318,7 @@ def run_settings(raw):
 
 def load():
     factory = _read("factory.yaml")
-    replicas = local_replicas()
+    replicas, tunnels = local_deployment()
     out = Factory(root=Path(factory["root"]), network=factory["network"], fleet=factory["fleet"],
                   split=factory["split"], judge=factory["judge"], run=run_settings(factory.get("run")))
     # Docker gives every runner an address on the bridge; beyond the subnet, runs fail to start.
@@ -285,12 +337,25 @@ def load():
             raise ConfigError("model %s: hosted needs provider, base_url, model, and key_env, and takes no replicas" % raw.get("id"))
         if hosted and hosted.get("reasoning_effort") not in (None, *REASONING_EFFORTS):
             raise ConfigError("model %s: hosted.reasoning_effort is one of %s" % (raw.get("id"), ", ".join(REASONING_EFFORTS)))
+        external = (serve or {}).get("external")
+        if external:
+            # The durable pins live here; the deployment's tunnel stays out of the repository.
+            if set(external) != {"model", "artifact", "artifact_sha256"} or not all(external.values()) or not re.fullmatch(r"[0-9a-f]{64}", str(external["artifact_sha256"])):
+                raise ConfigError("model %s: serve.external pins model (the server's alias), artifact (file name) and artifact_sha256; the tunnel belongs in replicas.local.yaml" % raw.get("id"))
+            tunnel = tunnels.get(raw["id"])
+            if tunnel:
+                if any(not tunnel.get(k) for k in ("ssh", "remote", "key")):
+                    raise ConfigError("model %s: replicas.local.yaml external needs ssh, remote and key" % raw["id"])
+                serve = dict(serve, external=dict(external, **tunnel))
         out.models.append(Model(id=raw["id"], hf=raw["hf"], revision=raw["revision"], family=raw["family"],
                                 license=raw["license"], roles=tuple(raw["roles"]), serve=serve,
                                 replicas=tuple(replicas.get(raw["id"]) or ()), hosted=hosted))
-    unknown = set(replicas) - {m.id for m in out.models}
+    unknown = (set(replicas) | set(tunnels)) - {m.id for m in out.models}
     if unknown:
         raise ConfigError("replicas.local.yaml names unknown models: %s" % ", ".join(sorted(unknown)))
+    not_external = set(tunnels) & {m.id for m in out.models if not (m.serve or {}).get("external")}
+    if not_external:
+        raise ConfigError("replicas.local.yaml gives external tunnels to models the factory serves itself: %s" % ", ".join(sorted(not_external)))
     for raw in _read("repos.yaml")["repos"]:
         repo = Repo(**raw)
         if len(repo.commit) != 40 or repo.spdx not in PERMISSIVE or repo.split not in ("train", "holdout"):
@@ -328,7 +393,8 @@ def load():
                                         follow_up_rate=float(raw.get("follow_up_rate", defaults["follow_up_rate"])),
                                         max_follow_ups=int(raw.get("max_follow_ups", defaults.get("max_follow_ups", 2))),
                                         prompt_timeout=timeout, workflow_prompt_timeout=max(timeout, workflow_timeout, key=minutes),
-                                        new_files=workspace == "stack" or bool(raw.get("new_files", False))))
+                                        new_files=workspace == "stack" or bool(raw.get("new_files", False)),
+                                        reference_rate=float(raw.get("reference_rate", 0.0))))
     names = [w.name for w in out.workspaces()]
     if len(set(names)) != len(names):
         raise ConfigError("repository and stack names must be unique together: a workspace's name is its rows' identity")

@@ -1,6 +1,13 @@
 # Answers for a session nobody watches. The sidecar runs with never_ask, so
-# approvals should not arise; any that still do are rejected with guidance,
-# and a question the coordinator asks gets the standing answer below.
+# discretionary prompts stand down; checkpoints that still require an explicit
+# grant inside the isolated runner container (managed-secret destinations,
+# local service listeners, loopback connections, and package installs) are
+# approved for the task, and any other checkpoint is rejected with guidance.
 approval_guidance: Nobody can approve this right now. Continue without it, and say what you could not do.
 answer: Use your best judgment and continue; nobody is available to answer questions for this task.
-max_interventions: 4
+max_interventions: 6
+approvals:
+  - {subject: secret, decision: approve, rung: task}
+  - {subject: local_listen, decision: approve, rung: task}
+  - {subject: loopback_connect, decision: approve, rung: task}
+  - {subject: package_set, decision: approve, rung: task}

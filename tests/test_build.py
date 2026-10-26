@@ -94,6 +94,34 @@ def test_binaries_write_a_build_record(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "bin/BUILD.json").read_text())["lycaon_commit"] == "deadbeef" and record["go_image"] == build.GO_IMAGE
 
 
+def test_runner_binaries_carry_the_version_and_scanner_identity(tmp_path, monkeypatch):
+    (tmp_path / "co").mkdir()
+    (tmp_path / "co/VERSION").write_text("1.0.2\n")
+    flags = []
+    monkeypatch.setattr(build, "go_run", lambda checkout, cache, args, cwd, goos=None, goarch=None, mounts=(): flags.append(args[2]))
+    monkeypatch.setattr(build, "checkout_commit", lambda c: "deadbeef")
+    record = build.binaries(tmp_path / "co", tmp_path / "bin", tmp_path / "cache", scanner_identity="aWRlbnRpdHk=")
+    assert len(set(flags)) == 1
+    assert flags[0] == "-ldflags=-X %s=1.0.2 -X %s=aWRlbnRpdHk=" % (build.VERSION_SYMBOL, build.SCANNER_IDENTITY_SYMBOL)
+    assert record["version"] == "1.0.2" and record["scanner_identity_sha256"]
+    monkeypatch.setattr(build, "go_run", lambda checkout, cache, args, cwd, goos=None, goarch=None, mounts=(): flags.append(args[2]))
+    flags.clear()
+    assert build.binaries(tmp_path / "co", tmp_path / "bin", tmp_path / "cache")["scanner_identity_sha256"] is None
+    assert build.SCANNER_IDENTITY_SYMBOL not in flags[0]
+
+
+def test_the_go_container_trusts_the_mounted_checkout(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(build.shutil, "which", lambda name: None)
+    monkeypatch.setattr(build, "sh", lambda args, **kw: seen.append(args))
+    build.go_run(tmp_path / "co", tmp_path / "cache", ["go", "build", "./cmd/lycaon"], tmp_path / "co")
+    args = seen[0]
+    pairs = {args[i + 1] for i, a in enumerate(args) if a == "-e"}
+    assert {"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=%s" % (tmp_path / "co").resolve()} <= pairs
+    assert args[args.index(build.GO_IMAGE) + 1:] == ["go", "build", "./cmd/lycaon"]
+
+
 def test_rust_channel_comes_from_the_checkouts_toolchain_file(tmp_path):
     (tmp_path / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.97.1"\nprofile = "minimal"\n')
     assert build.rust_channel(tmp_path) == "1.97.1" and build.rust_image(tmp_path) == "rust:1.97.1-bullseye"
