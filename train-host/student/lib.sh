@@ -1,8 +1,5 @@
 #!/bin/bash
-# The layout below is read by the scripts that source this file.
 # shellcheck source-path=SCRIPTDIR disable=SC2034
-# Shared settings for the student scripts: pinned inputs from pins.env, this
-# deployment from student.local.env, and the working layout under STUDENT_ROOT.
 STUDENT_HOME=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=pins.env
 . "$STUDENT_HOME/pins.env"

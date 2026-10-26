@@ -24,7 +24,11 @@ class Provider:
         return server
 
     def delete(self, server):
-        self.servers.remove(server)
+        if server in self.servers:
+            self.servers.remove(server)
+
+    def absent(self, server):
+        return server not in self.servers
 
 
 def test_create_response_loss_reconciles_without_duplicate_resource(tmp_path):
@@ -70,3 +74,24 @@ def test_control_plane_failure_does_not_claim_deletion(tmp_path):
     assert json.loads((tmp_path / (intent['token'] + '.json')).read_text())['state'] == 'cleanup_unconfirmed'
     provider.available = True
     assert resources.reap()[0]['state'] == 'released'
+
+
+def test_delayed_allocation_remains_owned_until_observed_and_removed(tmp_path):
+    provider = Provider()
+    resources = Resources(tmp_path, provider, clock=lambda: 100)
+    resources.reap()
+    intent = resources.intent({}, 120)
+    provider.crash = True
+    with pytest.raises(ConnectionError):
+        resources.allocate(intent)
+    delayed = provider.servers.pop()
+    with pytest.raises(ResourceError, match='unknown'):
+        resources.allocate(intent)
+    with pytest.raises(ResourceError, match='unknown'):
+        resources.release(intent['token'])
+    provider.servers.append(delayed)
+    assert resources.reap()[0]['state'] == 'released'
+    assert not provider.servers
+    provider.servers.append(delayed)
+    assert Resources(tmp_path, provider, clock=lambda: 221).reap()[0]['state'] == 'released'
+    assert not provider.servers

@@ -63,6 +63,11 @@ class Resources:
             servers = self.provider.find(token)
             if len(servers) > 1:
                 raise ResourceError('multiple resources match allocation identity')
+            if not servers:
+                if current.get('allocation_started'):
+                    raise ResourceError('allocation outcome is unknown')
+                current['allocation_started'] = True
+                write(path, current)
             server = servers[0] if servers else self.provider.create(token, current['specification'])
             if token not in server['tags']:
                 raise ResourceError('provider returned an unowned resource')
@@ -86,18 +91,26 @@ class Resources:
             return self._release(path, current)
 
     def _release(self, path, current):
-        if current['state'] == 'released':
-            return current
         current['state'] = 'releasing'
         write(path, current)
         try:
-            servers = self.provider.find(current['token'])
+            observed = self.provider.find(current['token'])
+            known = current.get('cleanup_resources', [])
+            if current.get('server'):
+                known = [*known, current['server']]
+            servers = list({server['id']: server for server in [*known, *observed]}.values())
+            current['cleanup_resources'] = servers
+            write(path, current)
             for server in servers:
                 if current['token'] not in server['tags']:
                     raise ResourceError('cleanup refuses an unowned resource')
                 self.provider.delete(server)
+                if not self.provider.absent(server):
+                    raise ResourceError('provider still reports owned storage or addresses')
             if self.provider.find(current['token']):
                 raise ResourceError('provider still reports owned resources')
+            if current.get('allocation_started') and not servers:
+                raise ResourceError('allocation acceptance remains unknown')
         except Exception as exc:
             current.update(state='cleanup_unconfirmed', cleanup_error=type(exc).__name__)
             write(path, current)
@@ -114,7 +127,7 @@ class Resources:
                 if path.name == 'reaper.json':
                     continue
                 record = json.loads(path.read_text())
-                if record['state'] != 'released' and (record['expires_at'] <= self.clock() or record['state'] in {'releasing', 'cleanup_unconfirmed'}):
+                if record['expires_at'] <= self.clock() or record['state'] in {'releasing', 'cleanup_unconfirmed'}:
                     try:
                         results.append(self._release(path, record))
                     except Exception:
