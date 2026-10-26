@@ -64,3 +64,21 @@ def test_pilot_checks_mount_privileges_before_creating_fleet_state(tmp_path, mon
     prepare_fleet(tmp_path / 'fleet')
     assert (tmp_path / 'fleet/cache').is_dir()
     assert (tmp_path / 'fleet/repos').is_dir()
+
+
+def test_pilot_composition_uses_only_the_declared_teacher(tmp_path, monkeypatch):
+    from bialy.campaign.pilot_runtime import compose
+    monkeypatch.setattr('bialy.campaign.pilot_runtime.custom_model_run.binding', lambda run: {})
+    corpus = tmp_path / 'corpus.json'
+    corpus.write_text('{}')
+    cfg = {'students': ['e4b'], 'teachers': ['deepseek-v4.1-flash'], 'reviewers': ['deepseek-v4.1-flash'],
+           'factory_root': str(tmp_path / 'factory'), 'checkout': str(tmp_path / 'host'), 'epoch': 'test',
+           'host_commit': 'a' * 40, 'tool_surface': 'legacy', 'host_image': 'bialy-runner:test-off',
+           'corpus': str(corpus), 'server_image': 'server'}
+    journal = Journal(tmp_path / 'journal', {'configuration': cfg})
+    stages, _ = compose(journal, cfg)
+    factory = stages['host_qualification'].run.factory
+    assert [model.id for model in factory.generators()] == cfg['teachers']
+    assert factory.generators()[0].hosted is not None
+    assert factory.reviewer().id == cfg['reviewers'][0]
+    journal.close()

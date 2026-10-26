@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .. import config, custom_model_run, faults, preflight
 from ..provenance import file_sha256
-from ..run import Run
+from ..run import Run, roster
 from ..student_host.specification import load, serving
 from . import dataset, pilot_bank
 from .baseline import Baseline
@@ -134,6 +134,9 @@ def compose(journal, cfg):
                        custom_model={'enabled': True, 'epoch': cfg['epoch'], 'host_commit': cfg['host_commit'],
                                      'tool_surface': cfg['tool_surface'], 'students': serving(specification)})
     run = Run(factory, cfg['epoch'], factory.run)
+    factory.models = roster(run)
+    if set(cfg['teachers']) != {model.id for model in factory.generators()}:
+        raise CampaignFault('pilot_teacher_roster_invalid')
     expected_image = run.image('off')
     if expected_image != cfg['host_image']:
         raise CampaignFault('pilot_runner_image_name_mismatch')
