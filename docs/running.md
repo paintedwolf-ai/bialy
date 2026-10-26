@@ -75,11 +75,17 @@ The selected `tool_surface` is part of the immutable run input. The runner image
 must carry its source commit in the `pw.host_commit` label.
 
 The pilot creates eight tasks per partition: training, validation, development,
-and held-out evaluation. It measures the teacher on development tasks, collects
-whole qualified episodes, exports an unchanged baseline, trains, exports the
+and held-out evaluation. It measures two fixed teacher attempts per development
+task, retains every outcome, collects whole qualified episodes, exports an
+unchanged baseline, trains, exports the
 adapter result, and drives paired host evaluations with thinking off. Its result
 separates pipeline completion from behavioral success and never qualifies a model
 for promotion. The multi-turn probe does not establish long-context behavior.
+
+Session and response reviewers receive explicit JSON schemas whose evidence
+references are restricted to the supplied receipts. Returned references are
+validated again before admission. Unexpected stage failures retain private
+diagnostics beside the run journal and do not trigger blind retries.
 
 Before driving, `preflight` checks the engine-off image and `preflight_on` checks
 its engine-on peer. Engine-on probes require the host's decision-engine readiness
