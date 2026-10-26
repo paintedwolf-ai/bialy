@@ -54,7 +54,7 @@ def test_teacher_floors_follow_measured_yield_without_arbitrary_success_gate():
 
 
 def evaluation():
-    plan = {"tasks": [{"id": family, "family": family} for family in FAMILIES], "attempts_per_task": 2,
+    plan = {"tasks": [{"id": family + str(index), "family": family} for family in FAMILIES for index in range(3)], "attempts_per_task": 2,
             "bootstrap_seed": 7, "bootstrap_samples": 1000}
     attempts = [{"task_id": task["id"], "attempt": repetition, "arm": arm, "student": "e4b",
                  "plan_sha256": digest(plan), "effective_thinking": False, "success": arm == "trained",
@@ -77,3 +77,17 @@ def test_paired_evaluation_counts_every_attempt_and_rejects_missing_or_duplicate
     changed[-1]["effective_thinking"] = True
     with pytest.raises(CampaignFault, match="thinking_enabled"):
         behavioral_result(plan, changed, "e4b")
+
+
+def test_duplicate_tasks_cannot_inflate_independent_evaluation_evidence():
+    plan, attempts = evaluation()
+    plan['tasks'].append(plan['tasks'][0])
+    with pytest.raises(CampaignFault, match='invalid_evaluation_plan'):
+        behavioral_result(plan, attempts, 'e4b')
+
+
+def test_teacher_repeated_measurement_cannot_select_a_lucky_attempt():
+    measurements = [{'family': family, 'teacher_id': 'teacher', 'qualified': 1, 'attempts': 8, 'capture_qualified': True}
+                    for family in FAMILIES]
+    with pytest.raises(CampaignFault, match='duplicate_teacher_measurement'):
+        teacher_routes(measurements + [measurements[0]])

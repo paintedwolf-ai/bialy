@@ -57,6 +57,14 @@ def wilson(successes, attempts, z=1.6448536269514722):
 
 
 def teacher_routes(measurements):
+    keys = [(row['teacher_id'], row['family']) for row in measurements]
+    if len(keys) != len(set(keys)):
+        raise CampaignFault('duplicate_teacher_measurement')
+    for row in measurements:
+        if (row['family'] not in FAMILIES or type(row['qualified']) is not int
+                or type(row['attempts']) is not int or type(row['capture_qualified']) is not bool):
+            raise CampaignFault('invalid_teacher_measurement')
+        wilson(row['qualified'], row['attempts'])
     routes = {}
     for family in FAMILIES:
         candidates = [row for row in measurements if row["family"] == family and row["qualified"] > 0 and row["capture_qualified"]]
@@ -70,6 +78,16 @@ def teacher_routes(measurements):
 def behavioral_result(plan, attempts, student):
     if student not in {"e4b", "12b"}:
         raise CampaignFault("unknown_student")
+    tasks = plan.get('tasks', [])
+    identifiers = [task['id'] for task in tasks]
+    if (not tasks or len(identifiers) != len(set(identifiers))
+            or any(task.get('family') not in FAMILIES for task in tasks)
+            or type(plan.get('attempts_per_task')) is not int or plan['attempts_per_task'] < 2
+            or type(plan.get('bootstrap_samples')) is not int or plan['bootstrap_samples'] < 1000
+            or type(plan.get('bootstrap_seed')) is not int):
+        raise CampaignFault('invalid_evaluation_plan')
+    if any(sum(task['family'] == family for task in tasks) < 3 for family in FAMILIES):
+        raise CampaignFault('insufficient_independent_evaluation_tasks')
     expected = {(task["id"], repetition, arm) for task in plan["tasks"]
                 for repetition in range(plan["attempts_per_task"]) for arm in ("base", "trained")}
     actual = [(item["task_id"], item["attempt"], item["arm"]) for item in attempts]
@@ -98,8 +116,6 @@ def behavioral_result(plan, attempts, student):
     rng = random.Random(plan["bootstrap_seed"])
     differences = sorted(statistics.mean(item["trained"] - item["base"] for item in rng.choices(task_scores, k=len(task_scores)))
                          for _ in range(plan["bootstrap_samples"]))
-    if len(differences) < 1000:
-        raise CampaignFault("insufficient_bootstrap_samples")
     interval = [differences[int(0.025 * len(differences))], differences[min(len(differences)-1, int(0.975 * len(differences)))]]
     families = {key: statistics.mean(values) for key, values in by_family.items()}
     behavior = trained >= 0.8 and min(families.values()) >= 0.6 and not unsafe
