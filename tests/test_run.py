@@ -419,3 +419,20 @@ def test_check_validates_routing_before_provider_stages(factory, tmp_path):
     assert "unavailable generators: missing" in message
     assert "unknown archetypes: misspelled" in message
     assert "finite nonnegative" in message
+
+
+def test_a_run_scales_and_filters_scenarios_like_archetypes(factory, tmp_path):
+    import dataclasses
+
+    from bialy.config import Scenario
+
+    def written(sid, workspace, archetype, n):
+        return Scenario(id=sid, workspace=workspace, archetype=archetype,
+                        variants=tuple({"prompt": "variant %d of scenario %s, typed another way" % (i, sid), "follow_ups": []} for i in range(n)))
+    f = dataclasses.replace(factory, max_variants=10, scenarios=[
+        written("flask-bug", "flask", "bugfix", 20), written("flask-where", "flask", "locate", 4), written("gin-bug", "gin", "bugfix", 6)])
+    capped = runmod.scaled_factory(make_run(f, tmp_path, task_cap=2, workspaces=["flask"], archetypes=["bugfix", "locate"]))
+    assert [s.id for s in capped.scenarios] == ["flask-bug", "flask-where"] and capped.max_variants == 2
+    shared = runmod.scaled_factory(make_run(f, tmp_path, task_share=0.5, archetypes=["bugfix"]))
+    # A share scales the configured mix: half of at most max_variants.
+    assert {s.id: len(s.variants) for s in shared.scenarios} == {"flask-bug": 5, "gin-bug": 3} and shared.max_variants == 10

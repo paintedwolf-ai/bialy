@@ -1,0 +1,34 @@
+# Requests written and reviewed ahead of a pass, used as tasks exactly as
+# written. A scenario is one situation a developer is in; its variants are
+# different ways of typing it: terse or detailed, polite or blunt, with or
+# without pasted output, naming the code or describing it.
+#
+# Every variant is driven and judged as its own task, beside the generated
+# ones, and all of a scenario's variants share one prompt group, so they land
+# on the same side of every split. A generated request that near-duplicates a
+# variant is dropped; variants of two scenarios that near-duplicate each other
+# are refused, since they would be one group under two names.
+#
+# A task set takes at most `max_variants` of a scenario's variants, a seeded
+# sample, so a scenario with many variants does not outweigh one with few;
+# other seeds draw others. `run.task_share` and `run.task_cap` scale it as they
+# scale archetypes, and `run.workspaces` and `run.archetypes` filter by the
+# scenario's workspace and archetype.
+#
+# The rules for generated requests hold here too: a request never says which
+# tool to use unless a developer naturally would, and a repository request
+# names only files the repository has at its pin (a file to create may sit in
+# a directory it has, when the archetype takes new files). `bialy tasks`
+# refuses a variant naming a file the checkout lacks.
+#
+#   - id: flaky-ci-auth-test            # unique; lowercase letters, digits, dashes
+#     workspace: flask                  # a repository or stack name
+#     archetype: bugfix                 # an archetype written for that kind of workspace
+#     lang: en                          # optional; one of archetypes.yaml languages
+#     variants:
+#       - prompt: "test_session_refresh fails maybe 1 in 5 on CI, never locally. why"
+#       - prompt: "Can you look into an intermittent CI failure in the session tests? Passes every time on my machine."
+#         follow_ups: ["ok that passes now but why was it only on CI"]
+defaults:
+  max_variants: 10
+scenarios: []

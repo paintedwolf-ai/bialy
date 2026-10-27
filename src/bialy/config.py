@@ -5,9 +5,11 @@ with an unpinned repository or a model whose outputs may not train an open
 model.
 """
 
+import dataclasses
 import ipaddress
 import json
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +30,9 @@ WORKFLOWS = ("implement-dispatch", "plan-auto", "recon-auto", "security-auto")
 WORKSPACE_KINDS = ("repository", "stack")
 # What a hosted model can be asked to spend on reasoning; none turns it off.
 REASONING_EFFORTS = ("none", "low", "medium", "high")
+# The length, in characters, of a request or follow-up a task may carry.
+PROMPT_CHARS = (12, 2400)
+SCENARIO_ID = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
 class ConfigError(ValueError):
@@ -131,6 +136,25 @@ class Archetype:
         return self.workflow_prompt_timeout if workflow else self.prompt_timeout
 
 
+@dataclass(frozen=True)
+class Scenario:
+    """One situation a developer is in, typed several ways. Each variant is a
+    {"prompt", "follow_ups"} task of its own, and all of a scenario's variants share
+    one prompt group."""
+    id: str
+    workspace: str
+    archetype: str
+    variants: tuple
+    lang: str = "en"
+
+    def sample(self, n, seed):
+        """At most `n` variants, the same ones for the same seed."""
+        if n is None or n >= len(self.variants):
+            return self
+        picked = sorted(random.Random("%s:%s" % (seed, self.id)).sample(range(len(self.variants)), n))
+        return dataclasses.replace(self, variants=tuple(self.variants[i] for i in picked))
+
+
 def minutes(duration):
     """A budget written as `<n>m` or `<n>h`, in minutes."""
     value = str(duration).strip()
@@ -153,6 +177,9 @@ class Factory:
     seeds: dict = field(default_factory=dict)
     archetypes: list = field(default_factory=list)
     languages: dict = field(default_factory=dict)
+    scenarios: list = field(default_factory=list)
+    # The variants of one scenario a task set takes; None takes them all.
+    max_variants: int | None = None
     # Settings for `bialy run`, from factory.yaml's run section over RUN_DEFAULTS.
     run: dict = field(default_factory=dict)
 
@@ -403,4 +430,46 @@ def load():
     for kind in WORKSPACE_KINDS:
         if any(w.kind == kind for w in out.workspaces()) and not any(a.workspace == kind for a in out.archetypes):
             raise ConfigError("no archetype writes requests for a %s workspace" % kind)
+    load_scenarios(out, _read("scenarios.yaml") or {})
     return out
+
+
+def load_scenarios(factory, raw):
+    """scenarios.yaml onto `factory`. Whether a variant names files its repository has is
+    checked when tasks are written, against the checkout."""
+    defaults = raw.get("defaults") or {}
+    cap = defaults.get("max_variants")
+    if cap is not None and (type(cap) is not int or cap < 1):
+        raise ConfigError("scenarios.yaml: defaults.max_variants is a positive number or null")
+    factory.max_variants = cap
+    archetypes = {a.id: a for a in factory.archetypes}
+    workspaces = {w.name: w for w in factory.workspaces()}
+    langs = ("en", *factory.languages.get("choices", ()))
+    seen, prompts = set(), set()
+    for entry in raw.get("scenarios") or []:
+        sid = entry.get("id")
+        if not isinstance(sid, str) or not SCENARIO_ID.fullmatch(sid) or sid in seen:
+            raise ConfigError("scenario %r: give a unique id of lowercase letters, digits, and dashes" % sid)
+        seen.add(sid)
+        workspace, arch = workspaces.get(entry.get("workspace")), archetypes.get(entry.get("archetype"))
+        if workspace is None or arch is None or arch.workspace != workspace.kind:
+            raise ConfigError("scenario %s: name a workspace and an archetype written for its kind of workspace" % sid)
+        lang = entry.get("lang", "en")
+        if lang not in langs:
+            raise ConfigError("scenario %s: lang is one of %s" % (sid, ", ".join(langs)))
+        variants = []
+        for variant in entry.get("variants") or []:
+            follow_ups = variant.get("follow_ups") or []
+            texts = [variant.get("prompt"), *follow_ups]
+            if any(not isinstance(t, str) or not PROMPT_CHARS[0] <= len(t.strip()) <= PROMPT_CHARS[1] for t in texts):
+                raise ConfigError("scenario %s: every prompt and follow-up is %d to %d characters" % (sid, *PROMPT_CHARS))
+            if len(follow_ups) > arch.max_follow_ups:
+                raise ConfigError("scenario %s: archetype %s takes at most %d follow-ups" % (sid, arch.id, arch.max_follow_ups))
+            prompt = variant["prompt"].strip()
+            if (workspace.name, prompt) in prompts:
+                raise ConfigError("scenario %s: the prompt %r appears twice in %s" % (sid, prompt[:60], workspace.name))
+            prompts.add((workspace.name, prompt))
+            variants.append({"prompt": prompt, "follow_ups": [f.strip() for f in follow_ups]})
+        if not variants:
+            raise ConfigError("scenario %s: give at least one variant" % sid)
+        factory.scenarios.append(Scenario(id=sid, workspace=workspace.name, archetype=arch.id, variants=tuple(variants), lang=lang))

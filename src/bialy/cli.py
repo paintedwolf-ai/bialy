@@ -275,9 +275,11 @@ def main(argv=None):
         print("run %s finished%s" % (args.run, "; report at " + report if report else ""))
         return 0
     if args.cmd == "check":
-        print("%d models, %d repositories and %d stacks (%d held out), %d archetypes; hub %s, %s" % (
+        for workspace in factory.workspaces():
+            tasks.claim_groups([s for s in factory.scenarios if s.workspace == workspace.name])
+        print("%d models, %d repositories and %d stacks (%d held out), %d archetypes, %d scenarios (%d variants); hub %s, %s" % (
             len(factory.models), len(factory.repos), len(factory.stacks), len(factory.holdout()), len(factory.archetypes),
-            config.hub()["dataset_repo"], config.hub()["model_repo"]))
+            len(factory.scenarios), sum(len(s.variants) for s in factory.scenarios), config.hub()["dataset_repo"], config.hub()["model_repo"]))
         return 0
     if args.cmd == "release-heads":
         pairs = lambda items: dict(item.split("=", 1) for item in items)  # noqa: E731

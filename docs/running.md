@@ -214,6 +214,18 @@ drawn idea and scale (`meta.seed`); repository archetypes that create code may
 name new files in directories the repository has. Held-out stacks are held out
 like repositories. A stack's `warm` command pre-fills the package cache.
 
+## Scenarios
+
+Generated requests read like their writer: complete sentences, tidy
+specificity, few typos. Scenarios (`config/scenarios.yaml`) carry requests
+checked in ahead of a pass, so phrasing can vary while the situation stays
+fixed: each scenario is one situation, and its variants are ways of typing it.
+Each variant is driven and judged as its own task, since phrasing can change
+what a request needs. The variants share a prompt group, so a split never
+trains on one and validates on its neighbour. `max_variants` (10) caps a
+scenario's share of a task set, so a situation with many variants does not
+outweigh one with few; the seed decides which variants a pass draws.
+
 ## Workers
 
 Worker rows come from `implement-dispatch` tasks (pass 1: 1 of about 2,860
