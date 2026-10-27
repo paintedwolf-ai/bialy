@@ -6,6 +6,7 @@ that reaches the campaign directory while the controller runs, waits, or is stop
     <queue>/queue.json                 opened by the controller
     <queue>/items/<id>.json            written once by the controller
     <queue>/decisions/<id>/<n>.json    decision receipts, appended by the reviewer
+    <queue>/revealed/<id>/<episode>    written when the reviewer shows the model reviewers' verdicts
     <queue>/finished.json              written once by the reviewer; lists the final receipts
 
 Each episode belongs to at most one item. A skip, and every item without a receipt when its
@@ -131,21 +132,36 @@ class Review:
             return 'skipped'
         return 'automatic' if self.queue(item['queue'])['finished_at'] else 'open'
 
-    def label(self, identifier, episode_sha256, dimensions, citations, reason, revealed_reviewers):
-        item = self.item(identifier)
+    def subject(self, item, episode_sha256):
         subject = next((subject for subject in item['subjects'] if subject['episode_sha256'] == episode_sha256), None)
         if subject is None:
             raise CampaignFault('review_subject_missing')
+        return subject
+
+    def reveal(self, identifier, episode_sha256):
+        """Record that the model reviewers' verdicts were shown before this subject was labelled."""
+        item = self.item(identifier)
+        self.subject(item, episode_sha256)
+        path = self.path(item['queue']) / 'revealed' / str(identifier) / episode_sha256
+        if not path.exists():
+            write(path, {'at': now()})
+
+    def revealed(self, item, episode_sha256):
+        return (self.path(item['queue']) / 'revealed' / str(item['id']) / episode_sha256).exists()
+
+    def label(self, identifier, episode_sha256, dimensions, citations, reason):
+        item = self.item(identifier)
+        subject = self.subject(item, episode_sha256)
         if set(dimensions) != set(DIMENSIONS) or any(value not in {'pass', 'fail'} for value in dimensions.values()):
             raise CampaignFault('review_dimensions_invalid')
         evidence = set(subject['evidence_ids'])
         if set(citations) != set(DIMENSIONS) or any(not cited or not set(cited) <= evidence for cited in citations.values()):
             raise CampaignFault('review_citations_invalid')
-        if not isinstance(reason, str) or type(revealed_reviewers) is not bool:
+        if not isinstance(reason, str):
             raise CampaignFault('review_decision_invalid')
         self.record(item, [episode_sha256], {'decided': 'human', 'dimensions': dimensions,
                                              'citations': {key: sorted(set(value)) for key, value in citations.items()},
-                                             'reason': reason.strip(), 'revealed_reviewers': revealed_reviewers})
+                                             'reason': reason.strip(), 'revealed_reviewers': self.revealed(item, episode_sha256)})
 
     def skip(self, identifier):
         item = self.item(identifier)

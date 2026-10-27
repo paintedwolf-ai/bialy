@@ -120,7 +120,8 @@ Review state is plain files under `<campaign>/review/`, and `bialy review` reads
 nothing else, so the review can happen from any shell that reaches the campaign
 directory, while the controller is stopped or still collecting. The controller
 writes items; the reviewer appends decision receipts and writes `finished.json`,
-which lists the receipts that count. A finished queue is final, and the stages
+which lists the receipts that count. Showing the model reviewers' verdicts before
+labelling writes a `revealed/` marker that the decision records. A finished queue is final, and the stages
 that use it freeze its decisions into their inputs. `bialy review status` exits 3
 while the campaign waits on a review; `bialy review wait` returns once it does not.
 

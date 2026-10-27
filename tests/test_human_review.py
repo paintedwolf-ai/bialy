@@ -30,20 +30,26 @@ def test_each_episode_belongs_to_one_item_and_labels_are_validated(review_campai
     dimensions, citations = review_campaign.verdict()
     for bad in ({**dimensions, 'task_outcome': 'maybe'}, {key: dimensions[key] for key in DIMENSIONS[1:]}):
         with pytest.raises(CampaignFault, match='dimensions_invalid'):
-            review.label(item, 'episode-a', bad, citations, '', False)
+            review.label(item, 'episode-a', bad, citations, '')
     for bad in ({**citations, 'verification': []}, {**citations, 'verification': ['invented']}):
         with pytest.raises(CampaignFault, match='citations_invalid'):
-            review.label(item, 'episode-a', dimensions, bad, '', False)
+            review.label(item, 'episode-a', dimensions, bad, '')
     with pytest.raises(CampaignFault, match='subject_missing'):
-        review.label(item, 'episode-b', dimensions, citations, '', False)
+        review.label(item, 'episode-b', dimensions, citations, '')
     with pytest.raises(CampaignFault, match='decision_invalid'):
-        review.label(item, 'episode-a', dimensions, citations, '', 'yes')
+        review.label(item, 'episode-a', dimensions, citations, None)
     assert review.item(item)['state'] == 'open'
-    review.label(item, 'episode-a', dimensions, citations, ' ran the tests ', True)
+    review.label(item, 'episode-a', dimensions, citations, ' ran the tests ')
     assert review.item(item)['state'] == 'labelled'
-    review.label(item, 'episode-a', {**dimensions, 'verification': 'fail'}, citations, '', False)
+    assert review.item(item)['decisions']['episode-a']['revealed_reviewers'] is False
+    review.reveal(item, 'episode-a')
+    review.reveal(item, 'episode-a')
+    with pytest.raises(CampaignFault, match='subject_missing'):
+        review.reveal(item, 'episode-b')
+    review.label(item, 'episode-a', {**dimensions, 'verification': 'fail'}, citations, '')
     latest = review.item(item)['decisions']['episode-a']
     assert latest['dimensions']['verification'] == 'fail' and latest['schema'] == 'pw-human-review-decision/1'
+    assert latest['revealed_reviewers'] is True and latest['reason'] == ''
     review.skip(item)
     assert review.item(item)['state'] == 'skipped'
     with pytest.raises(CampaignFault, match='kind_invalid'):
@@ -61,7 +67,7 @@ def test_finished_queues_are_final_and_freeze_only_human_decisions(review_campai
     skipped = review.offer('collection_pilot', 'spot_check', [subject('b')], [], {'rows': 9}, 9)
     left = review.offer('collection_pilot', 'spot_check', [subject('c')], [], {'rows': 1}, 1)
     assert [item['id'] for item in review.items('collection_pilot')] == [labelled, skipped, left]
-    review.label(labelled, 'episode-a', *review_campaign.verdict(), 'recovered', False)
+    review.label(labelled, 'episode-a', *review_campaign.verdict(), 'recovered')
     review.skip(skipped)
     with pytest.raises(CampaignFault, match='unfinished'):
         review.frozen('collection_pilot', ['episode-a'])
@@ -84,7 +90,7 @@ def test_later_queues_reuse_decisions_from_earlier_finished_queues(review_campai
     review = review_campaign.review
     review.open('collection_pilot', 'collection')
     item = review.offer('collection_pilot', 'split', [subject('a')], [], {'rows': 2}, 2)
-    review.label(item, 'episode-a', *review_campaign.verdict(), '', False)
+    review.label(item, 'episode-a', *review_campaign.verdict(), '')
     review.open('collection_full', 'collection')
     review.offer('collection_full', 'split', [subject('b')], [], {'rows': 2}, 2)
     with pytest.raises(CampaignFault, match='unfinished'):
@@ -113,7 +119,7 @@ def test_collection_gate_waits_then_passes_frozen_decisions(review_campaign):
         gate.execute(inputs, 'attempt')
     assert waiting.value.record() == {'reason': 'human_review', 'queue': 'collection_pilot', 'left': 1,
                                       'command': 'bialy review --run campaign'}
-    review.label(item, 'episode-a', *review_campaign.verdict(), '', False)
+    review.label(item, 'episode-a', *review_campaign.verdict(), '')
     with pytest.raises(StageWaiting):
         gate.execute(inputs, 'attempt')
     review.finish('collection_pilot')
@@ -354,7 +360,7 @@ def test_evaluation_gate_freezes_decisions_for_its_attempts(review_campaign):
     with pytest.raises(StageWaiting):
         gate.execute({'evaluations': evaluations}, 'attempt')
     item = review_campaign.review.items('evaluation')[0]
-    review_campaign.review.label(item['id'], 'episode-b1', *review_campaign.verdict(), '', False)
+    review_campaign.review.label(item['id'], 'episode-b1', *review_campaign.verdict(), '')
     review_campaign.review.finish('evaluation')
     output = gate.execute({'evaluations': evaluations}, 'attempt')
     assert set(output['decisions']) == {'episode-b1'}
