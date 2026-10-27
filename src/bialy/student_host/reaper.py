@@ -12,7 +12,9 @@ def provider(configuration):
 
 
 def reap(configuration_path, once=False):
-    configuration = json.loads(Path(configuration_path).read_text())
+    configuration = json.loads(Path(configuration_path).read_text()).get('provisioning')
+    if configuration is None:
+        return
     resources = Resources(configuration['registry'], provider(configuration))
     while True:
         resources.reap()
@@ -28,9 +30,11 @@ def install(configuration_path, run=None):
     import tempfile
     run = run or subprocess.run
     configuration_path = Path(configuration_path).resolve(strict=True)
-    configuration = json.loads(configuration_path.read_text())
+    configuration = json.loads(configuration_path.read_text()).get('provisioning')
+    if configuration is None:
+        return {'status': 'not_required'}
     if configuration_path.stat().st_mode & 0o077:
-        raise ValueError('rental configuration must be private')
+        raise ValueError('machine configuration must be private')
     root = Path(__file__).resolve().parents[3]
     uv = shutil.which('uv')
     if uv is None:

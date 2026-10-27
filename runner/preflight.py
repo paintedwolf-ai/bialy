@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -27,6 +28,9 @@ def api(path, body=None):
 
 
 def before(project):
+    core = subprocess.run(['/opt/bialy/bin/lycaon', 'diagnostics', 'document-core'], capture_output=True, timeout=120)
+    if core.returncode:
+        raise ProbeFailure('preflight_document_core_unavailable')
     probes = api("/v1/preflight")["probes"]
     if os.environ.get("LYCAON_DECIDE_DISABLED") != "1":
         engine = next((p for p in probes if p["id"] == "decision_engine"), None)
@@ -60,7 +64,9 @@ def after():
                    if r.get("schema") == "pw-training-fact/1" and r.get("kind") == "turn_committed"}
         kept = [r for r in records if r.get("schema") == "pw-training-turn/1" and not r.get("exclusion_reason") and
                 r.get("settled") and r.get("student_request") and r.get("response") and (r["session_id"], r["message_id"]) in commits]
-        if not kept or any(r["student_kind"] != "openai-compatible" or r["student_model"] != os.environ["PW_TRAINING_STUDENT_MODEL"] for r in kept):
+        expected = {(r["provider"], r["model"]) for r in json.loads(os.environ["PW_TRAINING_STUDENTS"])}
+        actual = {(r["student_provider"], r["student_model"]) for r in kept}
+        if not expected or actual != expected or any(r["student_kind"] != "openai-compatible" for r in kept):
             raise ProbeFailure("preflight_capture_not_kept")
         session = entries[-1]["root_session"]
         compact = api("/v1/sessions/" + session + "/compact", {})
@@ -153,6 +159,19 @@ class Fixture(BaseHTTPRequestHandler):
                                         "usage": {"prompt_tokens": 32, "completion_tokens": 32, "total_tokens": 64}}).encode())
 
 
+def retain_store(source=Path('/cfg/store.db'), destination=Path('/shard/preflight-store.db')):
+    if not source.is_file():
+        return False
+    try:
+        with sqlite3.connect(source.resolve().as_uri() + '?mode=ro', uri=True) as original:
+            with sqlite3.connect(destination) as retained:
+                original.backup(retained)
+        destination.chmod(0o600)
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def main():
     try:
         if sys.argv[1] == "fixture":
@@ -166,7 +185,7 @@ def main():
     except Exception as exc:
         # Provider bodies and credentials never enter the report.
         code = str(exc) if isinstance(exc, ProbeFailure) else "preflight_probe_error"
-        Path("/shard/preflight.json").write_text(json.dumps({"status": "failed", "code": code, "error_type": type(exc).__name__}) + "\n")
+        Path("/shard/preflight.json").write_text(json.dumps({"status": "failed", "code": code, "error_type": type(exc).__name__, "store_retained": retain_store()}) + "\n")
         return 1
     return 0
 

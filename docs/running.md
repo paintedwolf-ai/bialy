@@ -29,6 +29,82 @@ overdue, and the shard is not driven again.
 
 ## Preflight and live faults
 
+Runner containers permit the application's own user namespaces, mount isolation,
+and syscall supervision. Their security profiles retain the Docker syscall
+allowlist and protect system paths through AppArmor. AppArmor must be enabled on
+the runner machine. Profiles are content-addressed and loaded before a shard
+starts. `SETFCAP` permits the nested namespace to map the container's root user;
+the container receives no `SYS_ADMIN` capability. Root and non-root sessions are
+both valid execution configurations, subject to behavioral qualification.
+
+The runner places ephemeral application caches under `/tmp/user-cache`. Bundled
+self-extracting tools need a writable cache even on their first invocation inside
+the application sandbox. Package-manager caches remain under `/cache`.
+
+Container qualification compares representative operations with the same application
+build running directly as an ordinary user. Compare effects, typed outcomes,
+rejections, and model-visible feedback; paths and generated identifiers may differ.
+This comparison must cover the task families admitted to collection. A passing
+scanner probe alone does not establish behavioral fidelity. Unattended approval
+settings and fixed question answers are explicit collection assumptions, and the
+mechanical pilot does not establish equivalence to every human configuration.
+
+Campaign episode collection checks the pinned host's SQLite schema before
+starting a runner. Runs selecting `command-v1` require the command program and
+child-execution fields consumed by grading and export; a missing field produces
+`host_command_receipts_unavailable`. A mechanical pilot may explicitly select
+`legacy`, which uses terminal command verdicts and records that surface in its
+evidence. It does not qualify revised portable-command behavior. This source
+check does not qualify live execution, capture, or the runner image.
+
+Run the source check separately before preparing a pilot:
+
+```sh
+python -m bialy.campaign.preflight --host-checkout /path/to/paintedwolf-code \
+  --host-commit FULL_COMMIT --out /path/to/new-preflight-directory
+```
+
+The directory must be new. It retains the pinned inputs and a terminal result,
+including missing receipt fields. A failed check exits nonzero without starting
+collection or training. Use a new directory after changing the source.
+
+The mechanical pilot is `python -m bialy.campaign.pilot --configuration FILE`.
+Its JSON configuration pins the host checkout and commit, runner image, student
+models, llama.cpp revision, serving image, reviewer slots, and storage locations.
+The selected `tool_surface` is part of the immutable run input. The runner image
+must carry its source commit in the `pw.host_commit` label.
+
+The pilot creates eight tasks per partition: training, validation, development,
+and held-out evaluation. It measures two fixed teacher attempts per development
+task, retains every outcome, collects whole qualified episodes, exports an
+unchanged baseline, trains, exports the
+adapter result, and drives paired host evaluations with thinking off. Its result
+separates pipeline completion from behavioral success and never qualifies a model
+for promotion. The multi-turn probe does not establish long-context behavior.
+
+Session and response reviewers receive explicit JSON schemas whose evidence
+references are restricted to the supplied receipts. Returned references are
+validated again before admission. Unexpected stage failures retain private
+diagnostics beside the run journal and do not trigger blind retries.
+
+The 3090 dry run reuses a qualified collection and baseline from an existing
+pilot. It selects two complete training rows, one validation row, and one held-out
+row, each at most 10,240 tokens. It preserves the declared context policy and
+records selection and exclusions. The job pauses after its first optimizer
+update, mirrors its checkpoint, resumes, exports the adapter, and drives one
+application task with thinking off. Its artifacts are marked as dry-run outputs;
+completion qualifies automation mechanics only.
+
+```bash
+python -m bialy.campaign.dry_run --source-run /path/to/completed-collection-run \
+  --directory /path/to/new-dry-run
+```
+
+The source collection, baseline export, and baseline evaluation must have passed.
+A later failed training stage does not invalidate those immutable receipts. The
+dry run has a separate journal and training permit, retains source lineage and
+review evidence, and leaves the source run's terminal result intact.
+
 Before driving, `preflight` checks the engine-off image and `preflight_on` checks
 its engine-on peer. Engine-on probes require the host's decision-engine readiness
 fact and a CPU-pinned engine. Both dispatch the pinned scanner over a small fixture.

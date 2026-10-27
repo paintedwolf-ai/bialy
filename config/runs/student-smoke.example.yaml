@@ -15,7 +15,6 @@ run:
   fail_fast: {enabled: true, summary_length_limit: 2, capture_turn_limit: 3}
   workspaces: [flask, vue-vite]
   archetypes: [question, explain_code, small_change, bugfix, ui_mockup, new_project]
-  spend_ceiling_usd: 10
   scanner: pinned
   engine_on:
     enabled: true
@@ -32,5 +31,10 @@ run:
     preload_from_judge: false
     shadow: false
     repair: false
-    student_serving: {provider: student, kind: openai-compatible, model: gemma-4-e4b-it,
-                      base_url: "http://127.0.0.1:8080/v1", context_window: 32768}
+    students:
+      e4b: {provider: student-e4b, kind: openai-compatible, model: gemma-4-E4B-it,
+            base_url: "http://127.0.0.1:8080/v1", context_window: 65536}
+      12b: {provider: student-12b, kind: openai-compatible, model: gemma-4-12B-it,
+            base_url: "http://127.0.0.1:8081/v1", context_window: 65536}
+      26b-a4b: {provider: student-26b-a4b, kind: openai-compatible, model: gemma-4-26B-A4B-it,
+                base_url: "http://127.0.0.1:8082/v1", context_window: 65536}

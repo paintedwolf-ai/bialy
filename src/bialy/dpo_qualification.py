@@ -153,10 +153,9 @@ def qualification(row):
             evidence = quality.get("evidence_ids")
             if not isinstance(evidence, list) or not evidence or any(not isinstance(e, str) or not e.strip() for e in evidence):
                 reasons.append("missing_quality_evidence")
-            if quality.get("method") == "cross_family_judge":
-                families = (quality.get("judge_family"), quality.get("teacher_family"))
-                if not all(isinstance(f, str) and f.strip() for f in families) or families[0] == families[1]:
-                    reasons.append("invalid_quality_judge_family")
+            if quality.get("method") == "model_judge":
+                if not quality.get("judge_model") or not quality.get("judge_revision"):
+                    reasons.append("missing_quality_judge_identity")
             elif quality.get("method") != "deterministic":
                 reasons.append("unsupported_quality_method")
     if not capture_reasons(row):

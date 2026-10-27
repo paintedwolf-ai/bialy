@@ -50,13 +50,15 @@ class Chat:
         value, _ = json.JSONDecoder().raw_decode(text[start:])
         return value
 
-    def turn(self, messages, tools=None, temperature=0.0, seed=None, max_tokens=4096, thinking=False):
+    def turn(self, messages, tools=None, temperature=0.0, seed=None, max_tokens=4096, thinking=False, schema=None):
         """One assistant turn (text and tool_calls) over a transcript prefix, with thinking off by default."""
         extra = {"seed": seed} if seed is not None else {}
         if self.reasoning_effort:
             extra["extra_body"] = {"reasoning_effort": self.reasoning_effort}
         elif not thinking:
             extra["extra_body"] = {"reasoning_effort": "low"} if self.hosted else {"chat_template_kwargs": {"enable_thinking": False}}
+        if schema is not None:
+            extra["response_format"] = {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema, "strict": True}}
         if tools:
             extra["tools"] = tools
         reply = self.client.chat.completions.create(

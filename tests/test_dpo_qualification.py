@@ -27,7 +27,7 @@ def captured_row():
         **{key: capture[key] for key in ("state_sha256", "host_revision", "epoch", "tool_surface", "catalog_sha256")},
         "request_sha256": capture["sha256"], "kind": "accepted_response", "outcome": "accepted",
         "response_origin": "model", "response_sha256": digest(target),
-        "quality": {"verdict": "pass", "method": "cross_family_judge", "judge_family": "qwen", "teacher_family": "gemma",
+        "quality": {"verdict": "pass", "method": "model_judge", "judge_model": "judge", "judge_revision": "revision", "judge_family": "qwen", "teacher_family": "gemma",
                     "evidence_ids": ["quality-1"], "request_sha256": capture["sha256"], "response_sha256": digest(target)},
     }
     return {
@@ -91,7 +91,9 @@ def test_quality_verdict_is_required_and_bound():
         assert reason in qualification(row)["reasons"]
     row = captured_row()
     row["validation"]["quality"]["judge_family"] = "gemma"
-    assert "invalid_quality_judge_family" in qualification(row)["reasons"]
+    assert "invalid_quality_judge_family" not in qualification(row)["reasons"]
+    row["validation"]["quality"].pop("judge_revision")
+    assert "missing_quality_judge_identity" in qualification(row)["reasons"]
     row = captured_row()
     row["candidate_reasons"] = "not a list"
     assert "invalid_candidate_reasons" in qualification(row)["reasons"]

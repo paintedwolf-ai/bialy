@@ -130,7 +130,7 @@ class Run:
     def collection_window(self):
         """The student's declared context window when this run collects custom-model data."""
         custom = self.setting("custom_model") or {}
-        return int(custom["student_serving"]["context_window"]) if custom.get("enabled") else None
+        return custom_model_run.context_window(custom) if custom.get("enabled") else None
 
     @property
     def engine_on_only(self):
@@ -259,9 +259,10 @@ def stage_check(run):
     for name in run.setting("judges") or []:
         if not any(m.id == name and ("judge" in m.roles or m.serve) for m in f.models):
             faults.append("run.judges names %s, which is not a judge in models.yaml" % name)
-    for model in generators:
+    reviewer_slots = run.setting("judges") or [model.id for model in scaled.models if "judge" in model.roles]
+    for slot in range(max(1, len(reviewer_slots))):
         try:
-            used.append(scaled.judge_for(model.id))
+            used.append(scaled.reviewer(slot))
         except config.ConfigError as exc:
             faults.append(str(exc))
     try:
@@ -304,7 +305,7 @@ def stage_check(run):
         faults.append("run.spend_ceiling_usd needs hosted.price_per_million on at least one model it would count")
     if faults:
         raise RunError("; ".join(faults))
-    return {"generators": [m.id for m in generators], "judges": sorted({scaled.judge_for(m.id).id for m in generators}),
+    return {"generators": [m.id for m in generators], "judges": reviewer_slots,
             "writer": writer_model(run).id, "repositories": len(scaled.repos), "stacks": len(scaled.stacks),
             "runners": int(run.setting("runners") or f.fleet["runners"]), "engine_on": run.engine_on, "recipes": recipes,
             "scanner": run.setting("scanner") if scanner else "none",
@@ -421,9 +422,9 @@ def plan_pass(run, pass_name, pilot):
     decide_env = fleet.pilot_env(pilot)
     custom = run.setting("custom_model") or {}
     if custom.get("enabled"):
-        serving = custom["student_serving"]
         decide_env.update(PW_TRAINING_CAPTURE_DIR="/shard/training-captures", PW_TRAINING_EPOCH=custom["epoch"],
-                          PW_TRAINING_STUDENT_PROVIDER=serving["provider"], PW_TRAINING_STUDENT_MODEL=serving["model"])
+                          PW_TRAINING_STUDENTS=json.dumps([{"provider": serving["provider"], "model": serving["model"]}
+                                                         for serving in custom["students"].values()]))
     if (run_dir / "shards").exists():
         # A plan stage runs again only when its pass is being redone, so earlier shards
         # of the pass are stale; containers still running are kept and adopted.

@@ -12,9 +12,9 @@ def test_every_model_and_repository_is_pinned(factory):
     assert {r.name for r in factory.repos if r.split == "holdout"} == {"zod", "sinatra", "ripgrep"}
 
 
-def test_a_row_is_judged_by_another_family(factory):
-    for m in factory.generators():
-        assert factory.judge_for(m.id).family != m.family
+def test_row_review_uses_the_first_configured_judge(factory):
+    expected = factory.model(factory.run['judges'][0])
+    assert factory.reviewer() == expected
 
 
 def test_a_hosted_judge_needs_its_key(factory, monkeypatch):
@@ -111,3 +111,10 @@ def test_task_local_failure_scope_requires_one_task_per_runner():
     with pytest.raises(config.ConfigError, match="tasks_per_runner: 1"):
         config.run_settings({"fail_fast": {"task_failure_codes": ["turn_closeout_tool_call"]}})
     assert config.run_settings({"tasks_per_runner": 1, "fail_fast": {"task_failure_codes": ["turn_closeout_tool_call"]}})["tasks_per_runner"] == 1
+
+
+def test_same_family_judge_is_usable_when_it_is_the_configured_pool(factory):
+    import dataclasses
+    judge = next(model for model in factory.models if 'judge' in model.roles)
+    limited = dataclasses.replace(factory, models=[judge], run={**factory.run, 'judges': [judge.id]})
+    assert limited.reviewer() == judge

@@ -12,7 +12,7 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
-from . import custom_quality, dpo, provenance, split
+from . import custom_quality, dpo, provenance
 
 
 class DatasetError(ValueError):
@@ -44,16 +44,32 @@ def validate_settings(cfg):
         raise DatasetError("run.custom_model.host_commit must pin the full Painted Wolf Code commit")
     if cfg.get("preload_from_judge"):
         raise DatasetError("custom-model training requires observed offered tools; synthetic judge preloading is unsupported")
-    serving = cfg.get("student_serving") or {}
-    if (set(serving) != {"provider", "kind", "model", "base_url", "context_window"} or not all(serving.values())
-            or serving["kind"] not in STUDENT_SERVING_KINDS or int(serving["context_window"]) < 4096):
-        raise DatasetError("run.custom_model.student_serving declares provider, kind (%s), model, base_url and a context_window "
-                           "of at least 4096: how the student will be served" % ", ".join(sorted(STUDENT_SERVING_KINDS)))
+    from .student_host.specification import load
+    spec = load()
+    students = cfg.get("students") or {}
+    if set(students) != set(spec['models']):
+        raise DatasetError("run.custom_model.students must declare every pinned student")
+    for name, serving in students.items():
+        if (set(serving) != {"provider", "kind", "model", "base_url", "context_window"}
+                or not all(serving.values()) or serving['kind'] != 'openai-compatible'
+                or serving['model'] != spec['models'][name]['directory']
+                or serving['context_window'] != spec['context']['max_sequence_tokens']):
+            raise DatasetError("run.custom_model.students must match the pinned model and context policy")
+    if len({item['provider'] for item in students.values()}) != len(students):
+        raise DatasetError("run.custom_model.students must use distinct providers")
 
 
-# Serving kinds whose server applies the checkpoint's own chat template, so the
-# host exporter can train on exactly the tokens the student will be served.
-STUDENT_SERVING_KINDS = {"openai-compatible"}
+def context_window(cfg):
+    """The one context window every student is served with."""
+    windows = {int(serving["context_window"]) for serving in cfg["students"].values()}
+    if len(windows) != 1:
+        raise DatasetError("run.custom_model.students must share one context window")
+    return windows.pop()
+
+
+def student_binding(identity, serving):
+    return {**identity, 'student_provider': serving['provider'], 'student_kind': serving['kind'],
+            'student_model': serving['model'], 'student_context_window': serving['context_window']}
 
 
 def binding(run):
@@ -71,8 +87,7 @@ def binding(run):
     identity = {
         "schema": "pw-custom-run/1", "epoch": cfg["epoch"], "tool_surface": cfg["tool_surface"],
         "host_commit": cfg["host_commit"], "settings_sha256": digest(run.settings),
-        "student_provider": cfg["student_serving"]["provider"], "student_kind": cfg["student_serving"]["kind"],
-        "student_model": cfg["student_serving"]["model"], "student_context_window": int(cfg["student_serving"]["context_window"]),
+        "students": cfg["students"],
         "factory": provenance.factory_source(),
         "models": [dataclasses.asdict(m) for m in run.factory.models],
         "split": run.factory.split,
@@ -208,40 +223,9 @@ def collect(run, judge_factory=None):
     sources = {"sft": [sft_raw], "dpo": [dpo_raw]}
     exporter = run.checkout / "scripts/bialy/custom_model/collect.py"
     if exporter.is_file():
-        destination = base / "host-receipts"
-        cmd = [sys.executable, str(exporter), "--binding", str(run.path("custom-model-binding.json")),
-               "--catalog-sha256", inputs["catalog_sha256"], "--out", str(destination)]
-        for name in inputs["passes"]:
-            cmd += ["--fleet", str(run.path("fleet-" + name))]
-        if cfg.get("quality_reports"):
-            cmd += ["--quality", str(Path(cfg["quality_reports"]).resolve())]
-        subprocess.run(cmd, check=True)
-        # Historical candidates supply task lineage only, never acceptance.
-        lineage = {}
-        with gzip.open(transcripts, "rt", encoding="utf-8") as sessions:
-            for line in sessions:
-                session = json.loads(line)
-                lineage[session["session_id"]] = {k: session.get(k) for k in
-                    ("workspace", "prompt_group", "task_id", "archetype", "model")}
-        accepted = base / "sft.host-receipts.jsonl"
-        aborted_stores = {inputs["files"][str(marker.parent.relative_to(run.dir) / "store.db")]
-                          for name in inputs["passes"] for marker in run.path("fleet-" + name).glob("shards/*/task-aborted.json")}
-        stats["excluded_aborted_task_candidates"] = write_receipt_lineage(destination / "sft.receipts.jsonl", accepted, lineage, aborted_stores)
-        if cfg.get("quality_judge"):
-            quality_path = base / "quality.jsonl"
-            stats["quality"] = custom_quality.judge_rows(judge_factory or run.factory, accepted, transcripts, quality_path,
-                                                        seed=int(run.setting("seed", 7)))
-            reviews = {(q["request_sha256"], q["response_sha256"]): q for q in
-                       (json.loads(line) for line in quality_path.read_text().splitlines())}
-            reviewed = base / "sft.reviewed.jsonl"
-            with reviewed.open("w") as output:
-                for line in accepted.read_text().splitlines():
-                    row = json.loads(line)
-                    report = row["validation"]
-                    report["quality"] = reviews.get((report["request_sha256"], report["response_sha256"]), {})
-                    output.write(json.dumps(row) + "\n")
-            accepted = reviewed
-        sources["sft"] = [accepted]
+        sources = {"dpo": [dpo_raw]}
+        for student, serving in cfg["students"].items():
+            sources["sft-" + student] = [export_student(run, base / student, identity, serving, inputs, transcripts, stats, judge_factory)]
     workers, seed = int(run.setting("workers", 16)), int(run.setting("seed", 7))
     if cfg.get("repair"):
         out = base / "dpo.repair-proposals.jsonl"
@@ -260,14 +244,46 @@ def collect(run, judge_factory=None):
     stats["status"] = "not_ready"
     stats["training_consumable"] = False
     stats["reason"] = "No publishable training splits: diagnostic mode or missing receipt, quality, or split coverage"
-    if not cfg.get("diagnostic_only"):
-        splits = split.split(run.factory, [base / "sft.qualified-review.jsonl"], base / "sft")
-        stats["splits"] = splits
-        if all(splits[name]["rows"] for name in ("train", "val", "holdout")):
-            stats.update(status="ready_for_offline_sft", training_consumable=True,
-                         reason="Receipt and quality qualified SFT splits; DPO and live evaluation remain separate")
+    stats['reason'] = 'Diagnostic candidates require campaign episode admission and frozen partitions before training'
     stats["outputs"] = {str(p.relative_to(base)): provenance.file_sha256(p) for p in sorted(base.rglob("*"))
                         if p.is_file() and p.name != "report.json"}
     write_json(base / "report.json", stats)
     write_json(run.path("custom_model", "latest.json"), {"directory": str(base), "status": stats["status"], "inputs_sha256": digest(inputs)})
     return stats
+
+
+def export_student(run, base, identity, serving, inputs, transcripts, stats, judge_factory):
+    base.mkdir(parents=True, exist_ok=True)
+    cfg = run.setting("custom_model")
+    exporter = run.checkout / "scripts/bialy/custom_model/collect.py"
+    binding_path = base / "binding.json"
+    write_json(binding_path, student_binding(identity, serving))
+    destination = base / "host-receipts"
+    cmd = [sys.executable, str(exporter), "--binding", str(binding_path),
+           "--catalog-sha256", inputs["catalog_sha256"], "--out", str(destination)]
+    for name in inputs["passes"]:
+        cmd += ["--fleet", str(run.path("fleet-" + name))]
+    if cfg.get("quality_reports"):
+        cmd += ["--quality", str(Path(cfg["quality_reports"]).resolve())]
+    subprocess.run(cmd, check=True)
+    # Historical candidates supply task lineage only, never acceptance.
+    lineage = {}
+    with gzip.open(transcripts, "rt", encoding="utf-8") as sessions:
+        for line in sessions:
+            session = json.loads(line)
+            lineage[session["session_id"]] = {k: session.get(k) for k in
+                ("workspace", "prompt_group", "task_id", "archetype", "model")}
+    accepted = base / "sft.host-receipts.jsonl"
+    aborted_stores = {inputs["files"][str(marker.parent.relative_to(run.dir) / "store.db")]
+                      for name in inputs["passes"] for marker in run.path("fleet-" + name).glob("shards/*/task-aborted.json")}
+    stats["excluded_aborted_task_candidates"] = write_receipt_lineage(destination / "sft.receipts.jsonl", accepted, lineage, aborted_stores)
+    if cfg.get("quality_judge"):
+        quality_path = base / "quality.jsonl"
+        stats["quality"] = custom_quality.judge_rows(judge_factory or run.factory, accepted, transcripts, quality_path,
+                                                    seed=int(run.setting("seed", 7)))
+        reviewed_destination = base / "reviewed-receipts"
+        subprocess.run([*cmd[:cmd.index('--out') + 1], str(reviewed_destination),
+                        *cmd[cmd.index('--out') + 2:], '--quality', str(quality_path)], check=True)
+        accepted = base / 'sft.reviewed.jsonl'
+        write_receipt_lineage(reviewed_destination / 'sft.receipts.jsonl', accepted, lineage, aborted_stores)
+    return accepted

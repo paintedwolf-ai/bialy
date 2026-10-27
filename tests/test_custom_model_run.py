@@ -7,6 +7,7 @@ import pytest
 from bialy import custom_model_run as cm
 from bialy import provenance
 from bialy import run as runmod
+from bialy.student_host.specification import students
 
 
 @pytest.fixture
@@ -40,15 +41,15 @@ def source_inputs(run):
 
 def test_the_binding_names_the_student_and_its_serving_is_validated(custom_run):
     identity = cm.binding(custom_run)
-    assert (identity["student_provider"], identity["student_kind"], identity["student_model"], identity["student_context_window"]) == (
-        "student", "openai-compatible", "gemma-4-e4b-it", 32768)
-    cfg = dict(custom_run.settings["custom_model"])
-    for bad in ({"kind": "ollama"}, {"context_window": 2048}, {"model": ""}):
-        cfg["student_serving"] = dict(custom_run.settings["custom_model"]["student_serving"], **bad)
-        with pytest.raises(cm.DatasetError, match="student_serving"):
+    assert set(identity['students']) == set(students())
+    assert all(item['context_window'] == 65536 for item in identity['students'].values())
+    cfg = dict(custom_run.settings['custom_model'])
+    for bad in ({'kind': 'ollama'}, {'context_window': 32768}, {'model': ''}):
+        cfg['students'] = {**identity['students'], 'e4b': dict(identity['students']['e4b'], **bad)}
+        with pytest.raises(cm.DatasetError, match='students'):
             cm.validate_settings(cfg)
-    cfg["student_serving"] = {"provider": "student"}
-    with pytest.raises(cm.DatasetError, match="student_serving"):
+    cfg['students'] = {'e4b': identity['students']['e4b']}
+    with pytest.raises(cm.DatasetError, match='students'):
         cm.validate_settings(cfg)
 
 

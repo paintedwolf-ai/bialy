@@ -43,8 +43,7 @@ at a pinned commit, on a request an open-weights model wrote from facts about
 that repository, or an empty directory for a greenfield stack, on a request it
 wrote to start a project from a drawn idea and scale. Guide
 and kind labels are what the session did. Skill, tool, and need scores are
-the judge's 0..4 levels, from a model of another family than the one that
-drove the session. A turn's tool scores (`labels.tool_scores`) rate every
+the configured reviewer's 0..4 levels. A turn's tool scores (`labels.tool_scores`) rate every
 loadable tool it offered against the request: driving models call tools out
 of habit, so the tools a session called (`labels.tools`) overstate what the
 request needed. No row comes from a person's private session.

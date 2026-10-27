@@ -53,5 +53,6 @@ COPY preflight.py /opt/bialy/
 COPY unattended.yaml /opt/bialy/
 COPY workflows/ /opt/bialy/workflows/
 # The overlay holds staged configuration, such as an engine-on pass's decision deadlines.
+ENV XDG_CACHE_HOME=/tmp/user-cache
 ENV LYCAON_ENGINE_ROOT=/opt/bialy/engine LYCAON_CONFIG_ROOT=/opt/bialy/engine/overlay
 ENTRYPOINT ["/opt/bialy/run-shard.sh"]

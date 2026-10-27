@@ -98,16 +98,18 @@ def test_the_student_serving_provider_is_declared_but_never_driven(factory, tmp_
                      settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
     scaled = runmod.scaled_factory(run)
     providers, policy, _, chosen, _ = fleet.sidecar_files(scaled, {}, 0)
-    assert "  - id: student\n    kind: openai-compatible\n" in providers
-    entry = next(p for p in yaml.safe_load(providers)["providers"] if p["id"] == "student")
-    assert entry["models"] == [{"id": "gemma-4-e4b-it", "context_length": 32768,
-                                 "thinking": {"state": "supported", "can_disable": True}}]
     parsed = yaml.safe_load(policy)
-    assert parsed["thinking_overrides"] == [{"provider_id": "student", "model": "gemma-4-e4b-it", "mode": "fixed", "enabled": False}]
-    assert "student" not in chosen.values() and parsed["coordinator"]["provider_id"] != "student"
-    assert all(m["provider_id"] != "student" for m in parsed["agent_pool"]["models"])
-    plain = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name="p", settings=runmod.settings_for(factory, {}))
-    assert "id: student" not in fleet.sidecar_files(runmod.scaled_factory(plain), {}, 0)[0]
+    entries = {p['id']: p for p in yaml.safe_load(providers)['providers']}
+    for student, model in (('e4b', 'gemma-4-E4B-it'), ('12b', 'gemma-4-12B-it')):
+        provider = 'student-' + student
+        assert entries[provider]['models'] == [{'id': model, 'context_length': 65536,
+                                               'thinking': {'state': 'supported', 'can_disable': True},
+                                               'reasoning_effort_levels': {'off': 'none', 'low': 'low', 'medium': 'medium', 'high': 'high'}}]
+        assert {'provider_id': provider, 'model': model, 'mode': 'fixed', 'enabled': False} in parsed['thinking_overrides']
+        assert provider not in chosen.values() and parsed['coordinator']['provider_id'] != provider
+        assert all(m['provider_id'] != provider for m in parsed['agent_pool']['models'])
+    plain = runmod.Run(factory=dataclasses.replace(factory, root=tmp_path), name='p', settings=runmod.settings_for(factory, {}))
+    assert 'id: student-' not in fleet.sidecar_files(runmod.scaled_factory(plain), {}, 0)[0]
 
 
 def test_collect_joins_rows_to_their_task_and_lists_what_it_drove(tmp_path):
@@ -181,6 +183,7 @@ def test_an_engine_payload_missing_a_tool_is_refused(tmp_path):
 
 
 def test_hosted_generator_shard_files_name_the_provider_and_keep_the_key_out(factory, monkeypatch, tmp_path):
+    monkeypatch.setattr(fleet.runner_security, "arguments", lambda root: ["--security-opt", "apparmor=test"])
     providers, policy, env, chosen, wire_model = fleet.sidecar_files(factory, {"LYCAON_DECIDE_DISABLED": "1"}, 0)
     assert chosen["glm-5.3-flash"] == "fireworks-glm-5-3-flash" and wire_model["glm-5.3-flash"] == "accounts/fireworks/models/glm-5p3-flash"
     assert "api_key_env: FIREWORKS_API_KEY" in providers and "accounts/fireworks/models/glm-5p3-flash" in policy
@@ -324,6 +327,7 @@ def test_a_task_failing_for_its_own_reasons_keeps_the_fleet_going(factory, monke
 
 
 def test_a_stack_shard_starts_in_an_empty_workspace(factory, monkeypatch, tmp_path):
+    monkeypatch.setattr(fleet.runner_security, "arguments", lambda root: ["--security-opt", "apparmor=test"])
     import dataclasses
 
     write_tasks(tmp_path / "tasks", "react-vite", 3)
@@ -496,3 +500,34 @@ def test_a_hosted_model_drives_at_its_configured_reasoning_effort(factory):
     assert "models: [{id: accounts/fireworks/models/glm-5p3-flash, reasoning_effort: none}]" in providers
     providers, *_ = fleet.sidecar_files(factory, {}, 0)
     assert "models: [{id: accounts/fireworks/models/glm-5p3-flash}]" in providers
+
+
+def test_student_capture_json_survives_shell_environment_loading(tmp_path, factory):
+    students = [{'provider': 'student', 'model': 'e4b'}, {'provider': 'student', 'model': '12b'}]
+    value = json.dumps(students)
+    _, _, environment, _, _ = fleet.sidecar_files(factory, {'PW_TRAINING_STUDENTS': value}, 0)
+    path = tmp_path / 'sidecar.env'
+    path.write_text(environment)
+    result = subprocess.run(['bash', '-c', '. "$1"; printf "%s" "$PW_TRAINING_STUDENTS"', 'fixture', str(path)],
+                            check=True, text=True, capture_output=True)
+    assert json.loads(result.stdout) == students
+
+
+def test_runner_image_requires_and_stages_document_helper(factory, tmp_path, monkeypatch):
+    import dataclasses
+    factory = dataclasses.replace(factory, root=tmp_path / 'factory')
+    binaries, engine = tmp_path / 'bin', tmp_path / 'engine'
+    binaries.mkdir()
+    engine.mkdir()
+    for name in ('lycaon', 'lycaon-debug'):
+        (binaries / name).write_bytes(b'binary')
+    monkeypatch.setattr(fleet, 'check_engine', lambda *args: None)
+    calls = []
+    monkeypatch.setattr(fleet.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(FileNotFoundError, match='pw-document-core'):
+        fleet.build_image(factory, binaries, engine)
+    assert not calls
+    (binaries / 'pw-document-core').write_bytes(b'core')
+    fleet.build_image(factory, binaries, engine)
+    assert len(calls) == 1
+    assert (factory.root / 'build/runner/bin/pw-document-core').read_bytes() == b'core'

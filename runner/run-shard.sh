@@ -177,6 +177,11 @@ grep -o '"root_session":"[^"]*"' "$out/manifest.jsonl" | cut -d'"' -f4 >"$out/ro
 /opt/bialy/bin/lycaon-debug decide export --db /cfg/store.db --roots "$out/roots.txt" --out "$out/rows.part" \
   --retention "$out/retention.part" --requests "$out/requests.part"
 sqlite3 /cfg/store.db ".backup '$out/store.db'"
+# Retained backups must open without writable WAL side files.
+sqlite3 "$out/store.db" "PRAGMA journal_mode=DELETE;" >/dev/null
+if [ "${BIALY_CAMPAIGN_CAPTURE:-}" = 1 ] && [ -d /cfg/projects ]; then
+  cp -R /cfg/projects "$out/projects"
+fi
 mv "$out/retention.part" "$out/retention.jsonl"
 mv "$out/requests.part" "$out/requests.jsonl"
 mv "$out/rows.part" "$out/rows.jsonl"

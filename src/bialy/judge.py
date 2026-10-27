@@ -7,11 +7,10 @@ every other loadable tool card against each request_tools need. Tools a
 session called are not labels on their own: driving models make habitual
 orientation calls, and a head trained on them learns the habit.
 
-A row is judged by a model of another family than the one that drove its
-session. Decoding is greedy with a fixed seed, and candidates are shown in an
+Reviewer slots name the models used for scoring. Decoding is greedy with a fixed seed, and candidates are shown in an
 order shuffled per row and unit, recorded on the row, so position bias
 averages out across the set instead of favouring the catalog's first cards.
-A sample of rows is judged again by the other family to report agreement.
+A sample of rows is judged again by another configured reviewer to report agreement.
 """
 
 import concurrent.futures
@@ -178,7 +177,7 @@ def run(factory, corpus, rows_in, rows_out, workers=48, second=None, units=UNITS
     fatal_error = None
 
     def score_row(row):
-        primary = factory.judge_for(row["model"]).id
+        primary = factory.reviewer().id
         # A pass over some units keeps the others' labels, so it must be the same judge.
         if set(units) != set(UNITS) and (row.get("judge") or {}).get("model", primary) != primary:
             raise ValueError("row %s was judged by %s, not %s" % (row["session"], row["judge"]["model"], primary))
@@ -186,9 +185,9 @@ def run(factory, corpus, rows_in, rows_out, workers=48, second=None, units=UNITS
         out = judge_row(chats, row, skill_cards, tool_cards, primary, units)
         other = None
         if random.Random(order_seed(row, "second")).random() < fraction:
-            others = [m.id for m in factory.models if "judge" in m.roles and m.id != primary]
-            if others:
-                other = judge_row(chats, untouched, skill_cards, tool_cards, others[0], units, lenient=True)
+            slots = factory.run.get("judges") or [model.id for model in factory.models if "judge" in model.roles]
+            if len(slots) > 1:
+                other = judge_row(chats, untouched, skill_cards, tool_cards, factory.reviewer(1).id, units, lenient=True)
         return out, other
 
     def work(row):

@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import importlib.util
 import json
@@ -11,10 +12,11 @@ import yaml
 
 from bialy import custom_model_run, faults, fleet, preflight
 from bialy import run as runmod
+from bialy.student_host.specification import load, students
 
 
 def collection(factory, tmp_path):
-    settings = dict(factory.run)
+    settings = copy.deepcopy(factory.run)
     settings["custom_model"] = dict(settings["custom_model"], enabled=True, epoch="fixture", host_commit="a" * 40)
     settings["generators"] = ["deepseek-v4.1-flash"]
     factory = dataclasses.replace(factory, root=tmp_path, run=settings)
@@ -41,11 +43,11 @@ def test_overlay_window_is_read_from_the_actual_image(factory, tmp_path, monkeyp
     seen = []
     def read(*args):
         seen.append(args)
-        return SimpleNamespace(stdout=yaml.safe_dump({"window_source": "explicit", "model_context_window": 24576, "live_budget_pct": 75}))
+        return SimpleNamespace(stdout=yaml.safe_dump({"window_source": "explicit", "model_context_window": 49152, "live_budget_pct": 75}))
     monkeypatch.setattr(fleet, "sh", read)
     preflight.verify_window(run, "on")
     assert seen[0][:4] == ("docker", "run", "--rm", "--entrypoint")
-    run.settings["custom_model"]["student_serving"] = dict(run.settings["custom_model"]["student_serving"], context_window=65536)
+    run.settings["custom_model"]["students"]["e4b"] = dict(run.settings["custom_model"]["students"]["e4b"], context_window=32768)
     with pytest.raises(faults.RunFault, match="window_mismatch"):
         preflight.verify_window(run, "on")
 
@@ -159,6 +161,7 @@ def test_runner_dispatches_the_bundled_scanner_and_requires_engine_readiness(tmp
             assert "scanner_id='lycaon-sast'" in sql
             return [("complete",)]
     monkeypatch.setattr(module, "api", api)
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
     monkeypatch.setattr(module.sqlite3, "connect", lambda *args, **kw: Store())
     monkeypatch.setenv("LYCAON_DECIDE_DEVICE", "cpu")
     module.before(str(tmp_path))
@@ -195,15 +198,71 @@ def test_preflight_requires_receipt_admission_not_just_kept_payloads(factory, tm
         source = Path(args[args.index("--fleet") + 1])
         assert (source / "shards" / "fixture").resolve() == shard.resolve()
         assert [p.name for p in (source / "shards").iterdir()] == ["fixture"]
-        binding = json.loads((shard / "receipt-binding.json").read_text())
-        assert binding["student_model"] == "gemma-4-e4b-it" and binding["epoch"] == "fixture"
-        output = shard / "receipt-export"
+        binding = json.loads(Path(args[args.index("--binding") + 1]).read_text())
+        assert binding["student_model"] in {model["directory"] for model in load()["models"].values()} and binding["epoch"] == "fixture"
+        output = Path(args[args.index("--out") + 1])
         output.mkdir()
         (output / "manifest.json").write_text(json.dumps({"counts": counts}))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(preflight.subprocess, "run", export)
     if expected:
-        assert preflight.verify_receipts(run, shard) == expected
+        assert preflight.verify_receipts(run, shard) == dict.fromkeys(students(), expected)
     else:
         with pytest.raises(faults.RunFault, match="receipt_not_accepted"):
             preflight.verify_receipts(run, shard)
+
+
+def test_failed_preflight_retains_consistent_private_store(tmp_path):
+    import sqlite3
+    spec = importlib.util.spec_from_file_location('retained_preflight', Path(__file__).parents[1] / 'runner/preflight.py')
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    source, destination = tmp_path / 'store.db', tmp_path / 'retained.db'
+    assert not probe.retain_store(source, destination)
+    with sqlite3.connect(source) as db:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE facts(value TEXT)')
+        db.execute("INSERT INTO facts VALUES('failure')")
+        db.commit()
+        assert probe.retain_store(source, destination)
+    with sqlite3.connect(destination) as db:
+        assert db.execute('SELECT value FROM facts').fetchone()[0] == 'failure'
+    assert destination.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize('models, accepted', [(['e4b', '12b'], True), (['e4b'], False), (['e4b', 'wrong'], False)])
+def test_fixture_requires_committed_captures_for_each_student(tmp_path, monkeypatch, models, accepted):
+    module = runner_module()
+    shard = tmp_path / 'shard'
+    captures = shard / 'training-captures'
+    captures.mkdir(parents=True)
+    (shard / 'manifest.jsonl').write_text(json.dumps({'status': 'settled', 'root_session': 's'}))
+    records = [{'schema': 'pw-training-fact/1', 'kind': 'turn_committed', 'session_id': 's', 'message_id': 'm'}]
+    records += [{'schema': 'pw-training-turn/1', 'session_id': 's', 'message_id': 'm',
+                 'settled': True, 'student_request': {'messages': []}, 'response': {'text': 'done'},
+                 'student_provider': 'student-' + model, 'student_model': model,
+                 'student_kind': 'openai-compatible'} for model in models]
+    for i, record in enumerate(records):
+        (captures / f'{i}.json').write_text(json.dumps(record))
+    monkeypatch.setattr(module, 'Path', lambda path: shard / str(path).removeprefix('/shard/'))
+    monkeypatch.setenv('BIALY_PREFLIGHT', 'fixture')
+    monkeypatch.setenv('PW_TRAINING_STUDENTS', json.dumps([{'provider': 'student-' + m, 'model': m} for m in ['e4b', '12b']]))
+    monkeypatch.setattr(module, 'api', lambda *_: {'generation': 1, 'tokens_after': 1, 'tokens_before': 2})
+    monkeypatch.setattr(module, 'wait_summary', lambda *_: None)
+    if accepted:
+        module.after()
+        assert json.loads((shard / 'preflight.json').read_text())['status'] == 'passed'
+    else:
+        with pytest.raises(module.ProbeFailure, match='preflight_capture_not_kept'):
+            module.after()
+
+
+def test_preflight_refuses_a_broken_document_helper(tmp_path, monkeypatch):
+    module = runner_module()
+    def run(args, **kwargs):
+        assert args == ['/opt/bialy/bin/lycaon', 'diagnostics', 'document-core']
+        return SimpleNamespace(returncode=1)
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    monkeypatch.setattr(module, 'api', lambda *args: pytest.fail('continued after helper failure'))
+    with pytest.raises(module.ProbeFailure, match='preflight_document_core_unavailable'):
+        module.before(str(tmp_path))

@@ -11,11 +11,15 @@ from .resources import write
 from .specification import identity
 
 
-def models(specification, root, run=subprocess.run):
+def models(specification, root, run=subprocess.run, students=None):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
+    selected = list(specification['models']) if students is None else list(students)
+    if not selected or len(set(selected)) != len(selected) or set(selected) - set(specification['models']):
+        raise JobError('model selection must name declared students')
     results = {}
-    for name, model in specification['models'].items():
+    for name in selected:
+        model = specification['models'][name]
         target = root / model['directory']
         receipt_path = root / (model['directory'] + '.source.json')
         expected = {'repository': model['repository'], 'revision': model['revision']}

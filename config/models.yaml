@@ -3,10 +3,8 @@
 # and recorded that its outputs may train a model released under Apache-2.0
 # (outputs_trainable). The configuration refuses any other model.
 #
-# A row is judged by a model from another family than the one that drove its
-# session. GLM-5.3-Flash drives sessions and writes requests; DeepSeek-V4.1-Flash
-# judges with reasoning off, and GLM judges a sample again to measure agreement.
-# GLM-5.3-Flash is thinking-only: the provider refuses reasoning_effort none.
+# Reviewer slots use models from the approved pool.
+# GLM-5.3-Flash requires thinking enabled.
 # Hosted models read their key from the environment variable hosted.key_env;
 # price_per_million (list prices, uncached input) totals a run's metered spend.
 models:
@@ -34,10 +32,7 @@ models:
       gpu: 1
       port: 8002
       args: [--quantization, fp8, --kv-cache-dtype, fp8, --tool-call-parser, gemma4, --reasoning-parser, gemma4]
-  # Consumer-GPU teachers for custom-model collection: pinned GGUF artifacts served
-  # by llama-server outside the factory (serve.external), reached through the
-  # tunnel in replicas.local.yaml. Their quality reviewer is deepseek-v4.1-flash,
-  # the first judge outside each family.
+  # External teachers use pinned GGUF artifacts and replicas.local.yaml endpoints.
   - id: qwen3.6-35b-a3b-q4
     hf: ggml-org/Qwen3.6-35B-A3B-GGUF
     revision: 7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5

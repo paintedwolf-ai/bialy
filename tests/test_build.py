@@ -1,6 +1,8 @@
 import json
 import subprocess
 
+import pytest
+
 from bialy import build
 
 
@@ -88,6 +90,7 @@ def test_binaries_write_a_build_record(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "go_run", lambda checkout, cache, args, cwd, goos=None, goarch=None, mounts=(): calls.append((args[-1], goos, goarch)))
     monkeypatch.setattr(build, "checkout_commit", lambda c: "deadbeef")
     monkeypatch.setattr(build.shutil, "which", lambda name: None)
+    monkeypatch.setattr(build, "document_core", lambda *args: {"sha256": "core", "image": None})
     record = build.binaries(tmp_path / "co", tmp_path / "bin", tmp_path / "cache")
     assert [c[0] for c in calls] == ["./cmd/lycaon", "./cmd/lycaon-debug", "./cmd/decide-rerank"]
     assert all(c[1:] == ("linux", "amd64") for c in calls)
@@ -100,6 +103,7 @@ def test_runner_binaries_carry_the_version_and_scanner_identity(tmp_path, monkey
     flags = []
     monkeypatch.setattr(build, "go_run", lambda checkout, cache, args, cwd, goos=None, goarch=None, mounts=(): flags.append(args[2]))
     monkeypatch.setattr(build, "checkout_commit", lambda c: "deadbeef")
+    monkeypatch.setattr(build, "document_core", lambda *args: {"sha256": "core", "image": None})
     record = build.binaries(tmp_path / "co", tmp_path / "bin", tmp_path / "cache", scanner_identity="aWRlbnRpdHk=")
     assert len(set(flags)) == 1
     assert flags[0] == "-ldflags=-X %s=1.0.2 -X %s=aWRlbnRpdHk=" % (build.VERSION_SYMBOL, build.SCANNER_IDENTITY_SYMBOL)
@@ -142,3 +146,28 @@ def test_a_scanner_candidate_is_checked_for_the_runner_platform(tmp_path):
     (candidate / "provenance.json").write_text(json.dumps({"platform": "linux", "architecture": "x86_64", "version": "1.30.0+paintedwolf.37", "binary_sha256": "ab"}))
     report = build.opengrep_candidate(candidate, tmp_path / "engine")
     assert report["version"] == "1.30.0+paintedwolf.37" and (tmp_path / "engine/opengrep/opengrep").exists()
+
+
+@pytest.mark.parametrize('native', [True, False])
+def test_document_helper_uses_pinned_crate_and_target_platform(tmp_path, monkeypatch, native):
+    monkeypatch.setattr(build.platform, 'system', lambda: 'Linux' if native else 'Darwin')
+    monkeypatch.setattr(build.platform, 'machine', lambda: 'x86_64' if native else 'arm64')
+    monkeypatch.setattr(build.shutil, 'which', lambda name: '/bin/rustup')
+    monkeypatch.setattr(build, 'rust_image', lambda checkout: 'rust:pinned')
+    output = tmp_path / 'bin'
+    output.mkdir()
+    def execute(args, **kwargs):
+        assert '--locked' in args and '--manifest-path' in args
+        if native:
+            assert args[0] == 'cargo'
+        else:
+            assert args[:5] == ['docker', 'run', '--rm', '--platform', 'linux/amd64']
+            assert 'rust:pinned' in args
+        binary = tmp_path / 'cache/document-core-linux-amd64/release/pw-document-core'
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b'compiled helper')
+    monkeypatch.setattr(build, 'sh', execute)
+    result = build.document_core(tmp_path / 'checkout', output, tmp_path / 'cache', 'linux', 'amd64')
+    assert result['sha256'] == build.file_sha256(output / 'pw-document-core')
+    assert result['image'] == (None if native else 'rust:pinned')
+    assert (output / 'pw-document-core').stat().st_mode & 0o111

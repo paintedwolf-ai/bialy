@@ -40,3 +40,11 @@ def test_export_requires_bound_artifacts_and_explicit_probe_success(tmp_path, mo
             exporting.export(tmp_path, tmp_path / 'llama', 'revision', run=run)
         assert not (tmp_path / 'artifact.json').exists()
     assert len(calls) == 2
+
+
+def test_only_a_returned_remote_artifact_skips_local_export(tmp_path):
+    assert not exporting.returned(tmp_path)
+    write(tmp_path / 'artifact.json', {'unquantized_retained': True})
+    assert not exporting.returned(tmp_path)
+    write(tmp_path / 'artifact.json', {'unquantized_retained': False})
+    assert exporting.returned(tmp_path)

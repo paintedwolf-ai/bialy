@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bialy import config
+from bialy import config, custom_model_run
 from bialy import run as runmod
 
 
@@ -270,7 +270,7 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
     assert all(a.per_workspace == 1 for a in scaled.archetypes)
     assert [m.id for m in scaled.generators()] == ["glm-5.3-flash"]
     assert [w.name for w in scaled.workspaces()] == ["flask", "react-vite"]
-    assert scaled.judge_for("glm-5.3-flash").family != "glm"
+    assert scaled.reviewer().id == run.settings["judges"][0]
     assert runmod.writer_model(run).id in {m.id for m in factory.models if "writer" in m.roles}
     # A model named as neither generator nor judge keeps its other roles.
     assert "writer" in scaled.model("glm-5.3-flash").roles and "qwen3.6-35b-a3b" not in {m.id for m in scaled.models}
@@ -294,8 +294,13 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
 
 def test_a_collection_declares_the_students_window_and_identity(factory, tmp_path):
     run = runmod.Run(factory=factory, name="t", settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
-    assert run.collection_window == 32768
+    assert run.collection_window == 65536
     assert make_run(factory, tmp_path).collection_window is None
+    students = run.settings["custom_model"]["students"]
+    name = next(iter(students))
+    students[name] = dict(students[name], context_window=32768)
+    with pytest.raises(custom_model_run.DatasetError, match="one context window"):
+        _ = run.collection_window
 
 
 def test_an_early_stop_still_leaves_a_current_report(factory, tmp_path):

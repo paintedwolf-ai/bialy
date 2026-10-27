@@ -1,0 +1,27 @@
+{
+  "host_repository": "https://github.com/paintedwolf-ai/paintedwolf-code.git",
+  "host_commit": "",
+  "bialy_repository": "https://github.com/paintedwolf-ai/bialy.git",
+  "bialy_commit": "",
+  "llama_repository": "https://github.com/ggml-org/llama.cpp.git",
+  "llama_commit": "",
+  "host_checkout": "/scratch/paintedwolf-training/src/host",
+  "models": "/scratch/paintedwolf-training/models",
+  "provisioning": {
+    "profile": "training",
+    "project": "",
+    "zone": "fr-par-2",
+    "registry": "/var/lib/paintedwolf-training/resources",
+    "provider": "scaleway",
+    "specification": {
+      "type": "H100-1-80G",
+      "image": "",
+      "root_volume": "1TB"
+    }
+  },
+  "machine": {
+    "user": "root",
+    "workspace": "/scratch/training",
+    "uv": "/root/.local/bin/uv"
+  }
+}

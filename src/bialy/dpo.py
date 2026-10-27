@@ -2,7 +2,7 @@
 
 Extracts non-thinking tool-calling trajectories (pw-custom-sft/1) and
 multi-source preference pairs (pw-custom-dpo/1) from shard SQLite stores or
-released transcript archives joined with cross-family judge labels:
+released transcript archives joined with configured reviewer labels:
   1. Host-rejection prevention pairs at s_t (chosen = teacher/repaired call,
      rejected = call that triggered a host Code: rejection or nudge).
   2. Post-rejection recovery pairs at s_{t+1} (chosen = recovery call after

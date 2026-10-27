@@ -12,6 +12,7 @@ to the run's ledger first, and cleanup touches only ledger entries.
 import json
 import os
 import random
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, faults, llm
+from . import config, faults, llm, runner_security
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -131,7 +132,7 @@ def build_image(factory, lycaon_bin, engine_dir, tag=None, deadline_ms=None, con
         shutil.rmtree(ctx)
     shutil.copytree(RUNNER, ctx)
     (ctx / "bin").mkdir()
-    for name in ("lycaon", "lycaon-debug"):
+    for name in ("lycaon", "lycaon-debug", "pw-document-core"):
         shutil.copy2(Path(lycaon_bin) / name, ctx / "bin" / name)
     shutil.copytree(engine_dir, ctx / "engine", symlinks=False)
     if deadline_ms or context_window:
@@ -199,10 +200,10 @@ def endpoint_provider(factory, model, port):
     return base if port == model.port else "%s-%d" % (base, port)
 
 
-def student_serving(factory):
-    """The provider a custom-model collection's student will be served through, or None."""
+def student_surfaces(factory):
+    """Student rendering surfaces for a paired collection."""
     custom = (getattr(factory, "run", None) or {}).get("custom_model") or {}
-    return custom.get("student_serving") if custom.get("enabled") else None
+    return list(custom["students"].values()) if custom.get("enabled") else []
 
 
 def sidecar_files(factory, decide_env, lane):
@@ -227,14 +228,12 @@ def sidecar_files(factory, decide_env, lane):
         providers += ["  - id: %s" % chosen[m.id], "    kind: openai-compatible",
                       "    base_url: %s" % factory.base_url(m, port), "    reasoning_wire: reasoning_content",
                       "    models: [{id: %s}]" % m.id]
-    student = student_serving(factory)
-    if student:
-        # Never called: the host renders each captured request through this entry,
-        # so the training input is what the student's own serving would send.
+    students = student_surfaces(factory)
+    for student in students:
         providers += ["  - id: %s" % student["provider"], "    kind: %s" % student["kind"],
                       "    base_url: %s" % student["base_url"], "    reasoning_wire: reasoning_content",
                       '    api_key_env: ""',
-                      "    models: [{id: %s, context_length: %d, thinking: {state: supported, can_disable: true}}]" % (student["model"], int(student["context_window"]))]
+                      "    models: [{id: %s, context_length: %d, reasoning_effort_levels: {'off': none, low: low, medium: medium, high: high}, thinking: {state: supported, can_disable: true}}]" % (student["model"], int(student["context_window"]))]
     gens = factory.generators()
     first = gens[0]
     local_only = bool((getattr(factory, "run", None) or {}).get("local_workers_only"))
@@ -247,16 +246,16 @@ def sidecar_files(factory, decide_env, lane):
               "lite: {provider_id: %s, model: %s}" % (chosen[lite_model.id], wire_model[lite_model.id]),
               "agent_pool:", "  selection: random", "  models:"]
     policy += ["    - {provider_id: %s, model: %s}" % (chosen[m.id], wire_model[m.id]) for m in worker_gens]
-    if student:
-        # Native fixed control belongs to the serving policy, not the teacher.
-        policy += ["thinking_overrides:", "  - {provider_id: %s, model: %s, mode: fixed, enabled: false}" %
-                   (student["provider"], student["model"])]
+    if students:
+        policy += ["thinking_overrides:"]
+        policy += ["  - {provider_id: %s, model: %s, mode: fixed, enabled: false}" %
+                   (student["provider"], student["model"]) for student in students]
     # The sidecar takes provider keys only from its own credential store, so the shard
     # names which provider gets which environment variable's key; run-shard.sh stores it
     # through the API after the sidecar starts. The names travel, never the keys.
     hosted = ",".join("%s:%s" % (chosen[m.id], m.hosted["key_env"]) for m in gens if m.hosted)
     lines = dict(decide_env, BIALY_HOSTED_PROVIDERS=hosted) if hosted else dict(decide_env)
-    env = "\n".join("%s=%s" % kv for kv in sorted(lines.items()))
+    env = "\n".join("%s=%s" % (key, shlex.quote(str(value))) for key, value in sorted(lines.items()))
     return "\n".join(providers) + "\n", "\n".join(policy) + "\n", env + "\n", chosen, wire_model
 
 
@@ -425,6 +424,7 @@ def shard_minutes(factory, shard):
 
 def container_args(factory, run_name, shard, extra_mounts, image=None):
     fleet = factory.fleet
+    security = runner_security.arguments(factory.root)
     spec = json.loads((shard / "workspace.json").read_text(encoding="utf-8"))
     work = factory.root / "work" / run_name / shard.name
     if work.exists():
@@ -436,8 +436,8 @@ def container_args(factory, run_name, shard, extra_mounts, image=None):
             "--network", factory.network["name"], "--cpus", str(fleet["cpus"]), "--memory", fleet["memory"],
             "--pids-limit", str(fleet["pids"]), "--cap-drop", "ALL",
             "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID",
-            "--cap-add", "KILL", "--cap-add", "SETUID", "--cap-add", "SETGID",
-            "--security-opt", "no-new-privileges", "--read-only",
+            "--cap-add", "KILL", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETFCAP",
+            "--security-opt", "no-new-privileges", "--read-only", *security,
             "--tmpfs", "/tmp:rw,exec,size=8g", "--tmpfs", "/root:rw,exec,size=4g", "--tmpfs", "/cfg:rw,size=4g",
             "-v", "%s:/repos:ro" % (factory.root / "repos"), "-v", "%s:/shard" % shard, "-v", "%s:/work" % (work / "work"),
             "-v", "%s:/cache" % cache,
