@@ -210,14 +210,12 @@ def scaled_factory(run):
     archetypes = [a for a in archetypes if not chosen or a.id in chosen]
     archetypes = retention.shape_archetypes(archetypes, run.setting("retention", {}))
     names = set(run.setting("workspaces") or [])
-    seed = int(run.setting("seed", 7))
     scenarios = [s for s in f.scenarios if (not chosen or s.archetype in chosen) and (not names or s.workspace in names)]
-    scenarios = [s.sample(max(1, round(min(len(s.variants), f.max_variants or len(s.variants)) * float(share))), seed) if share else s
-                 for s in scenarios]
-    max_variants = min(f.max_variants or int(cap), int(cap)) if cap else f.max_variants
+    variants = max(1, round(f.scenario_variants * float(share))) if share else f.scenario_variants
+    variants = min(variants, int(cap)) if cap else variants
     return dataclasses.replace(f, models=models, archetypes=archetypes, repos=[r for r in f.repos if not names or r.name in names],
                                stacks=[s for s in f.stacks if not names or s.name in names], scenarios=scenarios,
-                               max_variants=max_variants, run=run.settings)
+                               scenario_variants=variants, run=run.settings)
 
 
 # ---- check --------------------------------------------------------------------

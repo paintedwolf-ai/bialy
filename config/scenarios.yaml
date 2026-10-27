@@ -9,11 +9,24 @@
 # variant is dropped; variants of two scenarios that near-duplicate each other
 # are refused, since they would be one group under two names.
 #
-# A task set takes at most `max_variants` of a scenario's variants, a seeded
-# sample, so a scenario with many variants does not outweigh one with few;
-# other seeds draw others. `run.task_share` and `run.task_cap` scale it as they
-# scale archetypes, and `run.workspaces` and `run.archetypes` filter by the
-# scenario's workspace and archetype.
+# Every scenario has at least `variants` variants, and a task set takes exactly
+# that many of each, a seeded sample, so every scenario weighs the same and a
+# pass costs `variants` tasks per scenario; other seeds draw other variants
+# from a larger pool. `run.task_share` and `run.task_cap` scale the count as
+# they scale archetypes, and `run.workspaces` and `run.archetypes` filter by
+# the scenario's workspace and archetype.
+#
+# Vary how a variant is typed, not only its words. A scenario's variants
+# should span several of:
+#   - a terse fragment ("ci red again. auth")
+#   - a full paragraph with context
+#   - pasted error or log output with a one-line ask
+#   - wrong or half-remembered names ("the session thing in ctx")
+#   - frustrated or blunt
+#   - non-native English, or typos
+#   - two asks in one message
+#   - a question that is really a request ("why does X do Y?" meaning fix it)
+#   - a request that assumes something false about the code
 #
 # The rules for generated requests hold here too: a request never says which
 # tool to use unless a developer naturally would, and a repository request
@@ -29,6 +42,7 @@
 #       - prompt: "test_session_refresh fails maybe 1 in 5 on CI, never locally. why"
 #       - prompt: "Can you look into an intermittent CI failure in the session tests? Passes every time on my machine."
 #         follow_ups: ["ok that passes now but why was it only on CI"]
+#       ...                             # at least `variants` in all
 defaults:
-  max_variants: 10
+  variants: 10
 scenarios: []

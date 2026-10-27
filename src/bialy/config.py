@@ -149,7 +149,7 @@ class Scenario:
 
     def sample(self, n, seed):
         """At most `n` variants, the same ones for the same seed."""
-        if n is None or n >= len(self.variants):
+        if n >= len(self.variants):
             return self
         picked = sorted(random.Random("%s:%s" % (seed, self.id)).sample(range(len(self.variants)), n))
         return dataclasses.replace(self, variants=tuple(self.variants[i] for i in picked))
@@ -178,8 +178,8 @@ class Factory:
     archetypes: list = field(default_factory=list)
     languages: dict = field(default_factory=dict)
     scenarios: list = field(default_factory=list)
-    # The variants of one scenario a task set takes; None takes them all.
-    max_variants: int | None = None
+    # The variants of each scenario a task set takes; every scenario has at least this many.
+    scenario_variants: int = 10
     # Settings for `bialy run`, from factory.yaml's run section over RUN_DEFAULTS.
     run: dict = field(default_factory=dict)
 
@@ -437,11 +437,10 @@ def load():
 def load_scenarios(factory, raw):
     """scenarios.yaml onto `factory`. Whether a variant names files its repository has is
     checked when tasks are written, against the checkout."""
-    defaults = raw.get("defaults") or {}
-    cap = defaults.get("max_variants")
-    if cap is not None and (type(cap) is not int or cap < 1):
-        raise ConfigError("scenarios.yaml: defaults.max_variants is a positive number or null")
-    factory.max_variants = cap
+    count = (raw.get("defaults") or {}).get("variants")
+    if type(count) is not int or count < 1:
+        raise ConfigError("scenarios.yaml: defaults.variants is a positive number")
+    factory.scenario_variants = count
     archetypes = {a.id: a for a in factory.archetypes}
     workspaces = {w.name: w for w in factory.workspaces()}
     langs = ("en", *factory.languages.get("choices", ()))
@@ -470,6 +469,6 @@ def load_scenarios(factory, raw):
                 raise ConfigError("scenario %s: the prompt %r appears twice in %s" % (sid, prompt[:60], workspace.name))
             prompts.add((workspace.name, prompt))
             variants.append({"prompt": prompt, "follow_ups": [f.strip() for f in follow_ups]})
-        if not variants:
-            raise ConfigError("scenario %s: give at least one variant" % sid)
+        if len(variants) < count:
+            raise ConfigError("scenario %s: give at least %d variants, not %d" % (sid, count, len(variants)))
         factory.scenarios.append(Scenario(id=sid, workspace=workspace.name, archetype=arch.id, variants=tuple(variants), lang=lang))
