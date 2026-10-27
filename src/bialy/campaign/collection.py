@@ -5,7 +5,7 @@ from collections import Counter
 
 from ..provenance import file_sha256
 from .execution import Executor
-from .grading import teacher_routes
+from .grading import reviewed, teacher_routes
 from .journal import CampaignFault, digest
 from .lineage import FAMILIES
 
@@ -55,11 +55,15 @@ class TeacherBaseline:
 
 
 class Collection:
-    """Drive each task until one attempt is admitted, recording every episode for assembly."""
-    def __init__(self, journal, lineage, driver, export, students, pilot, sleep=time.sleep, minimum=None):
+    """Drive each task until one attempt is admitted, recording every episode for assembly.
+
+    With human review, episodes only the reviewers disagree on are exported too, so a
+    person's pass can admit them, and every exported episode is offered to the queue.
+    """
+    def __init__(self, journal, lineage, driver, export, students, pilot, sleep=time.sleep, minimum=None, review=None):
         self.journal, self.lineage, self.students = journal, lineage, tuple(students)
         self.executor = Executor(journal, driver, sleep)
-        self.export, self.pilot, self.minimum = export, pilot, minimum
+        self.export, self.pilot, self.minimum, self.review = export, pilot, minimum, review
 
     def execute(self, inputs, attempt):
         tasks = [json.loads(row[0]) for row in self.journal.db.execute(
@@ -92,13 +96,18 @@ class Collection:
                            'repetition': repetition, 'episode_sha256': result['output']['verdict']['episode_sha256'],
                            'admitted': False, 'exports': None}
                 episodes.append(episode)
-                if not result['output']['success']:
+                reviewable = self.review is not None and reviewed(result['output']) == 'split'
+                if not result['output']['success'] and not reviewable:
                     continue
                 exported = self.export(trial, result['output'])
                 episode['exports'] = {student: {'manifest': exported[student]['manifest'],
                                                 'manifest_sha256': file_sha256(exported[student]['manifest']),
                                                 'rows': exported[student]['rows']} for student in self.students}
                 if not all(exported[student]['rows'] > 0 for student in self.students):
+                    continue
+                if self.review is not None:
+                    self.review.offer_episode(episode, result['output'], task)
+                if not result['output']['success']:
                     continue
                 episode['admitted'] = True
                 counts[partition] += 1

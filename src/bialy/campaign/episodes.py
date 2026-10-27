@@ -1,7 +1,7 @@
 """Bind whole-episode judgments to captured stores and registered sessions."""
 import json
 
-from .grading import episode
+from .grading import decided, episode
 from .journal import CampaignFault, canonical, digest
 
 
@@ -47,7 +47,8 @@ class Episodes:
                                 [(epoch, session, root_session) for session in sessions])
         return verdict
 
-    def admit(self, epoch, session, store_sha256):
+    def admit(self, epoch, session, store_sha256, decisions):
+        """Admit a session's episode; a human decision replaces the reviewers' verdict when the checks passed."""
         row = self.db.execute('''SELECT episodes.* FROM episode_sessions JOIN episodes
             ON episodes.epoch=episode_sessions.epoch AND episodes.root_session=episode_sessions.root_session
             WHERE episode_sessions.epoch=? AND episode_sessions.session_id=?''', (epoch, session)).fetchone()
@@ -57,7 +58,11 @@ class Episodes:
         if digest(evidence) != row['evidence_sha256']:
             raise CampaignFault('episode_evidence_changed')
         verdict = episode(evidence['specification'], evidence['receipt'], evidence['reviews'], evidence['grader'])
-        if verdict != evidence['verdict'] or verdict['verdict'] != 'pass':
+        if verdict != evidence['verdict']:
+            raise CampaignFault('episode_evidence_changed')
+        decision = decisions.get(verdict['episode_sha256'])
+        admitted = verdict['deterministic'] and decided(decision) if decision else verdict['verdict'] == 'pass'
+        if not admitted:
             raise CampaignFault('episode_not_qualified')
         return {'episode_sha256': verdict['episode_sha256'], 'evidence_sha256': row['evidence_sha256'],
-                'root_session': row['root_session']}
+                'root_session': row['root_session'], 'decision_sha256': digest(decision) if decision else None}

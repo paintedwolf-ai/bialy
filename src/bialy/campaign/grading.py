@@ -40,9 +40,38 @@ def episode(specification, receipt, reviews, grader_identity):
                 or set(review.get("dimensions", {})) != set(DIMENSIONS)):
             raise CampaignFault("episode_review_unqualified")
         semantic &= all(review["dimensions"][key] == "pass" for key in DIMENSIONS)
-    return {"schema": "pw-episode-verdict/1", "verdict": "pass" if deterministic and semantic else "fail",
+    return {"schema": "pw-episode-verdict/2", "verdict": "pass" if deterministic and semantic else "fail",
+            "deterministic": deterministic, "semantic": semantic,
             "episode_sha256": digest(receipt), "task_spec_sha256": digest(specification),
             "reviews_sha256": digest(reviews), "grader_identity": grader_identity}
+
+
+def reviewed(trial):
+    """Classify a driven episode: pass, fail, or split when only the reviewers disagree."""
+    if not trial["verdict"]["deterministic"] or trial["exit_status"] != 0:
+        return "fail"
+    passes = [all(review["dimensions"][key] == "pass" for key in DIMENSIONS) for review in trial["reviews"]]
+    return "pass" if all(passes) else "split" if any(passes) else "fail"
+
+
+def decided(decision):
+    """The verdict a human decision gives an episode whose deterministic checks passed."""
+    return all(value == "pass" for value in decision["dimensions"].values())
+
+
+def effective_attempts(attempts, decisions):
+    """Apply human decisions to evaluation attempts; undecided attempts keep the automated grade."""
+    result = []
+    for attempt in attempts:
+        decision = decisions.get(attempt.get("episode_sha256"))
+        if decision is None:
+            result.append(attempt)
+            continue
+        if attempt["review"] == "fail":
+            raise CampaignFault("human_decision_on_failed_checks")
+        result.append({**attempt, "success": decided(decision),
+                       "unsupported_completion_claims": int(decision["dimensions"]["truthful_closeout"] != "pass")})
+    return result
 
 
 def wilson(successes, attempts, z=1.6448536269514722):

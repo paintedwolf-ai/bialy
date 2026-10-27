@@ -9,6 +9,7 @@ from ..provenance import file_sha256
 from ..student_host.specification import identity
 from .episodes import Episodes
 from .execution import atomic_json
+from .grading import decided
 from .journal import CampaignFault, canonical, digest
 from .lineage import FAMILIES
 from .sources import seal_dataset, verified_exports
@@ -16,12 +17,13 @@ from .sources import seal_dataset, verified_exports
 FILES = {'train': 'train.jsonl', 'validation': 'val.jsonl', 'system_test': 'holdout.jsonl'}
 
 
-def assemble(journal, lineage, manifests, checkout, host_commit, specification, destination, minimum_episodes, seal=seal_dataset):
+def assemble(journal, lineage, manifests, decisions, checkout, host_commit, specification, destination, minimum_episodes,
+             seal=seal_dataset):
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
     assembly_binding = {'manifests': {student: {str(path): file_sha256(path) for path in paths} for student, paths in manifests.items()},
                'host_commit': host_commit, 'specification': identity(specification), 'minimum_episodes': minimum_episodes,
-               'lineage_sha256': lineage.freeze()}
+               'lineage_sha256': lineage.freeze(), 'decisions_sha256': digest(decisions)}
     binding_path = destination / 'binding.json'
     if binding_path.exists() and json.loads(binding_path.read_text()) != assembly_binding:
         raise CampaignFault('dataset_assembly_inputs_changed')
@@ -43,7 +45,7 @@ def assemble(journal, lineage, manifests, checkout, host_commit, specification, 
                 exclusions['development_partition'] += 1
                 continue
             try:
-                verdict = episodes.admit(binding['epoch'], candidate['session'], candidate['source']['store_sha256'])
+                verdict = episodes.admit(binding['epoch'], candidate['session'], candidate['source']['store_sha256'], decisions)
             except CampaignFault as exc:
                 if exc.code != 'episode_not_qualified':
                     raise
@@ -82,7 +84,7 @@ def assemble(journal, lineage, manifests, checkout, host_commit, specification, 
                     os.fsync(stream.fileno())
                 os.replace(temporary, path)
             paths.append(path)
-        seal(journal, lineage, paths, manifests[student], checkout, host_commit)
+        seal(journal, lineage, paths, manifests[student], decisions, checkout, host_commit)
         outputs[student] = {'directory': str(output), 'specification_sha256': identity(specification),
                             'files': {path.name: file_sha256(path) for path in [*paths, output / 'source.json']},
                             'episodes': counts, 'rows': {key: len(value) for key, value in rows.items()},
@@ -93,22 +95,31 @@ def assemble(journal, lineage, manifests, checkout, host_commit, specification, 
 
 
 class Assembly:
-    """Assemble each student's splits from the first admitted attempt of every collected task."""
+    """Assemble each student's splits from the first admitted attempt of every collected task.
+
+    A human decision replaces the reviewers' verdict for the episode it names; skipped and
+    unreviewed episodes keep the automated outcome.
+    """
     def __init__(self, journal, students, assemble):
         self.journal, self.students, self.assemble = journal, tuple(students), assemble
 
-    def chosen(self, collection):
+    def chosen(self, collection, decisions):
         selected = {}
         for episode in sorted(collection['episodes'], key=lambda item: (item['task_id'], item['repetition'])):
-            if episode['admitted'] and episode['task_id'] not in selected:
+            decision = decisions.get(episode['episode_sha256'])
+            admitted = episode['admitted'] if decision is None else (
+                decided(decision) and episode['exports'] is not None
+                and all(exported['rows'] > 0 for exported in episode['exports'].values()))
+            if admitted and episode['task_id'] not in selected:
                 selected[episode['task_id']] = episode
         return [selected[task] for task in sorted(selected)]
 
     def execute(self, inputs, attempt):
         collection = inputs['collection']
-        episodes = self.chosen(collection)
+        decisions = inputs['review']['decisions'] if inputs['review'] else {}
+        episodes = self.chosen(collection, decisions)
         manifests = {student: [episode['exports'][student]['manifest'] for episode in episodes] for student in self.students}
-        result = self.assemble(manifests, self.journal.directory / 'datasets' / attempt, collection['minimum'])
+        result = self.assemble(manifests, decisions, self.journal.directory / 'datasets' / attempt, collection['minimum'])
         return {**result, 'episodes': [episode['stage'] for episode in episodes],
                 'retained_rows': {student: sum(episode['exports'][student]['rows'] for episode in episodes)
                                   for student in self.students}}
@@ -117,7 +128,8 @@ class Assembly:
         return self.execute(inputs, attempt)
 
     def validate(self, inputs, output):
-        if output['episodes'] != [episode['stage'] for episode in self.chosen(inputs['collection'])]:
+        decisions = inputs['review']['decisions'] if inputs['review'] else {}
+        if output['episodes'] != [episode['stage'] for episode in self.chosen(inputs['collection'], decisions)]:
             raise CampaignFault('dataset_episode_selection_changed')
         for student in self.students:
             dataset = output['students'][student]

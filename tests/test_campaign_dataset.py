@@ -50,10 +50,10 @@ def bank(tmp_path, monkeypatch):
 def test_paired_datasets_use_registered_partitions_and_preserve_whole_rows(tmp_path, monkeypatch):
     journal, lineage, manifests = bank(tmp_path, monkeypatch)
     seals = []
-    def seal(journal, lineage, paths, manifests, checkout, host):
+    def seal(journal, lineage, paths, manifests, decisions, checkout, host):
         seals.append(paths)
         (paths[0].parent / 'source.json').write_text('sealed')
-    result = assemble(journal, lineage, manifests, tmp_path, 'host', load(), tmp_path / 'dataset',
+    result = assemble(journal, lineage, manifests, {}, tmp_path, 'host', load(), tmp_path / 'dataset',
                       {'train': 8, 'validation': 8, 'system_test': 8}, seal=seal)
     assert len(seals) == len(students())
     for name in students():
@@ -68,7 +68,7 @@ def test_missing_episode_coverage_never_publishes_training_permits(tmp_path, mon
     journal, lineage, manifests = bank(tmp_path, monkeypatch)
     calls = []
     with pytest.raises(CampaignFault, match='insufficient_qualified_data'):
-        assemble(journal, lineage, manifests, tmp_path, 'host', load(), tmp_path / 'dataset',
+        assemble(journal, lineage, manifests, {}, tmp_path, 'host', load(), tmp_path / 'dataset',
                  {'train': 32, 'validation': 16, 'system_test': 8}, seal=lambda *args: calls.append(True))
     assert not calls
     journal.close()
