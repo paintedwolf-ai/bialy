@@ -87,6 +87,54 @@ references are restricted to the supplied receipts. Returned references are
 validated again before admission. Unexpected stage failures retain private
 diagnostics beside the run journal and do not trigger blind retries.
 
+### Human review
+
+Human review is optional and fixed when a campaign starts: set
+`"human_review": true` in the pilot configuration. Without it, nothing changes.
+With it, a person can label the episodes whose label could change an outcome,
+and every item they skip or leave keeps the automated verdict.
+
+| Queue | Items | A pass | A fail |
+|---|---|---|---|
+| Collection | Episodes the reviewers disagree on, then episodes both passed, by training rows | admits the episode's rows | removes them |
+| Evaluation | Base and trained runs that differ on the same task and repeat, then runs the reviewers disagree on | counts the run as a success | counts it as a failure |
+
+A label never overrides a failed deterministic check. The person answers the
+six checks the model reviewers answer and cites a receipt for each. Collection
+also exports episodes only the reviewers disagree on, so a pass can admit them;
+those exports cost response reviews that a campaign without human review skips.
+
+Each queue is a waited stage. The collection queue opens with the first exported
+episode and assembly waits for it; the evaluation queue opens after the trained
+students are exported and the comparison waits for it. Neither wait falls while
+a training machine is rented. When a queue is unfinished, the controller writes
+`waiting.json` with the review and resume commands and exits with status 3:
+
+```bash
+python -m bialy.campaign.pilot --configuration pilot.json   # exits 3 at a review
+bialy review --run /path/to/campaign                        # label, skip, finish
+python -m bialy.campaign.pilot --configuration pilot.json   # continues from the journal
+```
+
+On a terminal, `bialy review` opens the interactive reviewer; piped, it prints
+the status. The reviewer lists queues, then items in review order, then one item
+with its instruction, transcript and receipts. `v` opens the verdict form, which
+shows what saving will do before you press Enter; `x` skips, `F` finishes the
+queue, `r` shows the model reviewers' verdicts, and `?` lists every key. It
+rereads the files every few seconds, so new collection items appear while it is
+open. `|` copies an item as plain text, through the terminal's clipboard when you
+connected over SSH.
+
+Review state is plain files under `<campaign>/review/`, and `bialy review` reads
+nothing else, so the review can happen from any shell that reaches the campaign
+directory, while the controller is stopped or still collecting. The controller
+writes items; the reviewer appends decision receipts and writes `finished.json`,
+which lists the receipts that count. Showing the model reviewers' verdicts before
+labelling writes a `revealed/` marker that the decision records. A finished
+queue is final, and the stages that use it freeze its decisions into their
+inputs. `bialy review status` exits 3 while the campaign waits on a review;
+`bialy review wait` returns once it does not.
+
 The 3090 dry run reuses a qualified collection and baseline from an existing
 pilot. It selects two complete training rows, one validation row, and one held-out
 row, each at most 10,240 tokens. It preserves the declared context policy and

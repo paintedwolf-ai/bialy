@@ -35,7 +35,7 @@ def import_evidence(journal, directory):
     lineage = Lineage(journal)
     Episodes(journal, lineage)
     with read_source(directory) as source:
-        qualified(source, 'collection_pilot')
+        qualified(source, 'dataset_pilot')
         with journal.db:
             for table in TABLES:
                 rows = list(source.execute('SELECT * FROM ' + table))
@@ -57,7 +57,7 @@ class Data:
     def execute(self, inputs, attempt):
         cfg = self.configuration
         with read_source(self.source) as source:
-            data = qualified(source, 'collection_pilot')['students']['e4b']
+            data = qualified(source, 'dataset_pilot')['students']['e4b']
         original = Path(data['directory'])
         if any(file_sha256(original / name) != checksum for name, checksum in data['files'].items()):
             raise CampaignFault('dry_run_source_dataset_changed')
@@ -74,7 +74,9 @@ class Data:
         files = [target / name for name in names]
         manifests = [json.loads(path.read_text())['manifest']
                      for path in self.source.glob('trials/*/exports/e4b/reviewed.json')]
-        seal_dataset(self.journal, self.lineage, files, manifests, cfg['checkout'], cfg['host_commit'])
+        with read_source(self.source) as source:
+            decisions = qualified(source, 'review_collection_pilot')['decisions'] if cfg.get('human_review', False) else {}
+        seal_dataset(self.journal, self.lineage, files, manifests, decisions, cfg['checkout'], cfg['host_commit'])
         return {'students': {'e4b': {'directory': str(target), 'specification_sha256': identity(load()),
                 'files': {name: file_sha256(target / name) for name in (*names, 'source.json')}}},
                 'selection': json.loads((target / 'selection.json').read_text()), 'max_example_tokens': MAX_TOKENS}

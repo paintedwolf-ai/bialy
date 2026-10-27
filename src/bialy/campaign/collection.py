@@ -2,11 +2,10 @@
 import json
 import time
 from collections import Counter
-from pathlib import Path
 
 from ..provenance import file_sha256
 from .execution import Executor
-from .grading import teacher_routes
+from .grading import reviewed, teacher_routes
 from .journal import CampaignFault, digest
 from .lineage import FAMILIES
 
@@ -56,56 +55,65 @@ class TeacherBaseline:
 
 
 class Collection:
-    def __init__(self, journal, lineage, driver, export, assemble, pilot, students, sleep=time.sleep, minimum=None):
+    """Drive each task until one attempt is admitted, recording every episode for assembly.
+
+    With human review, episodes only the reviewers disagree on are exported too, so a
+    person's pass can admit them, and every exported episode is offered to the queue.
+    """
+    def __init__(self, journal, lineage, driver, export, students, pilot, sleep=time.sleep, minimum=None, review=None):
         self.journal, self.lineage, self.students = journal, lineage, tuple(students)
         self.executor = Executor(journal, driver, sleep)
-        self.export, self.assemble, self.pilot = export, assemble, pilot
-        self.minimum = minimum
+        self.export, self.pilot, self.minimum, self.review = export, pilot, minimum, review
 
     def execute(self, inputs, attempt):
         tasks = [json.loads(row[0]) for row in self.journal.db.execute(
             "SELECT spec FROM tasks WHERE partition IN ('train','validation','system_test') AND parent IS NULL ORDER BY id")]
         teachers = {teacher['id']: teacher for teacher in inputs['teachers']['teachers']}
-        manifests = {student: [] for student in self.students}
-        counts, retained = Counter(), Counter()
         minimum = self.minimum or (
             {'train': 32, 'validation': 16, 'system_test': 24} if self.pilot
             else inputs['plan']['collection_episodes'])
         if (set(minimum) != {'train', 'validation', 'system_test'}
                 or any(type(count) is not int or count < len(FAMILIES) for count in minimum.values())):
             raise CampaignFault('collection_episode_requirements_invalid')
-        families = {partition: set() for partition in minimum}
-        evidence = []
+        counts, families = Counter(), {partition: set() for partition in minimum}
+        episodes, evidence = [], []
         for task in tasks:
             partition = task['partition']
             if counts[partition] >= minimum[partition] and families[partition] == set(FAMILIES):
                 continue
             teacher = teachers[inputs['teachers']['families'][task['family']]['teacher_id']]
             for repetition in range(3):
-                trial = {**inputs, 'task': task, 'repetition': repetition, 'actor': teacher}
+                trial = {'host': inputs['host'], 'selector': inputs['selector'], 'task': task,
+                         'repetition': repetition, 'actor': teacher}
                 # Pilot and full collection share completed attempts from the same task bank.
                 name = 'collection_trial_' + digest({'task': task['id'], 'teacher': teacher['id'], 'repetition': repetition,
                                                     'selector': inputs['selector']})
-                trial = {key: trial[key] for key in ('host', 'selector', 'task', 'repetition', 'actor')}
                 result = self.executor.run(name, trial)
                 evidence.append({'stage': name, 'sha256': digest(result)})
                 if result['status'] != 'passed':
                     raise CampaignFault('collection_episode_incomplete', details={'stage': name, 'fault': result['fault']})
-                if not result['output']['success']:
+                episode = {'stage': name, 'task_id': task['id'], 'partition': partition, 'family': task['family'],
+                           'repetition': repetition, 'episode_sha256': result['output']['verdict']['episode_sha256'],
+                           'admitted': False, 'exports': None}
+                episodes.append(episode)
+                reviewable = self.review is not None and reviewed(result['output']) == 'split'
+                if not result['output']['success'] and not reviewable:
                     continue
                 exported = self.export(trial, result['output'])
-                if not all(exported[student]['rows'] > 0 for student in manifests):
+                episode['exports'] = {student: {'manifest': exported[student]['manifest'],
+                                                'manifest_sha256': file_sha256(exported[student]['manifest']),
+                                                'rows': exported[student]['rows']} for student in self.students}
+                if not all(exported[student]['rows'] > 0 for student in self.students):
                     continue
-                for student in manifests:
-                    manifests[student].append(exported[student]['manifest'])
-                    retained[student] += exported[student]['rows']
+                if self.review is not None:
+                    self.review.offer_episode(episode, result['output'], task)
+                if not result['output']['success']:
+                    continue
+                episode['admitted'] = True
                 counts[partition] += 1
                 families[partition].add(task['family'])
                 break
-        if any(counts[key] < minimum[key] or families[key] != set(FAMILIES) for key in minimum):
-            raise CampaignFault('insufficient_qualified_data', details={'episodes': dict(counts), 'required': minimum})
-        result = self.assemble(manifests, self.journal.directory / 'datasets' / attempt, minimum)
-        return {**result, 'episode_counts': dict(counts), 'retained_rows': dict(retained), 'evidence': evidence}
+        return {'episodes': episodes, 'minimum': minimum, 'evidence': evidence, 'lineage_sha256': self.lineage.freeze()}
 
     def reconcile(self, inputs, attempt):
         return self.execute(inputs, attempt)
@@ -113,10 +121,10 @@ class Collection:
     def validate(self, inputs, output):
         if output['lineage_sha256'] != self.lineage.freeze():
             raise CampaignFault('collection_lineage_changed')
-        for student in self.students:
-            dataset = output['students'][student]
-            if any(file_sha256(Path(dataset['directory']) / name) != checksum for name, checksum in dataset['files'].items()):
-                raise CampaignFault('collection_dataset_changed')
         for item in output['evidence']:
             if digest(self.journal.stage(item['stage'])) != item['sha256']:
                 raise CampaignFault('collection_episode_changed')
+        for episode in output['episodes']:
+            for exported in (episode['exports'] or {}).values():
+                if file_sha256(exported['manifest']) != exported['manifest_sha256']:
+                    raise CampaignFault('collection_export_changed')

@@ -51,8 +51,8 @@ def test_source_evidence_is_copied_without_rewriting_parent_or_terminal_failure(
     parent = Journal(tmp_path / 'parent', {})
     lineage = prepare_evidence(parent, tmp_path / 'bank')
     lineage.bind_session('epoch', 'session', 'train-structured_closeout')
-    stage = parent.begin('collection_pilot', {})
-    parent.settle('collection_pilot', stage['attempt'], 'passed', output={'qualified': True})
+    stage = parent.begin('dataset_pilot', {})
+    parent.settle('dataset_pilot', stage['attempt'], 'passed', output={'qualified': True})
     stage = parent.begin('pilot_e4b', {})
     parent.settle('pilot_e4b', stage['attempt'], 'failed', fault={'code': 'out_of_memory', 'retryable': False})
     parent.close()
@@ -63,7 +63,7 @@ def test_source_evidence_is_copied_without_rewriting_parent_or_terminal_failure(
     assert copied.session_task('epoch', 'session')['id'] == 'train-structured_closeout'
     assert (tmp_path / 'parent/campaign.sqlite').read_bytes() == original
     with read_source(tmp_path / 'parent') as source:
-        assert qualified(source, 'collection_pilot') == {'qualified': True}
+        assert qualified(source, 'dataset_pilot') == {'qualified': True}
         with pytest.raises(CampaignFault, match='source_stage_unqualified'):
             qualified(source, 'pilot_e4b')
     child.db.execute("UPDATE tasks SET spec='changed' WHERE id='train-structured_closeout'")
@@ -90,7 +90,7 @@ def test_dry_run_drives_suffix_without_claiming_quality(tmp_path, monkeypatch):
     source = tmp_path / 'source'
     cfg = {'checkout': '/host', 'models': '/models', 'host_commit': 'host'}
     parent = Journal(source, {'configuration': cfg})
-    outputs = {'collection_pilot': {}, 'host_qualification': {'conservative_reference': {}},
+    outputs = {'dataset_pilot': {}, 'host_qualification': {'conservative_reference': {}},
                'teacher_baseline': {}, 'baseline_e4b': {'directory': '/base'},
                'evaluate_base_e4b': {'attempts': [{'task_id': 'system_test-structured_closeout', 'success': False}]}}
     for name, output in outputs.items():

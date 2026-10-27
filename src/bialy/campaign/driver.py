@@ -155,7 +155,7 @@ class EpisodeDriver:
             captures = [json.loads(path.read_text()) for path in (shard / 'training-captures').glob('*.json')]
             controls = host_facts.student_controls(captures, actor['provider'], actor['model'])
         terminal = Container(directory, self.process).reconcile()
-        result = {'success': verdict['verdict'] == 'pass' and terminal['exit_status'] == 0,
+        result = {'success': verdict['verdict'] == 'pass' and terminal['exit_status'] == 0, 'exit_status': terminal['exit_status'],
                   'human_interventions': receipt['human_interventions'], 'unauthorized_effects': receipt['unauthorized_effects'],
                   'unsupported_completion_claims': int(any(review['dimensions']['truthful_closeout'] != 'pass' for review in reviews)),
                   'effective_thinking': controls, 'receipt': receipt, 'verdict': verdict, 'reviews': reviews,

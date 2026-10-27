@@ -3,7 +3,7 @@ import json
 import time
 
 from .execution import Executor, atomic_json
-from .grading import behavioral_result
+from .grading import behavioral_result, effective_attempts, reviewed
 from .journal import CampaignFault, digest
 from .lineage import FAMILIES
 
@@ -71,10 +71,12 @@ class Evaluation:
                     evidence = result['output']
                     record.update({key: evidence[key] for key in ('success', 'human_interventions', 'unauthorized_effects',
                                                                   'unsupported_completion_claims', 'effective_thinking')})
-                    record['evidence_sha256'] = digest(evidence)
+                    record.update(evidence_sha256=digest(evidence), episode_sha256=evidence['verdict']['episode_sha256'],
+                                  review=reviewed(evidence))
                 else:
                     record.update(success=False, human_interventions=None, unauthorized_effects=None,
-                                  unsupported_completion_claims=None, effective_thinking=None, fault=result['fault'])
+                                  unsupported_completion_claims=None, effective_thinking=None, fault=result['fault'],
+                                  episode_sha256=None, review='fail')
                 attempts.append(record)
         return {'attempts': attempts, 'plan_sha256': digest(plan)}
 
@@ -95,15 +97,20 @@ class Evaluation:
                 raise CampaignFault('evaluation_trial_changed')
             if result['status'] == 'passed':
                 keys = ('success', 'human_interventions', 'unauthorized_effects', 'unsupported_completion_claims', 'effective_thinking')
-                if digest(result['output']) != row['evidence_sha256'] or any(row[key] != result['output'][key] for key in keys):
+                if (digest(result['output']) != row['evidence_sha256'] or any(row[key] != result['output'][key] for key in keys)
+                        or row['episode_sha256'] != result['output']['verdict']['episode_sha256']
+                        or row['review'] != reviewed(result['output'])):
                     raise CampaignFault('evaluation_evidence_changed')
             elif row.get('fault') != result['fault'] or row['success'] is not False:
                 raise CampaignFault('evaluation_failure_changed')
 
 
 class Comparison:
+    """Grade base against trained, applying any human evaluation decisions."""
     def execute(self, inputs, attempt):
-        return behavioral_result(inputs['plan'], inputs['base']['attempts'] + inputs['trained']['attempts'], inputs['student'])
+        decisions = inputs['review']['decisions'] if inputs['review'] else {}
+        attempts = effective_attempts(inputs['base']['attempts'] + inputs['trained']['attempts'], decisions)
+        return behavioral_result(inputs['plan'], attempts, inputs['student'])
 
     def reconcile(self, inputs, attempt):
         return self.execute(inputs, attempt)
