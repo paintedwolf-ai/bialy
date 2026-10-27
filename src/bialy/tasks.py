@@ -8,6 +8,9 @@ a directory the repository has. For a stack, the generator gets the toolchain
 and a drawn project idea and scale, and writes requests that start a project in
 an empty directory.
 
+Scenarios (config/scenarios.yaml) add requests written ahead of the pass, used
+as written; each scenario's variants share a prompt group.
+
 Near-duplicates share a prompt group so a split never puts them on both sides,
 and each task is assigned the model that will drive its session, the workflow
 it starts, if any, and follow-ups.
@@ -24,7 +27,7 @@ from pathlib import Path
 
 import yaml
 
-from .config import ROOT, ConfigError
+from .config import PROMPT_CHARS, ROOT, ConfigError
 
 WORKFLOW_ROOT = ROOT / "runner" / "workflows"
 
@@ -206,6 +209,22 @@ def group_prompts(prompts, threshold=0.6, bands=16, rows_per_band=4):
     return [find(i) for i in range(len(prompts))]
 
 
+def claim_groups(scenarios, prompts=()):
+    """Group one workspace's scenario variants with `prompts`, refusing two scenarios in
+    one group. For each prompt: its group's first prompt, and the scenario claiming the
+    group, if any."""
+    written = [(s.id, v["prompt"]) for s in scenarios for v in s.variants]
+    everything = [p for _, p in written] + list(prompts)
+    groups = group_prompts(everything)
+    owner = {}
+    for (sid, prompt), g in zip(written, groups[:len(written)], strict=True):
+        other = owner.setdefault(g, sid)
+        if other != sid:
+            raise ConfigError("scenarios %s and %s share a near-duplicate group (%r); merge them or reword the variant"
+                              % (other, sid, prompt[:60]))
+    return [(everything[g], owner.get(g)) for g in groups[len(written):]]
+
+
 def clean(text):
     """Model text as valid UTF-8: a lone surrogate from a broken token becomes "?"."""
     return text.encode("utf-8", "replace").decode("utf-8").strip()
@@ -283,7 +302,8 @@ def generate(factory, repos_dir, out_dir, seed=7, workers=48):
             raw += [{**t, "archetype": entry["archetype"], "lang": entry["lang"], "author": entry["author"], "seed": entry.get("seed")}
                     for t in entry["tasks"]]
         files = repo_files(Path(repos_dir) / workspace.name) if workspace.kind == "repository" else []
-        counts[workspace.name] = finalize(factory, workspace, raw, files, out_dir / (workspace.name + ".jsonl"), seed)
+        scenarios = [s.sample(factory.max_variants, seed) for s in factory.scenarios if s.workspace == workspace.name]
+        counts[workspace.name] = finalize(factory, workspace, raw, files, out_dir / (workspace.name + ".jsonl"), seed, scenarios)
     return counts
 
 
@@ -366,50 +386,62 @@ def maybe_reference(prompt, files, reference_rate, rng):
     return "%s\n\n%s" % (prompt, format_reference(chosen_file, is_dir=False))
 
 
-def finalize(factory, workspace, raw, files, out_path, seed):
+def finalize(factory, workspace, raw, files, out_path, seed, scenarios=()):
     """Validate, group, and assign one workspace's tasks, then write them. `files` lists a
-    repository's files; a stack's workspace starts empty."""
+    repository's files; a stack's workspace starts empty. `scenarios` are this workspace's,
+    already sampled; a variant that fails the request gate is refused, not dropped."""
     versions = workflow_versions(factory)
     rng = random.Random("%s:assign:%s" % (seed, workspace.name))
     attach_rng = random.Random("%s:attach:%s" % (seed, workspace.name))
     archetypes = {a.id: a for a in factory.archetypes}
+    generators = [m.id for m in factory.generators()]
 
     def usable(text, arch):
-        if not 12 <= len(text) <= 2400:
+        if not PROMPT_CHARS[0] <= len(text) <= PROMPT_CHARS[1]:
             return False
         return workspace.kind == "stack" or mentioned_paths_exist(text, files, arch.new_files)
 
-    # Follow-ups pass the same gate as the request; a task keeps only those that do.
-    kept = [dict(t, follow_ups=[f for f in t["follow_ups"] if usable(f, archetypes[t["archetype"]])])
-            for t in raw if usable(t["prompt"], archetypes[t["archetype"]])]
-    groups = group_prompts([t["prompt"] for t in kept])
-    generators = [m.id for m in factory.generators()]
-    seen_groups = set()
-    tasks = []
-    for t, g in zip(kept, groups, strict=True):
-        group_key = "%s:%s" % (workspace.name, hashlib.sha1(kept[g]["prompt"].encode()).hexdigest()[:12])
-        if group_key in seen_groups:
-            continue  # a near-duplicate adds no diversity
-        seen_groups.add(group_key)
-        arch = archetypes[t["archetype"]]
+    def build(prompt, follow_ups, follow_up_rate, arch, group_key, meta):
         names = sorted(arch.workflows)
         pick = rng.choices([None, *names], [1 - sum(arch.workflows.values()), *(arch.workflows[n] for n in names)])[0]
-        follow = t["follow_ups"] if rng.random() < arch.follow_up_rate else []
-        tid = hashlib.sha1(("%s\n%s" % (workspace.name, t["prompt"])).encode()).hexdigest()[:16]
+        follow = follow_ups if rng.random() < follow_up_rate else []
+        tid = hashlib.sha1(("%s\n%s" % (workspace.name, prompt)).encode()).hexdigest()[:16]
         model = pick_generator(factory, arch.id, generators, rng)
-        prompt_text = maybe_reference(t["prompt"], files, getattr(arch, "reference_rate", 0.0), attach_rng) if files else t["prompt"]
+        prompt_text = maybe_reference(prompt, files, getattr(arch, "reference_rate", 0.0), attach_rng) if files else prompt
         meta = {"task_id": tid, "workspace": workspace.name, "workspace_kind": workspace.kind, "split": workspace.split,
-                "archetype": arch.id, "prompt_group": group_key, "lang": t["lang"], "author_model": t["author"], "workflow": pick,
-                "prompt_timeout": arch.timeout(pick)}
-        if t.get("seed"):
-            meta["seed"] = t["seed"]
+                "archetype": arch.id, "prompt_group": group_key, **meta, "workflow": pick, "prompt_timeout": arch.timeout(pick)}
         task = {"id": tid, "prompt": prompt_text, "follow_ups": [{"prompt": f} for f in follow],
                 "provider_id": factory.provider_id(factory.model(model)), "model": model, "meta": meta}
         if pick:
             task["workflow"] = pick
             task["workflow_version"] = versions[pick]
             task["meta"]["workflow_version"] = versions[pick]
-        tasks.append(task)
+        return task
+
+    for s in scenarios:
+        for v in s.variants:
+            missing = [t for t in (v["prompt"], *v["follow_ups"]) if not usable(t, archetypes[s.archetype])]
+            if missing:
+                raise ConfigError("scenario %s names a file %s does not have: %r" % (s.id, workspace.name, missing[0][:80]))
+    # Follow-ups pass the same gate as the request; a task keeps only those that do.
+    kept = [dict(t, follow_ups=[f for f in t["follow_ups"] if usable(f, archetypes[t["archetype"]])])
+            for t in raw if usable(t["prompt"], archetypes[t["archetype"]])]
+    claims = claim_groups(scenarios, [t["prompt"] for t in kept])
+    seen_groups = set()
+    tasks = []
+    for t, (first, claimed) in zip(kept, claims, strict=True):
+        group_key = "%s:%s" % (workspace.name, hashlib.sha1(first.encode()).hexdigest()[:12])
+        if claimed or group_key in seen_groups:
+            continue  # a near-duplicate adds no diversity
+        seen_groups.add(group_key)
+        meta = {"lang": t["lang"], "author_model": t["author"], **({"seed": t["seed"]} if t.get("seed") else {})}
+        arch = archetypes[t["archetype"]]
+        tasks.append(build(t["prompt"], t["follow_ups"], arch.follow_up_rate, arch, group_key, meta))
+    # Written follow-ups are always kept.
+    for s in scenarios:
+        for v in s.variants:
+            tasks.append(build(v["prompt"], v["follow_ups"], 1.0, archetypes[s.archetype], "%s:scenario:%s" % (workspace.name, s.id),
+                               {"lang": s.lang, "scenario": s.id}))
     with open(out_path, "w", encoding="utf-8") as fh:
         for task in tasks:
             fh.write(json.dumps(task, ensure_ascii=False) + "\n")

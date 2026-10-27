@@ -45,7 +45,10 @@ The native runtime in Painted Wolf Code derives from
    facts about it, and requests naming files it lacks are dropped unless the
    archetype asks for new files in directories it has; for a stack they get
    the toolchain and a drawn project idea and scale, and write requests that
-   start a project. Near-duplicates share a prompt group. Workflow tasks carry both `workflow` and
+   start a project. Scenarios (`config/scenarios.yaml`) add requests written
+   and reviewed ahead of the pass, several typed variants per situation, used
+   as written. Near-duplicates share a prompt group, and so do a scenario's
+   variants. Workflow tasks carry both `workflow` and
    `workflow_version`, taken from the exact manifest under `runner/workflows/`
    that the runner image installs. This pins replay to the same workflow
    definition; rebasing tasks changes their driving models and preserves that

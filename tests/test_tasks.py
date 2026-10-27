@@ -164,3 +164,51 @@ def test_finalize_requires_declared_workflow_identity(factory, tmp_path, monkeyp
     with pytest.raises(tasks.ConfigError, match="must declare"):
         tasks.finalize(factory, factory.repos[0], [], [], tmp_path / "out.jsonl", seed=7)
     assert not (tmp_path / "out.jsonl").exists()
+
+
+def scenario(sid, prompts, workspace="flask", archetype="bugfix", follow_ups=()):
+    from bialy.config import Scenario
+    return Scenario(id=sid, workspace=workspace, archetype=archetype,
+                    variants=tuple({"prompt": p, "follow_ups": list(follow_ups)} for p in prompts))
+
+
+FLAKY = ["test_session_refresh fails maybe 1 in 5 on CI and never locally, can you find out why",
+         "Can you look into an intermittent failure in the session tests? Passes every time on my machine."]
+
+
+def test_scenario_variants_are_tasks_in_one_prompt_group(factory, tmp_path):
+    import dataclasses
+    quiet = dataclasses.replace(factory, archetypes=[dataclasses.replace(a, follow_up_rate=0.0) for a in factory.archetypes])
+    raw = [{"prompt": FLAKY[0] + " please", "follow_ups": [], "archetype": "bugfix", "lang": "en", "author": "m"},
+           {"prompt": "Where is the session cookie name configured, and what reads it when a request starts?",
+            "follow_ups": [], "archetype": "locate", "lang": "en", "author": "m"}]
+    flaky = scenario("flaky-session-test", FLAKY, follow_ups=["ok that passes now but why only on CI"])
+    tasks.finalize(quiet, factory.workspace("flask"), raw, [], tmp_path / "out.jsonl", seed=7, scenarios=[flaky])
+    out = [json.loads(line) for line in (tmp_path / "out.jsonl").read_text().splitlines()]
+    written = [t for t in out if t["meta"].get("scenario")]
+    assert [t["prompt"] for t in written] == FLAKY
+    assert {t["meta"]["prompt_group"] for t in written} == {"flask:scenario:flaky-session-test"}
+    # Written follow-ups are kept whatever the archetype's follow-up rate.
+    assert all(t["follow_ups"] == [{"prompt": "ok that passes now but why only on CI"}] for t in written)
+    assert all(t["meta"]["archetype"] == "bugfix" and "author_model" not in t["meta"] for t in written)
+    # The generated near-duplicate of a variant is dropped; the unrelated request stays in its own group.
+    [generated] = [t for t in out if not t["meta"].get("scenario")]
+    assert generated["meta"]["archetype"] == "locate" and not generated["meta"]["prompt_group"].startswith("flask:scenario:")
+
+
+def test_a_variant_naming_a_missing_file_is_refused(factory, tmp_path):
+    missing = scenario("router-bug", ["The redirect in src/flask/router.py drops the query string, fix it please"])
+    with pytest.raises(tasks.ConfigError, match="router-bug names a file flask does not have"):
+        tasks.finalize(factory, factory.workspace("flask"), [], ["src/flask/ctx.py"], tmp_path / "out.jsonl", seed=7, scenarios=[missing])
+
+
+def test_two_scenarios_with_near_duplicate_variants_are_refused():
+    with pytest.raises(tasks.ConfigError, match="scenarios one and two share a near-duplicate group"):
+        tasks.claim_groups([scenario("one", FLAKY[:1]), scenario("two", [FLAKY[0] + " thanks"])])
+
+
+def test_a_scenario_sample_is_seeded_and_bounded():
+    many = scenario("many", ["Variant number %d of the same flaky session test complaint, typed differently" % i for i in range(30)])
+    first, again, other = many.sample(10, 7), many.sample(10, 7), many.sample(10, 8)
+    assert len(first.variants) == 10 and first == again and first != other
+    assert many.sample(None, 7) is many and many.sample(40, 7) is many
