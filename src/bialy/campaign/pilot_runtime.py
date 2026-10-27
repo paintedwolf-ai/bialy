@@ -11,6 +11,7 @@ from ..student_host.specification import load, serving
 from . import dataset, pilot_bank
 from .baseline import Baseline
 from .collection import Collection, TeacherBaseline
+from .dataset import Assembly
 from .driver import EpisodeDriver
 from .evaluation import Evaluation
 from .execution import atomic_json
@@ -157,8 +158,9 @@ def compose(journal, cfg):
         return dataset.assemble(journal, lineage, manifests, cfg['checkout'], cfg['host_commit'], specification, destination, minimum)
     handlers = {'host_qualification': Host(run, cfg, teachers), 'reviewer_qualification': ReviewerQualification(reviewers),
                 'teacher_baseline': TeacherBaseline(journal, lineage, driver, teachers, minimum_tasks=1, repetitions=2),
-                'collection_pilot': Collection(journal, lineage, driver, exports, assemble, True, tuple(specification['models']),
-                                               minimum={'train': 8, 'validation': 8, 'system_test': 8})}
+                'collection_pilot': Collection(journal, lineage, driver, exports, tuple(specification['models']), True,
+                                               minimum={'train': 8, 'validation': 8, 'system_test': 8}),
+                'dataset_pilot': Assembly(journal, tuple(specification['models']), assemble)}
     plan = {'tasks': [{'id': task['id'], 'family': task['family'], 'spec_hash': digest(task)}
                       for task in tasks if task['partition'] == 'system_test'], 'attempts_per_task': 1,
             'lineage_sha256': frozen, 'scope': 'mechanical_pilot', 'promotion_qualified': False}

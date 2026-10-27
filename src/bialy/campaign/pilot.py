@@ -29,7 +29,8 @@ class Pilot:
                 self.stage('reviewer_qualification', {'host': host})
                 teachers = self.stage('teacher_baseline', {'host': host})
                 common = {'host': host, 'selector': host['conservative_reference'], 'teachers': teachers}
-                data = self.stage('collection_pilot', common)
+                collection = self.stage('collection_pilot', common)
+                data = self.stage('dataset_pilot', {**common, 'collection': collection})
                 for student in self.students:
                     inputs = {**common, 'student': student, 'plan': self.plan}
                     baseline = self.stage('baseline_' + student, inputs)
