@@ -1,5 +1,7 @@
 """bialy review: label a campaign's human review queues.
 
+On a terminal it opens the interactive reviewer; piped, it prints the queue status.
+
 It reads and writes only files under the campaign directory, so it runs from any shell that
 reaches that directory, whether the controller is running, waiting, or stopped. When a queue is
 finished, rerun the campaign's resume command to continue.
@@ -22,6 +24,7 @@ def register(sub):
                                         'keep the automated verdict.')
     parser.add_argument('--run', type=Path, default=Path('.'), help='campaign directory (default: current directory)')
     commands = parser.add_subparsers(dest='review_command')
+    commands.add_parser('open', help='open the interactive reviewer (the default on a terminal)')
     status = commands.add_parser('status', help='queues, what is left, and whether the campaign is waiting on you')
     status.add_argument('--json', action='store_true')
     show = commands.add_parser('show', help='print one item as plain text')
@@ -44,7 +47,11 @@ def run(args):
         return ERROR
     review = Review(args.run)
     try:
-        command = args.review_command or 'status'
+        command = args.review_command or ('open' if sys.stdin.isatty() and sys.stdout.isatty() else 'status')
+        if command == 'open':
+            from .terminal import run as interactive
+            interactive(review, args.run)
+            return status(args.run, review, False)
         if command == 'status':
             return status(args.run, review, args.json if args.review_command else False)
         if command == 'show':
