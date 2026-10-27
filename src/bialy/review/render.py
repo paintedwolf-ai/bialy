@@ -56,9 +56,13 @@ class Subject:
             self.refs[invocation['id']] = 'r' + str(index)
         self.ids = {ref: identifier for identifier, ref in self.refs.items()}
         self.invocations = {invocation['tool_call_id']: invocation for invocation in invocations}
+        self.by_id = {invocation['id']: invocation for invocation in invocations}
 
     def ref(self, identifier):
         return self.refs.get(identifier, identifier)
+
+    def invocation(self, identifier):
+        return self.by_id.get(identifier)
 
     def lines(self, width, full=False):
         out = ['Checks']

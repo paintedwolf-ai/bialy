@@ -30,7 +30,7 @@
   bialy run --run NAME [--until STAGE] [--from STAGE] [--redo STAGE ...] [--dry-run] [--push] [--rebuild-image]
             [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
   bialy run-status --run NAME
-  bialy review [--run DIR] [status|show ITEM|skip ITEM|finish QUEUE|wait]
+  bialy review [--run DIR] [open|status|show ITEM|skip ITEM|finish QUEUE|wait]
 
 Runs live under <root>/runs/<name>; the root and everything else come from config/.
 """

@@ -116,6 +116,15 @@ bialy review --run /path/to/campaign                        # label, skip, finis
 python -m bialy.campaign.pilot --configuration pilot.json   # continues from the journal
 ```
 
+On a terminal, `bialy review` opens the interactive reviewer; piped, it prints
+the status. The reviewer lists queues, then items in review order, then one item
+with its instruction, transcript and receipts. `v` opens the verdict form, which
+shows what saving will do before you press Enter; `x` skips, `F` finishes the
+queue, `r` shows the model reviewers' verdicts, and `?` lists every key. It
+rereads the files every few seconds, so new collection items appear while it is
+open. `|` copies an item as plain text, through the terminal's clipboard when you
+connected over SSH.
+
 Review state is plain files under `<campaign>/review/`, and `bialy review` reads
 nothing else, so the review can happen from any shell that reaches the campaign
 directory, while the controller is stopped or still collecting. The controller
