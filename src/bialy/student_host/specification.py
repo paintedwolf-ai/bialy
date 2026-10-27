@@ -9,8 +9,13 @@ DEFAULT = Path(__file__).resolve().parents[3] / 'config/students.json'
 
 def load(path=DEFAULT):
     spec = json.loads(Path(path).read_text())
-    if spec.get('schema') != 'pw-students/1' or set(spec.get('models', {})) != {'e4b', '12b'}:
-        raise ValueError('student specification must contain e4b and 12b')
+    models = spec.get('models')
+    # Names become stage names, provider ids, and directory components.
+    if (spec.get('schema') != 'pw-students/1' or not isinstance(models, dict) or not models
+            or any(not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,31}', name) for name in models)):
+        raise ValueError('student specification must name one or more students')
+    if len({model.get('directory') for model in models.values()}) != len(models):
+        raise ValueError('student model directories must be distinct')
     context = spec.get('context', {})
     if (type(context.get('max_sequence_tokens')) is not int or context['max_sequence_tokens'] < 4096
             or context.get('thinking') is not False or context.get('truncation') != 'forbidden'):
@@ -21,6 +26,11 @@ def load(path=DEFAULT):
             raise ValueError('invalid student model identity')
         re.compile(model['targets'][3:])
     return spec
+
+
+def students(spec=None):
+    """Student names in their declared order."""
+    return tuple((load() if spec is None else spec)['models'])
 
 
 def identity(spec):

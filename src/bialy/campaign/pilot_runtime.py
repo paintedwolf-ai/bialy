@@ -123,12 +123,12 @@ class ServedEvaluation:
 
 
 def compose(journal, cfg):
-    if not cfg['students'] or len(set(cfg['students'])) != len(cfg['students']) or set(cfg['students']) - {'e4b', '12b'}:
+    specification = load()
+    if not cfg['students'] or len(set(cfg['students'])) != len(cfg['students']) or set(cfg['students']) - set(specification['models']):
         raise CampaignFault('pilot_students_invalid')
     factory = config.load()
     factory.root = Path(cfg['factory_root'])
     factory.fleet.update(runners=1, prompt_timeout='10m')
-    specification = load()
     factory.run.update(generators=cfg['teachers'], judges=cfg['reviewers'], local_workers_only=False,
                        lycaon_checkout=cfg['checkout'], engine_on={'enabled': False},
                        custom_model={'enabled': True, 'epoch': cfg['epoch'], 'host_commit': cfg['host_commit'],
@@ -157,7 +157,7 @@ def compose(journal, cfg):
         return dataset.assemble(journal, lineage, manifests, cfg['checkout'], cfg['host_commit'], specification, destination, minimum)
     handlers = {'host_qualification': Host(run, cfg, teachers), 'reviewer_qualification': ReviewerQualification(reviewers),
                 'teacher_baseline': TeacherBaseline(journal, lineage, driver, teachers, minimum_tasks=1, repetitions=2),
-                'collection_pilot': Collection(journal, lineage, driver, exports, assemble, True,
+                'collection_pilot': Collection(journal, lineage, driver, exports, assemble, True, tuple(specification['models']),
                                                minimum={'train': 8, 'validation': 8, 'system_test': 8})}
     plan = {'tasks': [{'id': task['id'], 'family': task['family'], 'spec_hash': digest(task)}
                       for task in tasks if task['partition'] == 'system_test'], 'attempts_per_task': 1,

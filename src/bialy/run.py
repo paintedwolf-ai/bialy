@@ -130,7 +130,7 @@ class Run:
     def collection_window(self):
         """The student's declared context window when this run collects custom-model data."""
         custom = self.setting("custom_model") or {}
-        return int(custom["students"]["e4b"]["context_window"]) if custom.get("enabled") else None
+        return custom_model_run.context_window(custom) if custom.get("enabled") else None
 
     @property
     def engine_on_only(self):

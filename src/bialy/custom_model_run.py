@@ -48,7 +48,7 @@ def validate_settings(cfg):
     spec = load()
     students = cfg.get("students") or {}
     if set(students) != set(spec['models']):
-        raise DatasetError("run.custom_model.students must declare e4b and 12b")
+        raise DatasetError("run.custom_model.students must declare every pinned student")
     for name, serving in students.items():
         if (set(serving) != {"provider", "kind", "model", "base_url", "context_window"}
                 or not all(serving.values()) or serving['kind'] != 'openai-compatible'
@@ -57,6 +57,14 @@ def validate_settings(cfg):
             raise DatasetError("run.custom_model.students must match the pinned model and context policy")
     if len({item['provider'] for item in students.values()}) != len(students):
         raise DatasetError("run.custom_model.students must use distinct providers")
+
+
+def context_window(cfg):
+    """The one context window every student is served with."""
+    windows = {int(serving["context_window"]) for serving in cfg["students"].values()}
+    if len(windows) != 1:
+        raise DatasetError("run.custom_model.students must share one context window")
+    return windows.pop()
 
 
 def student_binding(identity, serving):

@@ -463,10 +463,13 @@ examples or hosted judgments were used in this final control experiment.
 
 ## Student
 
-The student host trains and exports both E4B and 12B using the pinned Painted
-Wolf Code trainer. `config/students.json` declares their model revisions and
-one context policy for pilots, full training, and serving: 65,536 tokens,
-thinking disabled, and no token truncation. Student-specific dataset directories
+The student host trains and exports every student declared in
+`config/students.json` (E4B, 12B, and 26B-A4B) using the pinned Painted Wolf
+Code trainer. That file is the only student list: it declares each model
+revision and LoRA targets, and one context policy for pilots, full training,
+and serving: 65,536 tokens, thinking disabled, and no token truncation. Adding
+a student is a new entry there; collection, datasets, training, export, and
+evaluation follow it. Student-specific dataset directories
 contain `train.jsonl`, `val.jsonl`, `holdout.jsonl`, and an authenticated
 `source.json` issued from the campaign's frozen task lineage.
 
@@ -479,8 +482,8 @@ be clean. SSH credentials come from the deployment environment. Instance provisi
 | Script | Runs on | Operation |
 |---|---|---|
 | `setup.sh` | Training host | Install the toolchain, pinned models, trainer, export tools, and independent cleanup service |
-| `pilot.sh SPLITS` | Training host | Create unique jobs for both students from `SPLITS/e4b` and `SPLITS/12b`, train, resume typed pauses, and export |
-| `sft-remote.sh SPLITS` | Training host | Run both students on the configured machine and return verified training artifacts and checkpoints |
+| `pilot.sh SPLITS` | Training host | Create unique jobs for each student from `SPLITS/<student>`, train, resume typed pauses, and export |
+| `sft-remote.sh SPLITS` | Training host | Run each student on the configured machine and return verified training artifacts and checkpoints |
 
 Use `student/machine.example.json` for an existing SSH-accessible machine or
 `student/provisioned-machine.example.json` to provision an instance. Both use the

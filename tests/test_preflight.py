@@ -12,6 +12,7 @@ import yaml
 
 from bialy import custom_model_run, faults, fleet, preflight
 from bialy import run as runmod
+from bialy.student_host.specification import load, students
 
 
 def collection(factory, tmp_path):
@@ -198,14 +199,14 @@ def test_preflight_requires_receipt_admission_not_just_kept_payloads(factory, tm
         assert (source / "shards" / "fixture").resolve() == shard.resolve()
         assert [p.name for p in (source / "shards").iterdir()] == ["fixture"]
         binding = json.loads(Path(args[args.index("--binding") + 1]).read_text())
-        assert binding["student_model"] in {"gemma-4-E4B-it", "gemma-4-12B-it"} and binding["epoch"] == "fixture"
+        assert binding["student_model"] in {model["directory"] for model in load()["models"].values()} and binding["epoch"] == "fixture"
         output = Path(args[args.index("--out") + 1])
         output.mkdir()
         (output / "manifest.json").write_text(json.dumps({"counts": counts}))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(preflight.subprocess, "run", export)
     if expected:
-        assert preflight.verify_receipts(run, shard) == {"e4b": expected, "12b": expected}
+        assert preflight.verify_receipts(run, shard) == dict.fromkeys(students(), expected)
     else:
         with pytest.raises(faults.RunFault, match="receipt_not_accepted"):
             preflight.verify_receipts(run, shard)

@@ -36,3 +36,5 @@ run:
             base_url: "http://127.0.0.1:8080/v1", context_window: 65536}
       12b: {provider: student-12b, kind: openai-compatible, model: gemma-4-12B-it,
             base_url: "http://127.0.0.1:8081/v1", context_window: 65536}
+      26b-a4b: {provider: student-26b-a4b, kind: openai-compatible, model: gemma-4-26B-A4B-it,
+                base_url: "http://127.0.0.1:8082/v1", context_window: 65536}

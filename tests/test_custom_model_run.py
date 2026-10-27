@@ -7,6 +7,7 @@ import pytest
 from bialy import custom_model_run as cm
 from bialy import provenance
 from bialy import run as runmod
+from bialy.student_host.specification import students
 
 
 @pytest.fixture
@@ -40,7 +41,7 @@ def source_inputs(run):
 
 def test_the_binding_names_the_student_and_its_serving_is_validated(custom_run):
     identity = cm.binding(custom_run)
-    assert set(identity['students']) == {'e4b', '12b'}
+    assert set(identity['students']) == set(students())
     assert all(item['context_window'] == 65536 for item in identity['students'].values())
     cfg = dict(custom_run.settings['custom_model'])
     for bad in ({'kind': 'ollama'}, {'context_window': 32768}, {'model': ''}):

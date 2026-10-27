@@ -86,6 +86,12 @@ def test_duplicate_tasks_cannot_inflate_independent_evaluation_evidence():
         behavioral_result(plan, attempts, 'e4b')
 
 
+def test_only_declared_students_can_be_graded():
+    plan, attempts = evaluation()
+    with pytest.raises(CampaignFault, match='unknown_student'):
+        behavioral_result(plan, attempts, 'undeclared')
+
+
 def test_teacher_repeated_measurement_cannot_select_a_lucky_attempt():
     measurements = [{'family': family, 'teacher_id': 'teacher', 'qualified': 1, 'attempts': 8, 'capture_qualified': True}
                     for family in FAMILIES]

@@ -56,8 +56,8 @@ class TeacherBaseline:
 
 
 class Collection:
-    def __init__(self, journal, lineage, driver, export, assemble, pilot, sleep=time.sleep, minimum=None):
-        self.journal, self.lineage = journal, lineage
+    def __init__(self, journal, lineage, driver, export, assemble, pilot, students, sleep=time.sleep, minimum=None):
+        self.journal, self.lineage, self.students = journal, lineage, tuple(students)
         self.executor = Executor(journal, driver, sleep)
         self.export, self.assemble, self.pilot = export, assemble, pilot
         self.minimum = minimum
@@ -66,7 +66,7 @@ class Collection:
         tasks = [json.loads(row[0]) for row in self.journal.db.execute(
             "SELECT spec FROM tasks WHERE partition IN ('train','validation','system_test') AND parent IS NULL ORDER BY id")]
         teachers = {teacher['id']: teacher for teacher in inputs['teachers']['teachers']}
-        manifests = {'e4b': [], '12b': []}
+        manifests = {student: [] for student in self.students}
         counts, retained = Counter(), Counter()
         minimum = self.minimum or (
             {'train': 32, 'validation': 16, 'system_test': 24} if self.pilot
@@ -113,7 +113,7 @@ class Collection:
     def validate(self, inputs, output):
         if output['lineage_sha256'] != self.lineage.freeze():
             raise CampaignFault('collection_lineage_changed')
-        for student in ('e4b', '12b'):
+        for student in self.students:
             dataset = output['students'][student]
             if any(file_sha256(Path(dataset['directory']) / name) != checksum for name, checksum in dataset['files'].items()):
                 raise CampaignFault('collection_dataset_changed')

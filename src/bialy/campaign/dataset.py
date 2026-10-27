@@ -28,7 +28,7 @@ def assemble(journal, lineage, manifests, checkout, host_commit, specification, 
     atomic_json(binding_path, assembly_binding)
     episodes = Episodes(journal, lineage)
     outputs = {}
-    for student in ('e4b', '12b'):
+    for student in specification['models']:
         binding, _, candidates = verified_exports(manifests[student], host_commit)
         if binding['student_model'] != specification['models'][student]['directory']:
             raise CampaignFault('dataset_student_identity_mismatch')

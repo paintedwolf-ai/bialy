@@ -6,6 +6,7 @@ from bialy.campaign.collection import Collection, TeacherBaseline
 from bialy.campaign.journal import CampaignFault, Journal
 from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
 from bialy.provenance import file_sha256
+from bialy.student_host.specification import students
 
 
 class Driver:
@@ -29,7 +30,7 @@ def test_collection_recovers_failed_tasks_and_reuses_pilot_episodes(tmp_path):
     def export(inputs, output):
         assert output['success']
         exported.append(output['task'])
-        return {student: {'manifest': output['task'], 'rows': 2} for student in ('e4b', '12b')}
+        return {student: {'manifest': output['task'], 'rows': 2} for student in students()}
     def assemble(manifests, directory, minimum):
         students = {}
         for student in manifests:
@@ -42,12 +43,12 @@ def test_collection_recovers_failed_tasks_and_reuses_pilot_episodes(tmp_path):
     inputs = {'host': {}, 'selector': {}, 'teachers': {
         'teachers': [{'id': 'teacher'}], 'families': {family: {'teacher_id': 'teacher'} for family in FAMILIES}},
         'plan': {'collection_episodes': minimum}}
-    pilot = Collection(journal, lineage, driver, export, assemble, True, minimum=minimum)
+    pilot = Collection(journal, lineage, driver, export, assemble, True, students(), minimum=minimum)
     result = pilot.execute(inputs, 'pilot')
     pilot.validate(inputs, result)
     assert result['episode_counts'] == minimum
     assert len(driver.calls) == 48 and len(exported) == 24
-    full = Collection(journal, lineage, driver, export, assemble, False)
+    full = Collection(journal, lineage, driver, export, assemble, False, students())
     full_result = full.execute(inputs, 'full')
     full.validate(inputs, full_result)
     assert len(driver.calls) == 48
@@ -97,7 +98,7 @@ def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_
     if kind == 'teacher':
         stage = TeacherBaseline(journal, lineage, driver, [{'id': 'teacher'}], minimum_tasks=1, repetitions=1)
     else:
-        stage = Collection(journal, lineage, driver, None, None, True)
+        stage = Collection(journal, lineage, driver, None, None, True, students())
     with pytest.raises(CampaignFault, match='episode_incomplete') as failure:
         stage.execute(inputs, 'run')
     assert failure.value.details['fault']['code'] == 'evidence_unavailable'

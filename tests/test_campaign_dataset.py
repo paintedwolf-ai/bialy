@@ -8,7 +8,7 @@ from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal, digest
 from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
 from bialy.provenance import file_sha256
-from bialy.student_host.specification import load
+from bialy.student_host.specification import load, students
 
 
 def bank(tmp_path, monkeypatch):
@@ -55,8 +55,8 @@ def test_paired_datasets_use_registered_partitions_and_preserve_whole_rows(tmp_p
         (paths[0].parent / 'source.json').write_text('sealed')
     result = assemble(journal, lineage, manifests, tmp_path, 'host', load(), tmp_path / 'dataset',
                       {'train': 8, 'validation': 8, 'system_test': 8}, seal=seal)
-    assert len(seals) == 2
-    for name in ('e4b', '12b'):
+    assert len(seals) == len(students())
+    for name in students():
         assert result['students'][name]['episodes'] == {'train': 8, 'validation': 8, 'system_test': 8}
         rows = [json.loads(line) for line in (tmp_path / 'dataset' / name / 'train.jsonl').read_text().splitlines()]
         assert all(row['split_group'].startswith('train') for row in rows)

@@ -13,6 +13,12 @@
       "revision": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
       "directory": "gemma-4-12B-it",
       "targets": "re:.*\\.(q_proj|k_proj|v_proj|o_proj)"
+    },
+    "26b-a4b": {
+      "repository": "google/gemma-4-26B-A4B-it",
+      "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+      "directory": "gemma-4-26B-A4B-it",
+      "targets": "re:.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj)"
     }
   }
 }

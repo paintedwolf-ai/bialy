@@ -3,6 +3,7 @@ import math
 import random
 import statistics
 
+from ..student_host.specification import students
 from .journal import CampaignFault, digest
 from .lineage import FAMILIES
 
@@ -74,7 +75,7 @@ def teacher_routes(measurements):
 
 
 def behavioral_result(plan, attempts, student):
-    if student not in {"e4b", "12b"}:
+    if student not in students():
         raise CampaignFault("unknown_student")
     tasks = plan.get('tasks', [])
     identifiers = [task['id'] for task in tasks]

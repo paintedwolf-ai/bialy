@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bialy import config
+from bialy import config, custom_model_run
 from bialy import run as runmod
 
 
@@ -296,6 +296,11 @@ def test_a_collection_declares_the_students_window_and_identity(factory, tmp_pat
     run = runmod.Run(factory=factory, name="t", settings=runmod.settings_for(factory, {"custom_model.enabled": True}))
     assert run.collection_window == 65536
     assert make_run(factory, tmp_path).collection_window is None
+    students = run.settings["custom_model"]["students"]
+    name = next(iter(students))
+    students[name] = dict(students[name], context_window=32768)
+    with pytest.raises(custom_model_run.DatasetError, match="one context window"):
+        _ = run.collection_window
 
 
 def test_an_early_stop_still_leaves_a_current_report(factory, tmp_path):

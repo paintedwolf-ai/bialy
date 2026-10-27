@@ -18,8 +18,9 @@ def verify_window(run, pass_name):
     result = fleet.sh("docker", "run", "--rm", "--entrypoint", "cat", run.image(pass_name),
                       "/opt/bialy/engine/" + str(fleet.COMPACTION))
     config = yaml.safe_load(result.stdout)
-    window = int(custom["students"]["e4b"]["context_window"])
-    if config["window_source"] != "explicit" or int(config["model_context_window"]) != window * int(config["live_budget_pct"]) // 100:
+    windows = {int(serving["context_window"]) for serving in custom["students"].values()}
+    if (len(windows) != 1 or config["window_source"] != "explicit"
+            or int(config["model_context_window"]) != windows.pop() * int(config["live_budget_pct"]) // 100):
         raise faults.RunFault("preflight_student_window_mismatch", "image")
 
 

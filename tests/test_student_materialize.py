@@ -8,7 +8,7 @@ from bialy.student_host.materialize import models
 from bialy.student_host.specification import load
 
 
-def test_downloads_both_pinned_students_and_reuses_verified_files(tmp_path):
+def test_downloads_every_pinned_student_and_reuses_verified_files(tmp_path):
     calls = []
     def download(args, **kwargs):
         calls.append(args)
@@ -18,11 +18,11 @@ def test_downloads_both_pinned_students_and_reuses_verified_files(tmp_path):
         (target / '.cache/token').write_text('download cache')
     spec = load()
     result = models(spec, tmp_path, run=download)
-    assert set(result) == {'e4b', '12b'}
-    assert len(calls) == 2
+    assert set(result) == set(spec['models'])
+    assert len(calls) == len(spec['models'])
     assert {args[args.index('--revision') + 1] for args in calls} == {m['revision'] for m in spec['models'].values()}
     assert models(spec, tmp_path, run=download) == result
-    assert len(calls) == 2
+    assert len(calls) == len(spec['models'])
     for name in result:
         assert '.cache/token' not in checkpoint(spec, name, tmp_path)
     target = Path(result['e4b']['directory']) / 'weights.safetensors'

@@ -2,12 +2,10 @@
 from .execution import Executor, atomic_json
 from .journal import CampaignFault, digest
 
-STUDENTS = ('e4b', '12b')
-
 
 class Campaign:
-    def __init__(self, journal, backend, sleep):
-        self.journal = journal
+    def __init__(self, journal, backend, sleep, students):
+        self.journal, self.students = journal, tuple(students)
         self.executor = Executor(journal, backend, sleep)
 
     def run(self):
@@ -46,12 +44,12 @@ class Campaign:
             return self.finish('evaluation_plan_unavailable', selector_status)
         frozen = {**common, 'plan': plan['output'], 'selector': selected, 'teachers': teachers['output']}
         pilots = {}
-        for student in STUDENTS:
+        for student in self.students:
             pilots[student] = self.stage('pilot_' + student, {**frozen, 'student': student, 'dataset': collection['output']})
         data = self.stage('collection_full', {**frozen, 'pilot_measurements': {name: result['output'] for name, result in pilots.items()
                                                                             if result['status'] == 'passed'}})
         outcomes = {}
-        for student in STUDENTS:
+        for student in self.students:
             base = self.stage('evaluate_base_' + student, {**frozen, 'student': student})
             if data['status'] != 'passed' or pilots[student]['status'] != 'passed':
                 outcomes[student] = {'status': 'execution_incomplete', 'base': base}
@@ -80,7 +78,7 @@ class Campaign:
     def finish(self, status, selector=None, students=None):
         snapshot = self.journal.snapshot()
         result = {'schema': 'pw-training-campaign-result/1', 'status': status, 'selector': selector,
-                  'students': students or {name: {'status': 'not_executed'} for name in STUDENTS},
+                  'students': students or {name: {'status': 'not_executed'} for name in self.students},
                   'journal_sha256': digest(snapshot), 'journal': snapshot}
         path = self.journal.directory / 'result.json'
         if path.exists():

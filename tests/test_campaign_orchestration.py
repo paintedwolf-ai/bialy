@@ -1,5 +1,6 @@
 from bialy.campaign.journal import CampaignFault, Journal
 from bialy.campaign.orchestration import Campaign
+from bialy.student_host.specification import students
 
 
 class Backend:
@@ -23,14 +24,14 @@ class Backend:
 def test_failed_selector_keeps_both_students_on_qualified_reference(tmp_path):
     journal = Journal(tmp_path, {})
     backend = Backend({'selector_training'})
-    result = Campaign(journal, backend, lambda _: None).run()
+    result = Campaign(journal, backend, lambda _: None, students()).run()
     assert result['status'] == 'qualified' and result['selector'] == 'conservative'
-    for student in ('e4b', '12b'):
+    for student in students():
         assert result['students'][student]['status'] == 'pass'
         inputs = next(inputs for name, inputs in backend.calls if name == 'pilot_' + student)
         assert inputs['selector']['configuration'] == 'reference'
     calls = list(backend.calls)
-    assert Campaign(journal, backend, lambda _: None).run() == result
+    assert Campaign(journal, backend, lambda _: None, students()).run() == result
     assert backend.calls == calls
     journal.close()
 
@@ -38,7 +39,7 @@ def test_failed_selector_keeps_both_students_on_qualified_reference(tmp_path):
 def test_one_student_failure_does_not_cancel_the_other_or_erase_base_results(tmp_path):
     journal = Journal(tmp_path, {})
     backend = Backend({'train_e4b'})
-    result = Campaign(journal, backend, lambda _: None).run()
+    result = Campaign(journal, backend, lambda _: None, students()).run()
     assert result['status'] == 'no_go'
     assert result['students']['e4b']['status'] == 'execution_incomplete'
     assert result['students']['e4b']['base']['status'] == 'passed'
@@ -49,7 +50,7 @@ def test_one_student_failure_does_not_cancel_the_other_or_erase_base_results(tmp
 def test_unqualified_host_never_starts_collection_or_model_jobs(tmp_path):
     journal = Journal(tmp_path, {})
     backend = Backend({'host_qualification'})
-    result = Campaign(journal, backend, lambda _: None).run()
+    result = Campaign(journal, backend, lambda _: None, students()).run()
     assert result['status'] == 'dependency_unqualified'
     assert [name for name, _ in backend.calls] == ['host_qualification']
     journal.close()
