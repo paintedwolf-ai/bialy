@@ -90,3 +90,36 @@ def assemble(journal, lineage, manifests, checkout, host_commit, specification, 
     result = {'students': outputs, 'lineage_sha256': lineage.freeze(), 'assembly_sha256': digest(assembly_binding)}
     atomic_json(destination / 'dataset.json', result)
     return result
+
+
+class Assembly:
+    """Assemble each student's splits from the first admitted attempt of every collected task."""
+    def __init__(self, journal, students, assemble):
+        self.journal, self.students, self.assemble = journal, tuple(students), assemble
+
+    def chosen(self, collection):
+        selected = {}
+        for episode in sorted(collection['episodes'], key=lambda item: (item['task_id'], item['repetition'])):
+            if episode['admitted'] and episode['task_id'] not in selected:
+                selected[episode['task_id']] = episode
+        return [selected[task] for task in sorted(selected)]
+
+    def execute(self, inputs, attempt):
+        collection = inputs['collection']
+        episodes = self.chosen(collection)
+        manifests = {student: [episode['exports'][student]['manifest'] for episode in episodes] for student in self.students}
+        result = self.assemble(manifests, self.journal.directory / 'datasets' / attempt, collection['minimum'])
+        return {**result, 'episodes': [episode['stage'] for episode in episodes],
+                'retained_rows': {student: sum(episode['exports'][student]['rows'] for episode in episodes)
+                                  for student in self.students}}
+
+    def reconcile(self, inputs, attempt):
+        return self.execute(inputs, attempt)
+
+    def validate(self, inputs, output):
+        if output['episodes'] != [episode['stage'] for episode in self.chosen(inputs['collection'])]:
+            raise CampaignFault('dataset_episode_selection_changed')
+        for student in self.students:
+            dataset = output['students'][student]
+            if any(file_sha256(Path(dataset['directory']) / name) != checksum for name, checksum in dataset['files'].items()):
+                raise CampaignFault('dataset_files_changed')

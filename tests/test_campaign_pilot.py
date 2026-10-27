@@ -20,7 +20,7 @@ class Handler:
 
 def handlers():
     return {name: Handler() for name in ('host_qualification', 'reviewer_qualification', 'teacher_baseline',
-        'collection_pilot', 'baseline_e4b', 'evaluate_base_e4b', 'pilot_e4b', 'export_e4b', 'evaluate_trained_e4b')}
+        'collection_pilot', 'dataset_pilot', 'baseline_e4b', 'evaluate_base_e4b', 'pilot_e4b', 'export_e4b', 'evaluate_trained_e4b')}
 
 
 def test_pilot_completes_data_path_without_claiming_behavioral_success(tmp_path):

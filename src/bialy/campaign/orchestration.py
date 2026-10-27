@@ -39,15 +39,20 @@ class Campaign:
         collection = self.stage('collection_pilot', {**common, 'teachers': teachers['output'], 'selector': selected})
         if collection['status'] != 'passed':
             return self.finish('insufficient_qualified_data', selector_status)
+        pilot_data = self.stage('dataset_pilot', {**common, 'collection': collection['output']})
+        if pilot_data['status'] != 'passed':
+            return self.finish('insufficient_qualified_data', selector_status)
         plan = self.stage('evaluation_plan', {**common, 'measurements': collection['output']})
         if plan['status'] != 'passed':
             return self.finish('evaluation_plan_unavailable', selector_status)
         frozen = {**common, 'plan': plan['output'], 'selector': selected, 'teachers': teachers['output']}
         pilots = {}
         for student in self.students:
-            pilots[student] = self.stage('pilot_' + student, {**frozen, 'student': student, 'dataset': collection['output']})
-        data = self.stage('collection_full', {**frozen, 'pilot_measurements': {name: result['output'] for name, result in pilots.items()
-                                                                            if result['status'] == 'passed'}})
+            pilots[student] = self.stage('pilot_' + student, {**frozen, 'student': student, 'dataset': pilot_data['output']})
+        collected = self.stage('collection_full', {**frozen, 'pilot_measurements': {name: result['output'] for name, result in pilots.items()
+                                                                                 if result['status'] == 'passed'}})
+        data = (self.stage('dataset_full', {**frozen, 'collection': collected['output']}) if collected['status'] == 'passed'
+                else collected)
         outcomes = {}
         for student in self.students:
             base = self.stage('evaluate_base_' + student, {**frozen, 'student': student})
