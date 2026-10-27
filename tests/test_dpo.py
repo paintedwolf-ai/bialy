@@ -921,7 +921,7 @@ def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(fact
     with pytest.raises(ValueError, match="epoch must name"):
         runmod.stage_custom_model(run)
 
-    # Verify right-sized total raw task count across all 31 workspaces (16 repos + 15 stacks).
+    # The configured workspaces and archetypes give the planned raw task total.
     repo_per_ws = sum(a.per_workspace for a in factory.archetypes if a.workspace == "repository")
     stack_per_ws = sum(a.per_workspace for a in factory.archetypes if a.workspace == "stack")
     total_raw = len(factory.repos) * repo_per_ws + len(factory.stacks) * stack_per_ws
@@ -1063,7 +1063,7 @@ def test_supported_44_language_matrix_coverage():
         assert tasks.mentioned_paths_exist("Inspect %s and explain its structure." % sample_file, [sample_file]), lang
         assert not tasks.mentioned_paths_exist("Inspect missing_%s" % sample_file, [sample_file]), lang
 
-    # Native test/build/lint commands across the 44-language matrix are recognized without relying on ./task.
+    # Native test, build, and lint commands of every supported language are recognized.
     matrix_test_commands = [
         "pytest -q",
         "python3 -m unittest discover",
@@ -1111,7 +1111,7 @@ def test_supported_44_language_matrix_coverage():
         call = {"name": "command", "arguments": json.dumps({"command": cmd})}
         assert dpo._is_exec_or_test_command(call), cmd
 
-    # Package manager mutations across package-execution-managers.yaml are recognized as mutating commands.
+    # Package-manager mutations are recognized as mutating commands.
     matrix_pkg_commands = [
         "npm install zod",
         "pnpm add fastify",

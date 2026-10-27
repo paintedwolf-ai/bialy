@@ -5,7 +5,8 @@ import json
 import statistics
 from pathlib import Path
 
-# Recall use is measured; successful recovery is part of the design.
+# How each measure is read with the head deciding: prompt tokens must fall, a rise
+# in repeated calls counts against it, and the rest are reported.
 BEHAVIOUR = (("prompt_tokens", "down"), ("recall_calls", "flat"), ("repeated_calls", "up"), ("calls", "flat"))
 
 

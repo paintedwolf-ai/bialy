@@ -1,6 +1,6 @@
 #!/bin/bash
 # shellcheck source-path=SCRIPTDIR
-# Prepare pinned sources, both students, and the independent resource reaper.
+# Prepare pinned sources, every declared student, and the independent resource reaper.
 set -euo pipefail
 # shellcheck source=lib.sh
 . "$(cd -- "$(dirname -- "$0")" && pwd)/lib.sh"

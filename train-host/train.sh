@@ -35,7 +35,7 @@ case $RECIPE in
       exec $PY scripts/bialy/train.py --corpus "$C" --train "$R/data/judged/train.jsonl" --val "$R/data/judged/val.jsonl" \
         --families tools --tool-truth "$TRUTH" --tool-weight none --tool-negatives "$NEGATIVES" --lr "$LR" --pos-weight 6 --seed 11 \
         --batch-size 64 --epochs 45 --patience 8 --label "open1-turn-load-$RECIPE-$RUN-independent" --out "$OUT/turn-load.safetensors" ;;
-  # Turn-load. A2 is rev4a's recipe on the open sessions; B2 the same on judged labels.
+  # Turn-load. A2 trains on the original session labels; B2 on judged labels.
   A2) exec $PY scripts/bialy/train.py --corpus $C --train $R/data/original/train.jsonl --val $R/data/original/val.jsonl $TURN \
         --tool-weight none --tool-truth called --label turn-load-a2 --out $OUT/turn-load.safetensors ;;
   B2) exec $PY scripts/bialy/train.py --corpus $C --train $R/data/judged/train.jsonl --val $R/data/judged/val.jsonl $TURN \

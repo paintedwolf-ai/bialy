@@ -69,11 +69,11 @@ run:
     epochs: null                   # cap for short checks; null keeps each recipe's own
   custom_model:
     enabled: false                 # custom-model collection is opt-in
-    diagnostic_only: false         # must explicitly opt in; training export is blocked pending host integration
+    diagnostic_only: false         # allow a host without the receipt exporter; its captures cannot train
     student: gemma-4-e4b-it        # student model evaluated in shadow mode with thinking off
     teacher: gemma-4-26b-a4b-it-q4 # teacher model that repairs host rejections and nudges (repair stays off)
     min_score: 3                   # minimum judge score for synthetic engine-on preloading and skill/tool gates
-    epoch: null                    # explicit collection identity; use a new epoch/run after command rework
+    epoch: null                    # explicit collection identity; each collection takes a new one
     tool_surface: legacy           # legacy or command-v1; never mix their trajectories
     host_commit: null              # exact clean Painted Wolf Code commit used by this run
     preload_from_judge: false      # reconstructed surfaces remain candidates, not training examples

@@ -602,8 +602,7 @@ def record_task_abort(shard, fault):
     rows = shard / "rows.jsonl"
     if rows.exists():
         rows.rename(shard / "task-aborted-rows.jsonl")
-    # An empty manifest truthfully records that no driver outcome was published
-    # before the host stopped this task. It never invents a completed session.
+    # An empty manifest records that the driver published no outcome before this task stopped.
     (shard / "manifest.jsonl").touch(exist_ok=True)
     (shard / "task-aborted.json").write_text(json.dumps(fault, indent=2) + "\n")
     return True
