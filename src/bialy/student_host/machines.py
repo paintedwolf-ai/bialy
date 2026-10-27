@@ -11,13 +11,14 @@ from .resources import Resources, write
 
 
 def validate(configuration):
-    required = {'host_repository', 'host_commit', 'bialy_repository', 'bialy_commit', 'host_checkout', 'models', 'machine'}
+    required = {'host_repository', 'host_commit', 'bialy_repository', 'bialy_commit', 'llama_repository', 'llama_commit',
+                'host_checkout', 'models', 'machine'}
     if not required <= set(configuration) or set(configuration) - required - {'provisioning'}:
         raise JobError('remote training configuration fields are invalid')
     for name in required - {'machine'}:
         if not isinstance(configuration[name], str) or not configuration[name]:
             raise JobError('remote training configuration value is missing: ' + name)
-    for name in ('host_commit', 'bialy_commit'):
+    for name in ('host_commit', 'bialy_commit', 'llama_commit'):
         if not re.fullmatch('[0-9a-f]{40}', configuration[name]):
             raise JobError('remote source must be pinned to a full commit')
     if any(not Path(configuration[name]).is_absolute() for name in ('host_checkout', 'models')):

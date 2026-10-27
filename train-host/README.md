@@ -483,13 +483,23 @@ be clean. SSH credentials come from the deployment environment. Instance provisi
 |---|---|---|
 | `setup.sh` | Training host | Install the toolchain, pinned models, trainer, export tools, and independent cleanup service |
 | `pilot.sh SPLITS` | Training host | Create unique jobs for each student from `SPLITS/<student>`, train, resume typed pauses, and export |
-| `sft-remote.sh SPLITS` | Training host | Run each student on the configured machine and return verified training artifacts and checkpoints |
+| `sft-remote.sh SPLITS` | Training host | Train and export each student on the configured machine and return verified training artifacts, checkpoints, and the served GGUF |
 
 Use `student/machine.example.json` for an existing SSH-accessible machine or
 `student/provisioned-machine.example.json` to provision an instance. Both use the
 same remote job protocol. Configure the SSH user, port, key path, workspace,
-`uv` executable, and device; remote machines need Git, Python, rsync, uv, and
-the accelerator driver installed. Jobs use separate workspace directories.
+`uv` executable, and device; remote machines need Git, Python, rsync, uv, CMake,
+a C++ compiler, and the accelerator driver installed. Set `llama_commit` to
+`LLAMA_COMMIT` from `student/pins.env`. Jobs use separate workspace directories.
+
+A remote job exports on the machine that trained it, before the machine is
+released. The host merge loads the base model in float32, so its peak memory is
+about four bytes per parameter: about 96 GiB for 26B-A4B, which fits a rented
+GPU machine's memory but not a workstation's. Only the Q4_K_M GGUF, its
+manifest, and the merge manifest come back; the merged checkpoint and the F16
+GGUF are deleted with the machine, and the artifact records
+`unquantized_retained: false`. The campaign's export stage accepts that artifact
+after rechecking its receipts against the pinned llama.cpp revision.
 Existing machines are never deleted, stopped, or registered for instance cleanup.
 The campaign defaults pilot training to the full training destination; an explicit
 `pilot_training` setting can select another destination.

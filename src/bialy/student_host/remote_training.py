@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import machines
+from . import exporting, machines
 from .jobs import JobError, tree, validate_inputs, validate_result, validate_training_inputs
 from .resources import write
 from .specification import identity
@@ -36,10 +36,11 @@ class Remote:
     def upload(self, source, destination):
         self.run(['rsync', '-a', '-e', shlex.join(self.ssh), str(source), self.host + ':' + shlex.quote(destination)], check=True, timeout=600)
 
-    def receive(self, source, destination):
+    def receive(self, source, destination, exclude=(), timeout=600):
         Path(destination).mkdir(parents=True, exist_ok=True)
-        self.run(['rsync', '-a', '--exclude', '.pending-*', '-e', shlex.join(self.ssh), self.host + ':' + shlex.quote(source),
-                  str(destination) + '/'], check=True, timeout=600)
+        excludes = [argument for pattern in ('.pending-*', *exclude) for argument in ('--exclude', pattern)]
+        self.run(['rsync', '-a', *excludes, '-e', shlex.join(self.ssh), self.host + ':' + shlex.quote(source),
+                  str(destination) + '/'], check=True, timeout=timeout)
 
 
 def prefix(configuration, workspace):
@@ -59,6 +60,14 @@ def bootstrap(remote, configuration, workspace, student):
         remote.command(['git', '-C', destination, 'checkout', '--detach', configuration[name + '_commit']])
     remote.command([*uv, 'sync', '--project', workspace + '/bialy', '--locked'])
     remote.command([*uv, 'sync', '--project', workspace + '/host/scripts/bialy/custom_model', '--locked'])
+    llama = workspace + '/llama.cpp'
+    remote.command(['git', 'clone', '--no-checkout', configuration['llama_repository'], llama])
+    remote.command(['git', '-C', llama, 'fetch', 'origin', configuration['llama_commit']])
+    remote.command(['git', '-C', llama, 'checkout', '--detach', configuration['llama_commit']])
+    remote.command(['cmake', '-S', llama, '-B', llama + '/build', '-DGGML_CUDA=OFF', '-DLLAMA_CURL=OFF',
+                    '-DCMAKE_BUILD_TYPE=Release'], timeout=1800)
+    remote.command(['cmake', '--build', llama + '/build', '--target', 'llama-quantize', 'llama-completion',
+                    '--parallel'], timeout=3600)
     remote.command([*uv, 'tool', 'install', 'huggingface_hub==2.2.0'])
     remote.command([*uv, 'run', '--project', workspace + '/bialy', '--locked',
                     'python', '-m', 'bialy.student_host', 'models', '--root', workspace + '/models',
@@ -91,6 +100,50 @@ class Renewal:
     def __exit__(self, *_):
         self.stop.set()
         self.thread.join()
+
+
+def export_remotely(remote, configuration, workspace, remote_directory, destination, check_connection, sleep):
+    """Export on the training machine, which has the memory for a float32 merge, and return only the served GGUF."""
+    marker = destination / 'export.json'
+    if not marker.exists():
+        command = [*prefix(configuration, workspace), 'run', '--project', workspace + '/bialy', '--locked', 'python', '-m',
+                   'bialy.student_host', 'export', remote_directory, '--llama', workspace + '/llama.cpp',
+                   '--revision', configuration['llama_commit']]
+        status = shlex.quote(remote_directory + '/export.exit')
+        inner = shlex.join(command) + '; echo "$?" >' + status + '.pending && mv ' + status + '.pending ' + status
+        script = ('nohup bash -c ' + shlex.quote(inner) + ' >' + shlex.quote(remote_directory + '/export.log')
+                  + ' 2>&1 </dev/null & echo $!')
+        pid = int(remote.command(['bash', '-lc', script]).strip())
+        write(marker, {'pid': pid})
+    pid = json.loads(marker.read_text())['pid']
+    probe = ('import json,os,pathlib; p=pathlib.Path(' + repr(remote_directory) + ')/"export.exit"\n'
+             'try:\n os.kill(' + str(pid) + ',0); alive=True\n'
+             'except OSError:\n alive=False\n'
+             'print(json.dumps({"exit":int(p.read_text()) if p.exists() else None,"alive":alive}))')
+    failures = 0
+    while True:
+        check_connection()
+        try:
+            observation = json.loads(remote.command(['python3', '-c', probe], timeout=30))
+        except (JobError, subprocess.TimeoutExpired):
+            failures += 1
+            if failures > 2:
+                raise JobError('remote export observation unavailable') from None
+            sleep(30)
+            continue
+        failures = 0
+        if observation['exit'] is not None:
+            break
+        if not observation['alive']:
+            raise JobError('remote export worker lost')
+        sleep(30)
+    if observation['exit']:
+        remote.receive(remote_directory + '/export.log', destination / 'job')
+        raise JobError('remote export failed with status %d' % observation['exit'])
+    job = destination / 'job'
+    remote.receive(remote_directory + '/merged/manifest.json', job / 'merged')
+    remote.receive(remote_directory + '/gguf/', job / 'gguf', exclude=(exporting.UNQUANTIZED,), timeout=7200)
+    return exporting.publish(job, configuration['llama_commit'], unquantized=False)
 
 
 def collect_checkpoint(remote, remote_directory, destination):
@@ -157,10 +210,10 @@ def train_locked(configuration_path, student, splits, source_key, destination, r
                     sleep(10)
             if not ready:
                 raise JobError('training machine did not become reachable')
+            workspace = configuration['machine']['workspace'].rstrip('/') + '/' + destination.name
             if resume:
                 remote_directory = json.loads((destination / 'remote.json').read_text())['directory']
             else:
-                workspace = configuration['machine']['workspace'].rstrip('/') + '/' + destination.name
                 bootstrap(remote, configuration, workspace, student)
                 check_connection()
                 remote.command(['mkdir', '-p', *[workspace + '/' + name for name in ('data', 'private', 'runs', 'spool')]])
@@ -207,7 +260,8 @@ def train_locked(configuration_path, student, splits, source_key, destination, r
                     sleep(20)
                     continue
                 if state['status'] in {'complete', 'failed'}:
-                    remote.receive(remote_directory + '/', destination / 'job')
+                    # The merge and unquantized GGUF stay on the machine and are deleted with it.
+                    remote.receive(remote_directory + '/', destination / 'job', exclude=('/merged/', '/gguf/'))
                     if state['status'] == 'complete':
                         plan_path = destination / 'job/plan.json'
                         plan = json.loads(plan_path.read_text())
@@ -218,6 +272,8 @@ def train_locked(configuration_path, student, splits, source_key, destination, r
                         write(plan_path, plan)
                         validate_inputs(plan)
                         validate_result(plan)
+                        outcome['artifact'] = export_remotely(remote, configuration, workspace, remote_directory,
+                                                              destination, check_connection, sleep)
                     outcome.update(status=state['status'], execution=state)
                     break
                 sleep(20)

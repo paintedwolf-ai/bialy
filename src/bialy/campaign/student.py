@@ -107,7 +107,10 @@ class Export:
         self.configuration, self.student = configuration, student
 
     def execute(self, inputs, attempt):
-        return exporting.export(inputs['training']['job'], self.configuration['llama'], self.configuration['llama_revision'])
+        job = inputs['training']['job']
+        if exporting.returned(job):
+            return exporting.publish(job, self.configuration['llama_revision'], unquantized=False)
+        return exporting.export(job, self.configuration['llama'], self.configuration['llama_revision'])
 
     def reconcile(self, inputs, attempt):
         return self.execute(inputs, attempt)

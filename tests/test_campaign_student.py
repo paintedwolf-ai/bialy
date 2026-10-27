@@ -98,3 +98,15 @@ def test_pilot_and_full_training_use_the_configured_machine(tmp_path, monkeypatc
     assert calls[0][2].get('resume') is None
     assert calls[1][2]['resume'].name == 'instance'
     journal.close()
+
+
+@pytest.mark.parametrize('returned', [False, True])
+def test_export_stage_uses_the_artifact_a_remote_job_returned(monkeypatch, returned):
+    from bialy.campaign.student import Export
+    from bialy.student_host import exporting
+    calls = []
+    monkeypatch.setattr(exporting, 'returned', lambda job: returned)
+    monkeypatch.setattr(exporting, 'publish', lambda job, revision, unquantized: calls.append(('publish', revision, unquantized)))
+    monkeypatch.setattr(exporting, 'export', lambda job, llama, revision: calls.append(('export', llama, revision)))
+    Export({'llama': '/llama', 'llama_revision': 'r'}, '26b-a4b').execute({'training': {'job': '/job'}}, 'attempt')
+    assert calls == ([('publish', 'r', False)] if returned else [('export', '/llama', 'r')])

@@ -11,6 +11,7 @@ from bialy.student_host.remote_training import Remote, bootstrap
 def configuration(tmp_path):
     return {'host_repository': 'https://example.invalid/host.git', 'host_commit': 'a' * 40,
             'bialy_repository': 'https://example.invalid/bialy.git', 'bialy_commit': 'b' * 40,
+            'llama_repository': 'https://example.invalid/llama.cpp.git', 'llama_commit': 'c' * 40,
             'host_checkout': str(tmp_path / 'host'), 'models': str(tmp_path / 'models'),
             'machine': {'host': 'training.example.org', 'user': 'trainer', 'port': 2222,
                         'workspace': '/srv/training', 'uv': '/opt/uv/bin/uv', 'device': 'cuda:1'}}
@@ -56,10 +57,16 @@ def test_bootstrap_scopes_sources_tools_and_models_to_the_job_workspace(tmp_path
     calls = []
     bootstrap(SimpleNamespace(command=lambda args, **kwargs: calls.append(args)), config, '/srv/training/job', '26b-a4b')
     clones = [args for args in calls if args[:2] == ['git', 'clone']]
-    assert [args[-1] for args in clones] == ['/srv/training/job/host', '/srv/training/job/bialy']
+    assert [args[-1] for args in clones] == ['/srv/training/job/host', '/srv/training/job/bialy', '/srv/training/job/llama.cpp']
     assert all('/root/' not in ' '.join(args) and '/scratch/' not in ' '.join(args) for args in calls)
     assert any('UV_TOOL_DIR=/srv/training/job/tools' in args for args in calls)
-    assert calls[-1][-3:] == ['/srv/training/job/models', '--student', '26b-a4b']
+    models = next(args for args in calls if 'models' in args)
+    assert models[-3:] == ['/srv/training/job/models', '--student', '26b-a4b']
+    llama = '/srv/training/job/llama.cpp'
+    assert ['git', '-C', llama, 'checkout', '--detach', 'c' * 40] in calls
+    configure, build = [args for args in calls if args[0] == 'cmake']
+    assert '-DGGML_CUDA=OFF' in configure
+    assert build[:3] == ['cmake', '--build', llama + '/build'] and {'llama-quantize', 'llama-completion'} <= set(build)
 
 
 @pytest.mark.parametrize('field,value', [('workspace', '/'), ('workspace', '/srv/../other'), ('user', '-root'), ('port', 0), ('host', '-option')])
@@ -67,4 +74,20 @@ def test_invalid_machine_connection_is_rejected_before_execution(tmp_path, field
     config = configuration(tmp_path)
     config['machine'][field] = value
     with pytest.raises(JobError):
+        machines.validate(config)
+
+
+def test_receive_never_pulls_excluded_artifacts(tmp_path):
+    calls = []
+    remote = Remote('192.0.2.1', configuration(tmp_path)['machine'], run=lambda args, **kwargs: calls.append((args, kwargs)))
+    remote.receive('/w/job/', tmp_path / 'job', exclude=('/merged/', '/gguf/'), timeout=7200)
+    args, kwargs = calls[0]
+    assert args[args.index('/merged/') - 1] == '--exclude' and args[args.index('/gguf/') - 1] == '--exclude'
+    assert '.pending-*' in args and kwargs['timeout'] == 7200
+
+
+def test_export_tools_must_be_pinned_to_a_full_commit(tmp_path):
+    config = configuration(tmp_path)
+    config['llama_commit'] = 'master'
+    with pytest.raises(JobError, match='full commit'):
         machines.validate(config)

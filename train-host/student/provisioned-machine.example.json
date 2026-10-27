@@ -3,6 +3,8 @@
   "host_commit": "",
   "bialy_repository": "https://github.com/paintedwolf-ai/bialy.git",
   "bialy_commit": "",
+  "llama_repository": "https://github.com/ggml-org/llama.cpp.git",
+  "llama_commit": "",
   "host_checkout": "/scratch/paintedwolf-training/src/host",
   "models": "/scratch/paintedwolf-training/models",
   "provisioning": {
