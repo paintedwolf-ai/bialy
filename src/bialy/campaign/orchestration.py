@@ -28,7 +28,7 @@ class Campaign:
         return result
 
     def gate(self, name, inputs):
-        """A finished review's decisions, None without human review, or a failed stage."""
+        """The review stage's result; without human review, a passed result that carries no decisions."""
         if not self.review:
             return {'status': 'passed', 'output': None}
         return self.stage(name, inputs)

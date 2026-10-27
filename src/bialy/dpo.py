@@ -7,7 +7,7 @@ released transcript archives joined with configured reviewer labels:
      rejected = call that triggered a host Code: rejection or nudge).
   2. Post-rejection recovery pairs at s_{t+1} (chosen = recovery call after
      reading the structured rejection card, rejected = repeating the bad call).
-  3.Dropped request_tools follow-through pairs (after == []).
+  3. Dropped request_tools follow-through pairs (after == []).
   4. Shadow-mode divergence pairs at teacher states s_t (student e4b queried
      with thinking=False diverges on loadable tools, skills_read, scoped read,
      or premature stops).
@@ -496,9 +496,8 @@ SCAN_ACCOUNTING_TOOLS = {"scan_summary", "scan_query", "scan_run", "scan_compare
 VALID_REPORT_RATINGS = {"clear", "hardening", "elevated", "critical"}
 VALID_FINDING_DISPOSITIONS = {"act", "accept", "held", "unresolved"}
 
-# Retired OAR codes from pre-Language-v1 command surface (P33). Filtering these
-# prevents historical USE_*_NATIVE or COMMAND_NOT_ARGV pairs from penalizing
-# valid Language v1 command programs or pushing the model toward retired schemas.
+# Rejection codes of the retired pre-Language-v1 command surface. Pairs built on them
+# would penalize valid command programs and teach retired schemas.
 RETIRED_COMMAND_REJECTION_PREFIXES = (
     "USE_READ_NATIVE",
     "USE_GREP_NATIVE",
@@ -545,7 +544,7 @@ MUTATING_CMD_RE = re.compile(
     r"|\b(?:terraform|tofu)\s+apply\b"
     r"|\b(?:python3?|node)\s+-(?:c|e)\b)"
 )
-# Test runners, compilers, typecheckers, and linters across all 44 supported languages in filekind/supported.go.
+# Test runners, compilers, typecheckers, and linters for every supported language.
 EXEC_OR_TEST_CMD_RE = re.compile(
     r"(?:\b(?:pytest|py\.test|tox|nox|ruff|mypy|flake8|pyright|(?:uv|poetry|pdm)\s+run|python3?\s+-m\s+(?:pytest|unittest|mypy|ruff|flake8|doctest|compileall))\b"
     r"|\b(?:(?:npm|pnpm|yarn|bun)\s+(?:test|run|check|lint|build)|(?:npx|pnpx|bunx)\b|vitest|jest|mocha|ava|playwright|cypress|vue-tsc|tsc|eslint|biome|deno\s+(?:test|lint|check|run))\b"

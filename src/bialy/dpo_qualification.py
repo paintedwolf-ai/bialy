@@ -2,8 +2,6 @@
 
 These checks bind trusted host capture and validation reports to dataset bytes.
 They do not perform host execution, assess task success, or authenticate a report.
-The current host exporter does not produce these reports; archives remain
-candidates until that integration exists.
 """
 
 import hashlib
@@ -76,7 +74,7 @@ def capture_reasons(row):
                 continue
             names.append(fn["name"])
             schema = fn.get("parameters")
-            # The old factory generated this generic placeholder for every tool.
+            # A bare object schema is a placeholder, not the tool's schema.
             if not isinstance(schema, dict) or schema == {"type": "object"} or schema.get("type") != "object":
                 reasons.append("missing_captured_tool_schema_constraints")
                 continue

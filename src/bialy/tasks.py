@@ -58,7 +58,7 @@ def reply_schema(max_follow_ups):
             "properties": {"prompt": {"type": "string"}, "follow_ups": {"type": "array", "items": {"type": "string"}, "maxItems": max_follow_ups}}}}},
     }
 
-# Supported 44-language matrix from lycaon/internal/filekind/supported.go and docs/supported-languages.md.
+# The languages Painted Wolf Code supports.
 SUPPORTED_LANGUAGES = (
     "apex", "bash", "c", "c_sharp", "cairo", "circom", "clojure", "commonlisp",
     "cpp", "dart", "dockerfile", "elixir", "go", "groovy", "hack", "hcl", "html", "java",
@@ -67,11 +67,11 @@ SUPPORTED_LANGUAGES = (
     "scheme", "solidity", "swift", "typescript", "vue", "xml", "yaml",
 )
 
-# 37 of 44 languages with OpenGrep SAST/security rule coverage in docs/supported-languages.md.
+# Supported languages without security scanning rules.
 UNSCANNED_SECURITY_LANGUAGES = frozenset({"commonlisp", "lua", "ocaml", "promql", "proto", "ql", "scheme"})
 SECURITY_SUPPORTED_LANGUAGES = tuple(lang for lang in SUPPORTED_LANGUAGES if lang not in UNSCANNED_SECURITY_LANGUAGES)
 
-# Canonical file extensions per supported grammar in the 44-language matrix.
+# The canonical file extensions of each supported language.
 LANGUAGE_FILE_EXTENSIONS = {
     "apex": ("cls", "trigger", "apex"),
     "bash": ("sh", "bash", "zsh", "ksh", "bats"),

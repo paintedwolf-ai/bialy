@@ -47,8 +47,7 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # The fleet stages need root, and everything under the factory root is then
 # root-owned, so preflight and launch run as root with the user's HOME and
-# tooling, the way run-desk2.sh did. The key stays in the environment of this
-# process tree only.
+# tooling. The key stays in the environment of this process tree only.
 if [[ "$cmd" != "status" && "$(id -u)" != 0 ]]; then
   [[ -f "$HOME_DIR/.env" ]] || { echo "missing $HOME_DIR/.env"; exit 1; }
   set -a
