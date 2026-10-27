@@ -48,7 +48,7 @@ def prefix(configuration, workspace):
             'UV_TOOL_DIR=' + workspace + '/tools', 'UV_TOOL_BIN_DIR=' + workspace + '/bin', uv]
 
 
-def bootstrap(remote, configuration, workspace):
+def bootstrap(remote, configuration, workspace, student):
     remote.command(['mkdir', '-p', workspace])
     uv = prefix(configuration, workspace)
     remote.command([*uv, '--version'])
@@ -61,7 +61,8 @@ def bootstrap(remote, configuration, workspace):
     remote.command([*uv, 'sync', '--project', workspace + '/host/scripts/bialy/custom_model', '--locked'])
     remote.command([*uv, 'tool', 'install', 'huggingface_hub==2.2.0'])
     remote.command([*uv, 'run', '--project', workspace + '/bialy', '--locked',
-                    'python', '-m', 'bialy.student_host', 'models', '--root', workspace + '/models'], timeout=3600)
+                    'python', '-m', 'bialy.student_host', 'models', '--root', workspace + '/models',
+                    '--student', student], timeout=3600)
 
 
 class Renewal:
@@ -160,7 +161,7 @@ def train_locked(configuration_path, student, splits, source_key, destination, r
                 remote_directory = json.loads((destination / 'remote.json').read_text())['directory']
             else:
                 workspace = configuration['machine']['workspace'].rstrip('/') + '/' + destination.name
-                bootstrap(remote, configuration, workspace)
+                bootstrap(remote, configuration, workspace, student)
                 check_connection()
                 remote.command(['mkdir', '-p', *[workspace + '/' + name for name in ('data', 'private', 'runs', 'spool')]])
                 remote.upload(str(Path(splits)) + '/', workspace + '/data/')

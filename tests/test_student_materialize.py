@@ -42,3 +42,16 @@ def test_a_wrong_model_revision_cannot_start_training(tmp_path):
     receipt.write_text(json.dumps(value))
     with pytest.raises(JobError, match='source or content'):
         checkpoint(spec, 'e4b', tmp_path)
+
+
+def test_a_job_downloads_only_its_selected_student(tmp_path):
+    spec = load()
+    calls = []
+    def download(args, **kwargs):
+        calls.append(args[2])
+        (Path(args[args.index('--local-dir') + 1]) / 'weights').write_bytes(b'fixture')
+    assert set(models(spec, tmp_path, run=download, students=['26b-a4b'])) == {'26b-a4b'}
+    assert calls == [spec['models']['26b-a4b']['repository']]
+    for selection in ([], ['26b-a4b', '26b-a4b'], ['undeclared']):
+        with pytest.raises(JobError, match='declared students'):
+            models(spec, tmp_path, run=download, students=selection)

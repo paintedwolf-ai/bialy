@@ -14,6 +14,7 @@ def main(argv=None):
     commands.add_parser('students')
     prepare = commands.add_parser('models')
     prepare.add_argument('--root', type=Path, required=True)
+    prepare.add_argument('--student', action='append', dest='students')
     create = commands.add_parser('create')
     create.add_argument('--student', required=True)
     for name in ('root', 'checkout', 'models', 'splits', 'mirror'):
@@ -45,7 +46,7 @@ def main(argv=None):
     if getattr(args, 'student', None) is not None and args.student not in students(load(args.specification)):
         parser.error('unknown student %r' % args.student)
     if args.action == 'models':
-        result = materialize.models(load(args.specification), args.root)
+        result = materialize.models(load(args.specification), args.root, students=args.students)
     elif args.action == 'create':
         result = {'directory': str(jobs.create(args.root, load(args.specification), args.student, args.checkout,
                                                args.models, args.splits, args.mirror, args.device, args.pilot))}

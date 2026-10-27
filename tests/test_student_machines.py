@@ -54,12 +54,12 @@ def test_ssh_transport_uses_the_configured_account_port_and_key(tmp_path):
 def test_bootstrap_scopes_sources_tools_and_models_to_the_job_workspace(tmp_path):
     config = configuration(tmp_path)
     calls = []
-    bootstrap(SimpleNamespace(command=lambda args, **kwargs: calls.append(args)), config, '/srv/training/job')
+    bootstrap(SimpleNamespace(command=lambda args, **kwargs: calls.append(args)), config, '/srv/training/job', '26b-a4b')
     clones = [args for args in calls if args[:2] == ['git', 'clone']]
     assert [args[-1] for args in clones] == ['/srv/training/job/host', '/srv/training/job/bialy']
     assert all('/root/' not in ' '.join(args) and '/scratch/' not in ' '.join(args) for args in calls)
     assert any('UV_TOOL_DIR=/srv/training/job/tools' in args for args in calls)
-    assert calls[-1][-1] == '/srv/training/job/models'
+    assert calls[-1][-3:] == ['/srv/training/job/models', '--student', '26b-a4b']
 
 
 @pytest.mark.parametrize('field,value', [('workspace', '/'), ('workspace', '/srv/../other'), ('user', '-root'), ('port', 0), ('host', '-option')])
