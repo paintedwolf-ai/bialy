@@ -3,6 +3,7 @@ import copy
 import pytest
 
 from bialy.campaign.evaluation import Evaluation, EvaluationPlan
+from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal
 from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
 
@@ -15,7 +16,9 @@ class Driver:
         if inputs['repetition'] == 0:
             raise CampaignFault('fixture_failure')
         return {'success': True, 'human_interventions': 0, 'unauthorized_effects': 0,
-                'unsupported_completion_claims': 0, 'effective_thinking': False}
+                'unsupported_completion_claims': 0, 'effective_thinking': False, 'exit_status': 0,
+                'verdict': {'deterministic': True, 'episode_sha256': inputs['task']['id'] + str(inputs['repetition'])},
+                'reviews': [{'dimensions': dict.fromkeys(DIMENSIONS, 'pass')}]}
     def validate(self, name, inputs, output):
         assert output['effective_thinking'] is False
 

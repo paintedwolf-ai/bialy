@@ -74,7 +74,9 @@ class Data:
         files = [target / name for name in names]
         manifests = [json.loads(path.read_text())['manifest']
                      for path in self.source.glob('trials/*/exports/e4b/reviewed.json')]
-        seal_dataset(self.journal, self.lineage, files, manifests, cfg['checkout'], cfg['host_commit'])
+        with read_source(self.source) as source:
+            decisions = qualified(source, 'review_collection_pilot')['decisions'] if cfg.get('human_review', False) else {}
+        seal_dataset(self.journal, self.lineage, files, manifests, decisions, cfg['checkout'], cfg['host_commit'])
         return {'students': {'e4b': {'directory': str(target), 'specification_sha256': identity(load()),
                 'files': {name: file_sha256(target / name) for name in (*names, 'source.json')}}},
                 'selection': json.loads((target / 'selection.json').read_text()), 'max_example_tokens': MAX_TOKENS}

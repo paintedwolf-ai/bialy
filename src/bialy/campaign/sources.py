@@ -51,7 +51,7 @@ def verified_exports(manifests, host_commit):
     return binding, inputs, candidates
 
 
-def seal_dataset(journal, lineage, files, export_manifests, checkout, host_commit, run=subprocess.run):
+def seal_dataset(journal, lineage, files, export_manifests, decisions, checkout, host_commit, run=subprocess.run):
     binding, inputs, candidates = verified_exports(export_manifests, host_commit)
     permitted_hashes = set(inputs.values())
     sources, approved = {}, {}
@@ -66,7 +66,7 @@ def seal_dataset(journal, lineage, files, export_manifests, checkout, host_commi
             if task['root'] != row.get('split_group') or task['id'] != meta.get('task_id'):
                 raise CampaignFault('row_lineage_mismatch')
             source = row.get('source', {})
-            verdict = episodes.admit(binding['epoch'], row['session'], source.get('store_sha256'))
+            verdict = episodes.admit(binding['epoch'], row['session'], source.get('store_sha256'), decisions)
             if (source.get('capture_sha256') not in permitted_hashes or source.get('store_sha256') not in permitted_hashes
                     or row.get('request_capture', {}).get('host_revision') != host_commit):
                 raise CampaignFault('row_source_not_in_host_export')

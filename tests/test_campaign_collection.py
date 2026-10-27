@@ -62,12 +62,13 @@ def test_assembly_uses_the_first_admitted_attempt_of_each_task(tmp_path):
     def episode(task, repetition, admitted):
         exports = {student: {'manifest': f'{task}-{repetition}', 'manifest_sha256': '', 'rows': 3} for student in students()}
         return {'stage': f'{task}-{repetition}', 'task_id': task, 'repetition': repetition, 'admitted': admitted,
+                'episode_sha256': f'{task}-{repetition}',
                 'exports': exports if admitted else None}
     collection = {'minimum': {'train': 1}, 'episodes': [
         episode('b', 0, False), episode('b', 1, True), episode('a', 1, True), episode('a', 0, True), episode('c', 0, False)]}
     seen = {}
-    def assemble(manifests, directory, minimum):
-        seen.update(manifests=manifests, minimum=minimum)
+    def assemble(manifests, decisions, directory, minimum):
+        seen.update(manifests=manifests, minimum=minimum, decisions=decisions)
         files = {}
         for student in manifests:
             path = directory / (student + '.jsonl')
@@ -76,14 +77,14 @@ def test_assembly_uses_the_first_admitted_attempt_of_each_task(tmp_path):
             files[student] = {'directory': str(directory), 'files': {path.name: file_sha256(path)}}
         return {'students': files}
     stage = Assembly(journal, students(), assemble)
-    inputs = {'collection': collection}
+    inputs = {'collection': collection, 'review': None}
     result = stage.execute(inputs, 'attempt')
     stage.validate(inputs, result)
     assert result['episodes'] == ['a-0', 'b-1']
     assert seen['manifests'] == {student: ['a-0', 'b-1'] for student in students()}
     assert seen['minimum'] == {'train': 1} and result['retained_rows'] == dict.fromkeys(students(), 6)
     with pytest.raises(CampaignFault, match='selection_changed'):
-        stage.validate({'collection': {**collection, 'episodes': collection['episodes'][:2]}}, result)
+        stage.validate({'collection': {**collection, 'episodes': collection['episodes'][:2]}, 'review': None}, result)
     next((journal.directory / 'datasets' / 'attempt').glob('*.jsonl')).write_text('changed')
     with pytest.raises(CampaignFault, match='dataset_files_changed'):
         stage.validate(inputs, result)

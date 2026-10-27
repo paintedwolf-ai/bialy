@@ -30,6 +30,7 @@
   bialy run --run NAME [--until STAGE] [--from STAGE] [--redo STAGE ...] [--dry-run] [--push] [--rebuild-image]
             [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
   bialy run-status --run NAME
+  bialy review [--run DIR] [status|show ITEM|skip ITEM|finish QUEUE|wait]
 
 Runs live under <root>/runs/<name>; the root and everything else come from config/.
 """
@@ -43,6 +44,7 @@ from pathlib import Path
 
 from . import audit, coderank, config, custom_quality, dpo, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
 from . import run as runmod
+from .review import cli as review_cli
 
 
 def main(argv=None):
@@ -198,7 +200,10 @@ def main(argv=None):
     p.add_argument("--run", required=True)
     p = sub.add_parser("run-status")
     p.add_argument("--run", required=True)
+    review_cli.register(sub)
     args = ap.parse_args(argv)
+    if args.cmd == "review":
+        return review_cli.run(args)
     factory = config.load()
     runs = factory.root / "runs"
 

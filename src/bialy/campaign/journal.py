@@ -26,9 +26,22 @@ class CampaignFault(RuntimeError):
         return {"code": self.code, "retryable": self.retryable, "details": self.details}
 
 
+class StageWaiting(RuntimeError):
+    """A stage needs input from outside the controller; rerunning the campaign resumes it."""
+    def __init__(self, reason, details):
+        self.reason, self.details = reason, details
+        super().__init__(reason)
+
+    def record(self):
+        return {"reason": self.reason, **self.details}
+
+
 class Journal:
+    """A campaign's durable state. Pass manifest=None to open an existing campaign without restating its identity."""
     def __init__(self, directory, manifest):
         self.directory = Path(directory)
+        if manifest is None and not (self.directory / "campaign.sqlite").is_file():
+            raise CampaignFault("campaign_missing", details={"directory": str(self.directory)})
         self.directory.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.directory / "campaign.sqlite", timeout=30)
         self.db.row_factory = sqlite3.Row
@@ -44,10 +57,15 @@ class Journal:
         try:
             with self.db:
                 current = self.db.execute("SELECT body FROM manifest WHERE id=1").fetchone()
+                if manifest is None:
+                    if current is None:
+                        raise CampaignFault("campaign_missing", details={"directory": str(self.directory)})
+                    manifest = json.loads(current["body"])
                 body = canonical(manifest)
                 if current is not None and current["body"] != body:
                     raise CampaignFault("campaign_identity_changed")
                 self.db.execute("INSERT OR IGNORE INTO manifest VALUES(1,?)", (body,))
+            self.manifest = manifest
         except Exception:
             self.db.close()
             raise
@@ -85,10 +103,11 @@ class Journal:
                 raise CampaignFault("stage_inputs_changed", details={"stage": name})
             if current and current["status"] in {"running", "passed", "skipped_dependency"}:
                 return current
-            if current and (not current["fault"]["retryable"] or current["tries"] >= 3):
+            if current and current["status"] == "failed" and (not current["fault"]["retryable"] or current["tries"] >= 3):
                 return current
             attempt = uuid.uuid4().hex
-            tries = current["tries"] + 1 if current else 1
+            # Resuming a waiting stage is not a retry.
+            tries = (current["tries"] + 1 if current["status"] == "failed" else current["tries"]) if current else 1
             self.db.execute("INSERT INTO stages VALUES(?,?, 'running',?,?,NULL,NULL) "
                             "ON CONFLICT(name) DO UPDATE SET status='running',attempt=excluded.attempt,"
                             "tries=excluded.tries,output=NULL,fault=NULL", (name, identity, attempt, tries))
@@ -96,8 +115,8 @@ class Journal:
         return self.stage(name)
 
     def settle(self, name, attempt, status, *, output=None, fault=None):
-        if status not in {"passed", "failed", "skipped_dependency"}:
-            raise ValueError("invalid terminal stage status")
+        if status not in {"passed", "failed", "skipped_dependency", "waiting"}:
+            raise ValueError("invalid stage settlement")
         if status == "failed" and fault is None:
             raise ValueError("failed stage requires a typed fault")
         with self.db:

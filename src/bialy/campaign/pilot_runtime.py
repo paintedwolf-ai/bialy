@@ -1,6 +1,7 @@
 """Connect pilot stages to capture, grading, training, and student serving."""
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from .evaluation import Evaluation
 from .execution import atomic_json
 from .exports import Exports
 from .grading import DIMENSIONS
+from .human_review import CollectionGate, EvaluationGate, Review
 from .journal import CampaignFault, digest
 from .lineage import Lineage
 from .preflight import inspect
@@ -154,12 +156,16 @@ def compose(journal, cfg):
     teachers = [{'id': name, 'family': factory.model(name).family, 'kind': 'teacher'} for name in cfg['teachers']]
     corpus = Path(cfg['corpus'])
     exports = Exports(factory, cfg['checkout'], identity, file_sha256(corpus))
-    def assemble(manifests, destination, minimum):
-        return dataset.assemble(journal, lineage, manifests, cfg['checkout'], cfg['host_commit'], specification, destination, minimum)
+    def assemble(manifests, decisions, destination, minimum):
+        return dataset.assemble(journal, lineage, manifests, decisions, cfg['checkout'], cfg['host_commit'], specification,
+                                destination, minimum)
+    review = Review(journal.directory) if cfg.get('human_review', False) else None
+    command = shlex.join(['bialy', 'review', '--run', str(journal.directory.resolve())])
+    collection_review = CollectionGate(review, 'collection_pilot', command) if review else None
     handlers = {'host_qualification': Host(run, cfg, teachers), 'reviewer_qualification': ReviewerQualification(reviewers),
                 'teacher_baseline': TeacherBaseline(journal, lineage, driver, teachers, minimum_tasks=1, repetitions=2),
                 'collection_pilot': Collection(journal, lineage, driver, exports, tuple(specification['models']), True,
-                                               minimum={'train': 8, 'validation': 8, 'system_test': 8}),
+                                               minimum={'train': 8, 'validation': 8, 'system_test': 8}, review=collection_review),
                 'dataset_pilot': Assembly(journal, tuple(specification['models']), assemble)}
     plan = {'tasks': [{'id': task['id'], 'family': task['family'], 'spec_hash': digest(task)}
                       for task in tasks if task['partition'] == 'system_test'], 'attempts_per_task': 1,
@@ -173,4 +179,7 @@ def compose(journal, cfg):
         handlers['export_' + student] = Export(training, student)
         for arm in ('base', 'trained'):
             handlers['evaluate_' + arm + '_' + student] = ServedEvaluation(journal, lineage, driver, specification, server, student, arm)
+    if review:
+        handlers['review_collection_pilot'] = collection_review
+        handlers['review_evaluation'] = EvaluationGate(review, 'evaluation', journal, command)
     return handlers, plan

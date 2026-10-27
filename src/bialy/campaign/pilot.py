@@ -1,22 +1,29 @@
 """Run a small, non-promoting training campaign through real host episodes."""
 import argparse
 import json
+import shlex
+import sys
 import time
 from pathlib import Path
 
-from .execution import Executor, ReceiptBackend, atomic_json
-from .journal import CampaignFault, Journal, digest
+from .execution import Executor, ReceiptBackend, atomic_json, paused, resuming
+from .grading import effective_attempts
+from .journal import CampaignFault, Journal, StageWaiting, digest
+
+WAITING = 3
 
 
 class Pilot:
-    def __init__(self, journal, handlers, plan, students):
-        self.journal, self.plan, self.students = journal, plan, students
+    def __init__(self, journal, handlers, plan, students, review=False, resume=None):
+        self.journal, self.plan, self.students, self.review, self.resume = journal, plan, students, review, resume
         self.executor = Executor(journal, ReceiptBackend(journal.directory / 'receipts', handlers), time.sleep)
 
     def stage(self, name, inputs):
         result = self.executor.run(name, inputs)
         atomic_json(self.journal.directory / 'status.json', self.journal.snapshot())
         print(json.dumps({'stage': name, 'status': result['status'], 'fault': result.get('fault')}), flush=True)
+        if result['status'] == 'waiting':
+            raise StageWaiting(result['output']['reason'], {**result['output'], 'stage': name})
         if result['status'] != 'passed':
             raise CampaignFault('pilot_stage_failed', details={'stage': name, 'fault': result.get('fault')})
         return result['output']
@@ -24,13 +31,16 @@ class Pilot:
     def run(self):
         outcomes = {}
         with self.journal.controller_lock():
+            resuming(self.journal)
             try:
                 host = self.stage('host_qualification', {})
                 self.stage('reviewer_qualification', {'host': host})
                 teachers = self.stage('teacher_baseline', {'host': host})
                 common = {'host': host, 'selector': host['conservative_reference'], 'teachers': teachers}
                 collection = self.stage('collection_pilot', common)
-                data = self.stage('dataset_pilot', {**common, 'collection': collection})
+                review = self.stage('review_collection_pilot', {'collection': collection}) if self.review else None
+                data = self.stage('dataset_pilot', {**common, 'collection': collection, 'review': review})
+                evaluations = {}
                 for student in self.students:
                     inputs = {**common, 'student': student, 'plan': self.plan}
                     baseline = self.stage('baseline_' + student, inputs)
@@ -38,12 +48,19 @@ class Pilot:
                     trained = self.stage('pilot_' + student, {**inputs, 'dataset': data})
                     artifact = self.stage('export_' + student, {**inputs, 'training': trained})
                     evaluated = self.stage('evaluate_trained_' + student, {**inputs, 'artifact': artifact})
-                    outcomes[student] = {'artifact': artifact, 'base': base, 'trained': evaluated,
-                                         'base_successes': sum(row['success'] for row in base['attempts']),
-                                         'trained_successes': sum(row['success'] for row in evaluated['attempts'])}
+                    evaluations[student] = {'base': base, 'trained': evaluated}
+                    outcomes[student] = {'artifact': artifact, 'base': base, 'trained': evaluated}
+                review = (self.stage('review_evaluation', {'evaluations': evaluations}) if self.review else None)
+                decisions = review['decisions'] if review else {}
+                for outcome in outcomes.values():
+                    for arm in ('base', 'trained'):
+                        attempts = effective_attempts(outcome[arm]['attempts'], decisions)
+                        outcome[arm + '_successes'] = sum(row['success'] for row in attempts)
                 complete = all(row['stage_status'] == 'passed' and row['effective_thinking'] is False
                                for outcome in outcomes.values() for arm in ('base', 'trained') for row in outcome[arm]['attempts'])
                 result = {'status': 'mechanical_pipeline_complete' if complete else 'evaluation_incomplete', 'students': outcomes}
+            except StageWaiting as waiting:
+                return {'schema': 'pw-training-pilot/1', 'status': 'waiting', 'waiting': paused(self.journal, waiting, self.resume)}
             except CampaignFault as exc:
                 result = {'status': 'incomplete', 'fault': exc.record(), 'students': outcomes}
             result.update(schema='pw-training-pilot/1', promotion_qualified=False, plan=self.plan,
@@ -60,11 +77,20 @@ def main(argv=None):
     parser.add_argument('--configuration', required=True, type=Path)
     args = parser.parse_args(argv)
     configuration = json.loads(args.configuration.read_text())
+    review = configuration.get('human_review', False)
+    if type(review) is not bool:
+        parser.error('human_review must be true or false')
     from .pilot_runtime import compose
     journal = Journal(configuration['directory'], {'schema': 'pw-training-pilot-inputs/1', 'configuration': configuration})
+    resume = shlex.join([sys.executable, '-m', 'bialy.campaign.pilot', '--configuration', str(args.configuration.resolve())])
     try:
         handlers, plan = compose(journal, configuration)
-        result = Pilot(journal, handlers, plan, configuration['students']).run()
+        result = Pilot(journal, handlers, plan, configuration['students'], review=review, resume=resume).run()
+        if result['status'] == 'waiting':
+            waiting = result['waiting']
+            print('Waiting on human review: ' + waiting['queue'] + '. Run: ' + waiting['command'], file=sys.stderr)
+            print('Then resume with: ' + resume, file=sys.stderr)
+            return WAITING
         print(json.dumps(result, indent=2))
         return 0 if result['status'] == 'mechanical_pipeline_complete' else 1
     finally:

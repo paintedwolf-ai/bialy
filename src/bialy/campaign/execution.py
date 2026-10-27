@@ -5,7 +5,7 @@ import time
 import traceback
 from pathlib import Path
 
-from .journal import CampaignFault, canonical, digest
+from .journal import CampaignFault, StageWaiting, canonical, digest
 
 
 def atomic_json(path, value):
@@ -22,6 +22,18 @@ def atomic_json(path, value):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def resuming(journal):
+    """Clear the previous pause record; a controller that pauses again writes a new one."""
+    (journal.directory / 'waiting.json').unlink(missing_ok=True)
+
+
+def paused(journal, waiting, resume):
+    """Record why the controller stopped. Rerunning the resume command continues from the journal."""
+    record = {'schema': 'pw-campaign-waiting/1', **waiting.record(), 'resume': resume}
+    atomic_json(journal.directory / 'waiting.json', record)
+    return record
 
 
 class Executor:
@@ -44,6 +56,8 @@ class Executor:
                     output = self.backend.execute(name, inputs, current['attempt'])
                 self.backend.validate(name, inputs, output)
                 return self.journal.settle(name, current['attempt'], 'passed', output=output)
+            except StageWaiting as exc:
+                return self.journal.settle(name, current['attempt'], 'waiting', output=exc.record())
             except CampaignFault as exc:
                 result = self.journal.settle(name, current['attempt'], 'failed', fault=exc.record())
                 if not exc.retryable or current['tries'] >= 3:
