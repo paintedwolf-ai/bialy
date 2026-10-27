@@ -122,37 +122,46 @@ def test_same_family_judge_is_usable_when_it_is_the_configured_pool(factory):
 
 def scenario_entry(**changes):
     entry = {"id": "flaky-session-test", "workspace": "flask", "archetype": "bugfix",
-             "variants": [{"prompt": "test_session_refresh fails 1 in 5 on CI, never locally", "follow_ups": ["why only on CI though"]}]}
+             "variants": [{"prompt": "test_session_refresh fails 1 in 5 on CI, never locally", "follow_ups": ["why only on CI though"]},
+                          {"prompt": "Can you look into an intermittent CI failure in the session tests?"}]}
     return {**entry, **changes}
 
 
-def test_scenarios_load_with_their_variants(factory):
+def load_scenarios(factory, entries, variants=2):
     import dataclasses
     f = dataclasses.replace(factory, scenarios=[])
-    config.load_scenarios(f, {"defaults": {"max_variants": 3}, "scenarios": [scenario_entry(lang="de")]})
+    config.load_scenarios(f, {"defaults": {"variants": variants}, "scenarios": entries})
+    return f
+
+
+def test_scenarios_load_with_their_variants(factory):
+    f = load_scenarios(factory, [scenario_entry(lang="de")])
     [s] = f.scenarios
-    assert (s.id, s.workspace, s.archetype, s.lang, f.max_variants) == ("flaky-session-test", "flask", "bugfix", "de", 3)
-    assert s.variants[0]["follow_ups"] == ["why only on CI though"]
+    assert (s.id, s.workspace, s.archetype, s.lang, f.scenario_variants) == ("flaky-session-test", "flask", "bugfix", "de", 2)
+    assert s.variants[0]["follow_ups"] == ["why only on CI though"] and s.variants[1]["follow_ups"] == []
+
+
+ANOTHER = {"prompt": "a different request about the same flaky session test"}
 
 
 @pytest.mark.parametrize("entries, message", [
     ([scenario_entry(id="Flaky Test")], "unique id"),
-    ([scenario_entry(), scenario_entry(variants=[{"prompt": "a different request about the same flaky test"}])], "unique id"),
+    ([scenario_entry(), scenario_entry(variants=[ANOTHER, {"prompt": "yet another way to type that request"}])], "unique id"),
     ([scenario_entry(workspace="nowhere")], "archetype written for its kind of workspace"),
     ([scenario_entry(archetype="new_project")], "archetype written for its kind of workspace"),
     ([scenario_entry(lang="xx")], "lang is one of"),
-    ([scenario_entry(variants=[])], "at least one variant"),
-    ([scenario_entry(variants=[{"prompt": "fix it"}])], "12 to 2400 characters"),
-    ([scenario_entry(variants=[{"prompt": "test_session_refresh fails on CI", "follow_ups": ["and why is that"] * 4}])], "at most 3 follow-ups"),
+    ([scenario_entry(variants=[ANOTHER])], "at least 2 variants, not 1"),
+    ([scenario_entry(variants=[ANOTHER, {"prompt": "fix it"}])], "12 to 2400 characters"),
+    ([scenario_entry(variants=[ANOTHER, {"prompt": "test_session_refresh fails on CI", "follow_ups": ["and why is that"] * 4}])],
+     "at most 3 follow-ups"),
     ([scenario_entry(), scenario_entry(id="again")], "appears twice in flask"),
 ])
 def test_a_scenario_must_be_well_formed(factory, entries, message):
-    import dataclasses
     with pytest.raises(config.ConfigError, match=message):
-        config.load_scenarios(dataclasses.replace(factory, scenarios=[]), {"scenarios": entries})
+        load_scenarios(factory, entries)
 
 
-def test_max_variants_is_positive_or_null(factory):
-    import dataclasses
-    with pytest.raises(config.ConfigError, match="max_variants"):
-        config.load_scenarios(dataclasses.replace(factory, scenarios=[]), {"defaults": {"max_variants": 0}})
+@pytest.mark.parametrize("variants", [None, 0, "10"])
+def test_the_variant_count_is_a_positive_number(factory, variants):
+    with pytest.raises(config.ConfigError, match="defaults.variants is a positive number"):
+        load_scenarios(factory, [], variants=variants)
