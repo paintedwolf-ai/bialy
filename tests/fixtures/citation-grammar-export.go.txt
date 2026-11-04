@@ -1,0 +1,230 @@
+// Writes Bialy's citation grammar fixture from the host parser and the host's own
+// corpus. Copy to lycaon/cmd/zzexport in a scratch copy of the host and run it from
+// lycaon: go run ./cmd/zzexport <commit> <out.json> <blob-dir>
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/lycaon/lycaon/internal/citationmd"
+	"github.com/lycaon/lycaon/internal/contentblob"
+	"github.com/lycaon/lycaon/internal/blobstore"
+)
+
+type citation struct {
+	Handle  string `json:"handle,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Line    int    `json:"line,omitempty"`
+	EndLine int    `json:"end_line,omitempty"`
+	Excerpt string `json:"excerpt,omitempty"`
+}
+
+type occurrence struct {
+	Kind        string    `json:"kind"`
+	Token       string    `json:"token"`
+	Citation    *citation `json:"citation,omitempty"`
+	Destination string    `json:"destination,omitempty"`
+	Artifact    string    `json:"artifact,omitempty"`
+	Method      string    `json:"method,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	Target      string    `json:"target,omitempty"`
+	URL         string    `json:"url,omitempty"`
+}
+
+type issue struct {
+	Code  string `json:"code"`
+	Kind  string `json:"kind,omitempty"`
+	Token string `json:"token,omitempty"`
+}
+
+type testCase struct {
+	Source      string       `json:"source"`
+	Known       bool         `json:"known_paths,omitempty"`
+	Occurrences []occurrence `json:"occurrences"`
+	Issues      []issue      `json:"issues"`
+}
+
+func convert(c *citationmd.Citation) *citation {
+	if c == nil {
+		return nil
+	}
+	return &citation{c.Handle, c.Path, c.Line, c.EndLine, c.Excerpt}
+}
+
+func run(source string, known bool, opts citationmd.Options) (testCase, bool) {
+	doc := citationmd.Parse(source, opts)
+	out := testCase{Source: source, Known: known, Occurrences: []occurrence{}, Issues: []issue{}}
+	for _, o := range doc.Occurrences {
+		item := occurrence{Kind: string(o.Kind), Token: o.Token, Citation: convert(o.Citation), Artifact: o.Artifact}
+		if o.Link != nil {
+			item.Destination = o.Link.Destination
+		}
+		if o.Verify != nil {
+			item.Method, item.Reason = o.Verify.Method, o.Verify.Reason
+		}
+		if o.Repair != nil {
+			item.Target, item.URL, item.Citation = o.Repair.Target, o.Repair.URL, convert(o.Repair.Citation)
+		}
+		out.Occurrences = append(out.Occurrences, item)
+	}
+	for _, i := range doc.Issues {
+		if i.Code == citationmd.IssueStructureBudget || i.Code == citationmd.IssueSourceBudget || i.Code == citationmd.IssueOccurrenceBudget {
+			return out, false
+		}
+		out.Issues = append(out.Issues, issue{string(i.Code), string(i.Kind), i.Token})
+	}
+	return out, true
+}
+
+// literals gathers every string in the parser's test files. Names and tokens come
+// along with the sources; the parser's answer on any string is a valid case.
+func literals(paths []string) []string {
+	var out []string
+	for _, path := range paths {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			panic(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				if text, err := strconv.Unquote(lit.Value); err == nil && text != "" {
+					out = append(out, text)
+				}
+			}
+			return true
+		})
+	}
+	return out
+}
+
+func main() {
+	commit, outPath, blobDir := os.Args[1], os.Args[2], os.Args[3]
+	raw, err := os.ReadFile("config/packs/painted-wolf/platform/guidance/evidence-kinds.yaml")
+	if err != nil {
+		panic(err)
+	}
+	var declared struct {
+		Kinds map[string]any `yaml:"evidence_kinds"`
+	}
+	if err := yaml.Unmarshal(raw, &declared); err != nil {
+		panic(err)
+	}
+	kinds := make([]string, 0, len(declared.Kinds))
+	registered := map[string]bool{}
+	for kind := range declared.Kinds {
+		kinds = append(kinds, kind)
+		registered[kind] = true
+	}
+	sort.Strings(kinds)
+	knownKind := func(kind string) bool { return registered[kind] }
+	knownPaths := []string{"Dockerfile", "a/b.go", "docs/x.md", "@shared/a.go", "LICENSE", "README.md"}
+	knownPath := func(name string) bool {
+		for _, path := range knownPaths {
+			if path == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	var sources []string
+	var marked []struct {
+		Source string `json:"source"`
+	}
+	data, err := os.ReadFile("internal/citationmd/testdata/marked-agreement.json")
+	if err != nil {
+		panic(err)
+	}
+	if err := json.Unmarshal(data, &marked); err != nil {
+		panic(err)
+	}
+	for _, c := range marked {
+		sources = append(sources, c.Source)
+	}
+	var oracle struct {
+		Cases []struct {
+			Source string `json:"source"`
+		} `json:"cases"`
+	}
+	data, err = os.ReadFile("internal/guidance/testdata/live-link-oracle.json")
+	if err != nil {
+		panic(err)
+	}
+	if err := json.Unmarshal(data, &oracle); err != nil {
+		panic(err)
+	}
+	for _, c := range oracle.Cases {
+		sources = append(sources, c.Source)
+	}
+	tests, err := filepath.Glob("internal/citationmd/*_test.go")
+	if err != nil {
+		panic(err)
+	}
+	sources = append(sources, literals(tests)...)
+
+	// Forms a student reply can take that the host's tables spell only inside Go helpers.
+	sources = append(sources,
+		"[artifact:9823b977-2c86-4057-9fcb-ef92acbbc97d]",
+		"[artifact: 9823b977-2c86-4057-9fcb-ef92acbbc97d, 1823b977-2c86-4057-9fcb-ef92acbbc97d]",
+		"Done [read#3:42, leg-a:grep#2:18].\n[artifact:9823b977-2c86-4057-9fcb-ef92acbbc97d]\n[verify: targeted - Ran the tests] [command#4]",
+		"[read#3:42 \"if err != nil\"] and [leg-a:grep#2 internal/a.go:42]",
+		"Above [scan#1].\n\n```json\n{\"headline\": \"h\"}\n```\n",
+		"```markdown\nWrapped [read#1].\n```",
+		"[cite: c1 => read#5:42]\n[cite: c2 => <https://example.test/a>]",
+		"[auth.go](internal/auth.go#L42-L48) and [b](source://root/internal/b.go#L3) and [c](README.md#install)",
+	)
+
+	seen := map[string]bool{}
+	cases := []testCase{}
+	refused := 0
+	for _, source := range sources {
+		if seen[source] || len(source) > 4096 {
+			continue
+		}
+		seen[source] = true
+		plain, ok := run(source, false, citationmd.Options{KnownHandleKind: knownKind})
+		if !ok {
+			refused++
+			continue
+		}
+		cases = append(cases, plain)
+		withPaths, _ := run(source, true, citationmd.Options{KnownHandleKind: knownKind, KnownPath: knownPath})
+		if encodedDiffers(plain, withPaths) {
+			cases = append(cases, withPaths)
+		}
+	}
+
+	envelope := []byte(`{"content":"Fixed [read#3:42].","tool_calls_json":[{"id":"c1","name":"read","args":{"path":"a.go"}}],"reasoning_json":{"text":"hidden"}}`)
+	sha, _, _, err := contentblob.Write(context.Background(), blobstore.Store{Root: blobDir, Dir: contentblob.Dir}, envelope)
+	if err != nil {
+		panic(err)
+	}
+	body, err := json.MarshalIndent(map[string]any{
+		"host_commit": commit, "kinds": kinds, "known_paths": knownPaths, "model_output_blob": sha, "cases": cases,
+	}, "", " ")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(outPath, append(body, '\n'), 0o644); err != nil {
+		panic(err)
+	}
+	fmt.Println(len(cases), "cases", refused, "refused past a budget", sha)
+}
+
+func encodedDiffers(a, b testCase) bool {
+	a.Known, b.Known = false, false
+	left, _ := json.Marshal(a)
+	right, _ := json.Marshal(b)
+	return string(left) != string(right)
+}

@@ -79,6 +79,21 @@ def test_empty_recollection_replaces_old_usage_and_retention(tmp_path):
     assert (run / "retention.jsonl").read_text() == ""
 
 
+def test_shards_retain_model_output_bodies_and_nothing_else_of_the_project(tmp_path):
+    helper = Path(__file__).parents[1] / "runner/retain-model-outputs.sh"
+    root, out = tmp_path / "cfg", tmp_path / "shard"
+    body = root / "projects/p1/model-content/ab/cdef"
+    body.parent.mkdir(parents=True)
+    body.write_bytes(b"text")
+    (root / "projects/p1/other").write_text("evidence")
+    out.mkdir()
+    for _ in range(2):
+        subprocess.run([str(helper), str(out), str(root)], check=True)
+    assert (out / "projects/p1/model-content/ab/cdef").read_bytes() == b"text"
+    assert not (out / "projects/p1/other").exists()
+    assert not (out / "projects/p1/model-content/model-content").exists()
+
+
 def test_provider_keys_are_absent_in_the_sidecar_environment():
     helper = Path(__file__).parents[1] / "runner/provider-credentials.sh"
     env = dict(os.environ, BIALY_HOSTED_PROVIDERS="one:BIALY_TEST_KEY,two:BIALY_TEST_KEY", BIALY_TEST_KEY="secret",

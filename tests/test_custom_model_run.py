@@ -90,6 +90,16 @@ def test_dirty_or_wrong_host_checkout_is_refused(custom_run, monkeypatch):
         cm.binding(custom_run)
 
 
+def test_input_identity_binds_retained_model_output_bodies(custom_run):
+    identity, before = source_inputs(custom_run)
+    body = custom_run.path("fleet-off/shards/a/projects/p1/model-content/ab/cdef")
+    body.parent.mkdir(parents=True)
+    body.write_bytes(b"model text")
+    after = cm.input_manifest(custom_run, identity)
+    assert cm.digest(before) != cm.digest(after)
+    assert "fleet-off/shards/a/projects/p1/model-content/ab/cdef" in after["files"]
+
+
 def test_input_identity_includes_wal_and_refuses_mismatched_fleet(custom_run):
     identity, before = source_inputs(custom_run)
     custom_run.path("fleet-off/shards/a/store.db-wal").write_bytes(b"new rows")
@@ -132,6 +142,7 @@ def test_reextract_uses_changed_store_and_never_creates_training_splits(custom_r
     def export(passes, tasks, out):
         exports.append(out)
         out.write_bytes(b"diagnostic archive")
+        return {"missing_model_outputs": 0}
 
     def extract(transcripts, **kw):
         kw["out_sft"].write_text('{"id":"candidate"}\n')
@@ -167,7 +178,7 @@ def test_not_ready_stops_run_before_release_and_reports(custom_run, monkeypatch)
 
 def test_changed_inputs_during_processing_never_receive_report_or_latest(custom_run, monkeypatch):
     source_inputs(custom_run)
-    monkeypatch.setattr(cm.dpo, "export_transcripts", lambda passes, tasks, out: out.write_bytes(b"archive"))
+    monkeypatch.setattr(cm.dpo, "export_transcripts", lambda passes, tasks, out: out.write_bytes(b"archive") and {"missing_model_outputs": 0})
 
     def extract(transcripts, **kw):
         kw["out_sft"].write_text("")

@@ -3,9 +3,10 @@
 set -euo pipefail
 
 out=$1
-for dir in /cfg/projects/*/model-content; do
+root=${2:-/cfg}
+for dir in "$root"/projects/*/model-content; do
   [ -d "$dir" ] || continue
   project=$(basename "$(dirname "$dir")")
-  mkdir -p "$out/projects/$project"
-  cp -R "$dir" "$out/projects/$project/"
+  mkdir -p "$out/projects/$project/model-content"
+  cp -R "$dir"/. "$out/projects/$project/model-content/"
 done

@@ -531,3 +531,12 @@ def test_runner_image_requires_and_stages_document_helper(factory, tmp_path, mon
     fleet.build_image(factory, binaries, engine)
     assert len(calls) == 1
     assert (factory.root / 'build/runner/bin/pw-document-core').read_bytes() == b'core'
+
+
+def test_a_stopped_or_overdue_shard_keeps_its_store_with_its_model_output_bodies(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fleet, "sh", lambda *args, **kwargs: calls.append(args))
+    fleet.retain_store("box")
+    assert calls == [("docker", "exec", "box", "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'"),
+                     ("docker", "exec", "box", "/opt/bialy/retain-model-outputs.sh", "/shard")]
+
