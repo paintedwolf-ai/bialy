@@ -322,9 +322,8 @@ Custom-model targets are the text the model wrote, read from the host's `model_o
 `messages.content` holds the presented form, with citations rewritten and removed, so it
 can neither teach citation placement nor be rebuilt from grounding metadata. The bodies
 are zstd files beside the store, under `projects/<project>/model-content/`, and a shard
-retains them with `store.db`. A store written by a host before the inline citation
-cutover has no usable `model_outputs` body for a closeout, and a run must pin a build
-containing it.
+retains them with `store.db`. Only sessions from a host with inline citations are
+training data, so a run must pin a build containing them.
 
 A row's `closeout.outcome` comes from the message's grounding, never from its text:
 `grounded` means the host traced citations the model supplied, while

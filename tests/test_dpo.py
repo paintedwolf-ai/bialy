@@ -374,7 +374,7 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
              "tool_result_json": json.dumps({"content": "[read#1]\ndef push(): pass"})},
             {"id": "a2", "role": "assistant", "origin": "model", "content": "Done, everything is complete.", "tool_calls_json": None},
             {"id": "u2", "role": "user", "origin": "host",
-             "content": "Rejected: This tool-free response would end the turn with 2 progress steps still pending.\n\nCause: Work remains unfinished."},
+             "content": "Rejected: This tool-free response would end the turn with 2 progress steps still pending.\n\nCause: Work remains unfinished.\nCode: TURN_CLOSEOUT_PENDING_PROGRESS"},
             {"id": "a3", "role": "assistant", "origin": "model", "content": "",
              "tool_calls_json": json.dumps([{"name": "update_progress", "id": "c2", "args": {"content": "## Progress\n- [x] Done"}}])},
             {"id": "t2", "role": "tool", "origin": "tool", "content": "Updated progress.", "tool_result_json": json.dumps({"content": "Updated progress."})},
@@ -1315,6 +1315,8 @@ def test_withheld_text_is_feedback_not_an_answer_or_a_rejection(tmp_path):
 
 
 def test_rejection_codes_read_plain_lines_only():
+    # A rejection's wording never names its code.
+    assert dpo.parse_host_user_rejection({"role": "user", "content": "Rejected: 2 progress steps still pending."})["code"] == "TURN_CLOSEOUT_REJECTED"
     assert dpo.REJECTION_CODE_RE.search("Rejected: no\nCode: OUTSIDE_ROOTS").group(1) == "OUTSIDE_ROOTS"
     assert dpo.REJECTION_CODE_RE.search("⟦D⟧Code: OUTSIDE_ROOTS") is None
     assert dpo.parse_rejection({"is_error": True, "content": "Status: error\nCode: PROGRESS_MISSING"})["code"] == "PROGRESS_MISSING"

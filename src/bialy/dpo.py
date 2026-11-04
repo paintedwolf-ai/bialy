@@ -338,22 +338,7 @@ def parse_host_user_rejection(message):
         code = code_match.group(1) if code_match else "COORDINATOR_CITATION_GROUNDING"
         return {"code": code, "details": {}, "content": text[:1000]}
     if text.startswith("Rejected:"):
-        if code_match:
-            code = code_match.group(1)
-        elif "progress steps" in text:
-            code = "TURN_CLOSEOUT_PENDING_PROGRESS"
-        elif "could not parse the arguments" in text:
-            code = "TOOL_ARGS_MALFORMED"
-        elif "Markdown answer" in text:
-            code = "TURN_CLOSEOUT_FORMAT"
-        elif "complete_leg" in text:
-            code = "WORKER_COMPLETION_REPORT_MISSING"
-        elif "submit_verdict" in text:
-            code = "REVIEW_LOOP_VERDICT_INVALID"
-        elif "fanout_plan" in text or "workflow_advance" in text:
-            code = "WORKFLOW_ADVANCE_REQUIRED"
-        else:
-            code = "TURN_CLOSEOUT_REJECTED"
+        code = code_match.group(1) if code_match else "TURN_CLOSEOUT_REJECTED"
         return {"code": code, "details": {}, "content": text[:1000]}
     if text.startswith("[host:coordinator-survey-streak]"):
         return {"code": "COORDINATOR_SURVEY_STREAK", "details": {}, "content": text[:1000]}
