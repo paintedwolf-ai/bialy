@@ -138,7 +138,8 @@ def input_manifest(run, identity):
         for store in stores:
             files += [store, store.parent / "manifest.jsonl"]
             files += sorted(p for p in store.parent.rglob("*") if p.is_file() and (
-                p.parent.name == "training-captures" or (p.name == "store.db-wal" and p.stat().st_size > 0) or p.name.endswith(".request.json") or p.name == "model-requests.jsonl"))
+                p.parent.name == "training-captures" or "model-content" in p.parts
+                or (p.name == "store.db-wal" and p.stat().st_size > 0) or p.name.endswith(".request.json") or p.name == "model-requests.jsonl"))
     task_files = sorted(run.path("tasks").glob("*.jsonl"))
     if not task_files:
         raise DatasetError("custom-model extraction requires the original task files")
@@ -212,7 +213,7 @@ def collect(run, judge_factory=None):
     write_json(base / "inputs.json", inputs)
     transcripts = base / "transcripts.jsonl.gz"
     # Re-export even on --redo: file existence is not evidence of matching stores.
-    dpo.export_transcripts([run.path("fleet-" + name) for name in inputs["passes"]], run.path("tasks"), transcripts)
+    exported = dpo.export_transcripts([run.path("fleet-" + name) for name in inputs["passes"]], run.path("tasks"), transcripts)
     if input_manifest(run, identity) != inputs:
         raise DatasetError("collection inputs changed during export; stop writers and collect again")
     sft_raw, dpo_raw = base / "sft.candidates.jsonl", base / "dpo.candidates.jsonl"
@@ -235,7 +236,8 @@ def collect(run, judge_factory=None):
         out = base / "dpo.shadow-candidates.jsonl"
         stats["shadow"] = dpo.shadow(run.factory, sft_raw, out, student_id=cfg["student"], workers=workers, seed=seed)
         sources["dpo"].append(out)
-    stats.update(epoch=identity["epoch"], tool_surface=identity["tool_surface"], directory=str(base), qualification={})
+    stats.update(epoch=identity["epoch"], tool_surface=identity["tool_surface"], directory=str(base), qualification={},
+                 missing_model_outputs=exported["missing_model_outputs"])
     for kind, paths in sources.items():
         eligible = base / (kind + ".qualified-review.jsonl")
         stats["qualification"][kind] = qualify_inputs(paths, eligible, identity, inputs)
