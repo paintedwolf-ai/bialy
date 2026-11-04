@@ -11,6 +11,9 @@ released transcript archives joined with configured reviewer labels:
   4. Shadow-mode divergence pairs at teacher states s_t (student e4b queried
      with thinking=False diverges on loadable tools, skills_read, scoped read,
      or premature stops).
+
+Assistant turns are the exact model text from model_outputs; messages supply role,
+kind, grounding, and draft versions.
 """
 
 import concurrent.futures
@@ -23,14 +26,17 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from . import provenance
+import zstandard
+
+from . import citationmd, provenance
 from .dpo_qualification import capture_reasons, qualification, training_eligible
 
 SFT_SCHEMA = "pw-custom-sft/1"
 DPO_SCHEMA = "pw-custom-dpo/1"
 
-REJECTION_CODE_RE = re.compile(r"(?:^|\n)(?:⟦D⟧)?Code:\s*([^\s,]+)", re.MULTILINE)
-STATUS_ERROR_RE = re.compile(r"(?:^|\n)(?:Status:\s*error|(?:⟦D⟧)?Rejected:)", re.MULTILINE)
+REJECTION_CODE_RE = re.compile(r"(?:^|\n)Code:\s*([^\s,]+)", re.MULTILINE)
+WITHHELD_NOTICE_PREFIX = "MID_TURN_NOTE_"
+AGENT_NOTE_KIND = "agent_note"
 SCOPED_READ_KEYS = {"ranges", "symbol", "start_line", "end_line", "offset", "limit"}
 
 
@@ -72,6 +78,7 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                 specs[task["id"]] = task
     opener = (lambda p: gzip.open(p, "wt", encoding="utf-8")) if out_path.suffix == ".gz" else (lambda p: open(p, "w", encoding="utf-8"))
     sessions_written = 0
+    counts = {"model_outputs": 0, "missing_model_outputs": 0}
     with opener(out_path) as out:
         for pass_dir in run_dirs:
             shards_dir = pass_dir / "shards"
@@ -101,7 +108,6 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                             cur = parent_of[cur]
                         return cur
 
-                    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
                     for srow in sess_rows:
                         sid = srow["id"]
                         root = root_of(sid)
@@ -109,45 +115,23 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                             continue
                         mentry, spec = by_root[root]
                         meta = spec.get("meta") or mentry.get("meta") or {}
-                        if "tool_calls_json" in msg_cols:
-                            extra_cols = [
-                                c for c in ("origin", "grounding_json", "artifact_ids_json", "completion_report_json", "draft_version_count", "draft_status")
-                                if c in msg_cols
-                            ]
-                            col_sql = ", ".join(["id", "role", "content", "kind", "visibility", "seq", "ord", "ts", "tool_calls_json", "tool_result_json", "reasoning_json"] + extra_cols)
-                            msgs = conn.execute(
-                                "SELECT %s FROM messages WHERE session_id = ? ORDER BY seq, ord, rowid" % col_sql,
-                                (sid,),
-                            ).fetchall()
-                            messages = [dict(m) for m in msgs]
-                        else:
-                            msgs = conn.execute(
-                                "SELECT id, role, turn_kind, text, content_json, created_at FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
-                                (sid,),
-                            ).fetchall()
-                            messages = []
-                            for m in msgs:
-                                try:
-                                    content = json.loads(m["content_json"]) if m["content_json"] else []
-                                except ValueError:
-                                    content = []
-                                messages.append({
-                                    "id": m["id"],
-                                    "role": m["role"],
-                                    "turn_kind": m["turn_kind"],
-                                    "text": m["text"] or "",
-                                    "content": content,
-                                    "created_at": m["created_at"],
-                                })
-                        draft_versions = []
-                        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-                        if "draft_versions" in tables:
-                            drows = conn.execute(
-                                "SELECT slot_id, version_index, body, outcome_code, created_at "
-                                "FROM draft_versions WHERE session_id = ? ORDER BY created_at, version_index",
-                                (sid,),
-                            ).fetchall()
-                            draft_versions = [dict(d) for d in drows]
+                        outputs = _session_model_outputs(conn, shard, sid, counts)
+                        messages = []
+                        for m in conn.execute(
+                            "SELECT id, role, content, kind, origin, visibility, seq, ord, ts, tool_calls_json, tool_result_json, reasoning_json, "
+                            "grounding_json, artifact_ids_json, completion_report_json, draft_version_count, draft_status "
+                            "FROM messages WHERE session_id = ? ORDER BY seq, ord, rowid",
+                            (sid,),
+                        ).fetchall():
+                            message = dict(m)
+                            if message["id"] in outputs:
+                                message["model_output"] = outputs[message["id"]]
+                            messages.append(message)
+                        draft_versions = [dict(d) for d in conn.execute(
+                            "SELECT slot_id, version_index, body, outcome_code, created_at "
+                            "FROM draft_versions WHERE session_id = ? ORDER BY created_at, version_index",
+                            (sid,),
+                        ).fetchall()]
                         record = {
                             "pass": pass_dir.name,
                             "shard": shard.name,
@@ -169,7 +153,46 @@ def export_transcripts(run_dir, tasks_dir, out_path):
                         sessions_written += 1
                 finally:
                     conn.close()
-    return {"sessions": sessions_written, "out": str(out_path)}
+    if counts["model_outputs"] and counts["missing_model_outputs"] == counts["model_outputs"]:
+        raise ValueError("no model output body was retained beside any store; the runner image predates model-content retention")
+    return {"sessions": sessions_written, "out": str(out_path), **counts}
+
+
+def _read_model_output_body(shard, project_id, sha):
+    """Read one content-addressed envelope; the digest names its plaintext."""
+    path = Path(shard) / "projects" / project_id / "model-content" / sha[:2] / sha[2:]
+    with path.open("rb") as stream, zstandard.ZstdDecompressor().stream_reader(stream) as reader:
+        plain = reader.read()
+    if hashlib.sha256(plain).hexdigest() != sha:
+        raise ValueError("model output body %s does not match its digest" % sha)
+    return json.loads(plain)
+
+
+def _session_model_outputs(conn, shard, session_id, counts):
+    """Each message's latest settled output. A scripted output has no model author."""
+    outputs = {}
+    for row in conn.execute(
+        "SELECT message_id, project_id, content_blob_sha256, finish_reason, scripted FROM model_outputs "
+        "WHERE session_id = ? ORDER BY settled_at, iteration, id",
+        (session_id,),
+    ).fetchall():
+        outputs.pop(row["message_id"], None)
+        if row["scripted"]:
+            continue
+        counts["model_outputs"] += 1
+        body = {}
+        if row["content_blob_sha256"]:
+            try:
+                body = _read_model_output_body(shard, row["project_id"], row["content_blob_sha256"])
+            except FileNotFoundError:
+                counts["missing_model_outputs"] += 1
+                continue
+        outputs[row["message_id"]] = {
+            "content": body.get("content", ""),
+            "tool_calls_json": body.get("tool_calls_json"),
+            "finish_reason": row["finish_reason"],
+        }
+    return outputs
 
 
 def iter_transcripts(path):
@@ -215,134 +238,64 @@ def report_document_defect_code(message):
     return "REPORT_DOCUMENT_INVALID"
 
 
-def reconstruct_closeout_fence(message):
-    """Reconstruct the trailing ```json closeout fence stripped from messages.content by closeoutWireContent."""
+def has_grounded_citations(message):
+    """The host traced citations the model supplied, from row facts alone."""
+    grounding = _parse_json_field(message.get("grounding_json") or message.get("grounding"))
+    return (
+        isinstance(grounding, dict)
+        and grounding.get("traced") is True
+        and not grounding.get("host_assembled")
+        and not grounding.get("evidence_optional")
+        and bool(grounding.get("cited_evidence") or grounding.get("cited_urls"))
+        and not report_document_defect_code(message)
+    )
+
+
+def closeout_outcome(message):
+    """Name a tool-free reply's host outcome; these outcomes stay distinct in every row."""
     grounding = _parse_json_field(message.get("grounding_json") or message.get("grounding"))
     if not isinstance(grounding, dict):
-        return ""
-    if not grounding.get("traced") or grounding.get("host_assembled"):
-        return ""
-    fence_obj = {}
-    cited_ev = []
-    for ce in grounding.get("cited_evidence") or []:
-        if not isinstance(ce, dict):
-            continue
-        item = {}
-        handle = ce.get("evidence") or ce.get("handle")
-        if handle:
-            item["evidence"] = handle
-        if ce.get("path"):
-            item["path"] = ce["path"]
-        if ce.get("line"):
-            item["line"] = ce["line"]
-        if ce.get("excerpt"):
-            item["excerpt"] = ce["excerpt"]
-        if item:
-            cited_ev.append(item)
-    if cited_ev:
-        fence_obj["cited_evidence"] = cited_ev
-    if grounding.get("cited_urls"):
-        fence_obj["cited_urls"] = list(grounding["cited_urls"])
-    artifact_ids = _parse_json_field(message.get("artifact_ids_json") or message.get("artifact_ids"))
-    if isinstance(artifact_ids, list) and artifact_ids:
-        fence_obj["artifact_ids"] = artifact_ids
-    if isinstance(grounding.get("verification"), dict) and grounding["verification"]:
-        fence_obj["verification"] = grounding["verification"]
-    comp_meta = _parse_json_field(message.get("completion_report_json") or message.get("completion_report"))
-    if isinstance(comp_meta, dict):
-        for k in ("headline", "summary", "limits", "ask", "rating", "set_asides"):
-            if comp_meta.get(k):
-                fence_obj[k] = comp_meta[k]
-        if comp_meta.get("findings"):
-            findings = []
-            for f in comp_meta["findings"]:
-                if not isinstance(f, dict):
-                    continue
-                fc = dict(f)
-                if "where" in fc and isinstance(fc["where"], list):
-                    where_list = []
-                    for w in fc["where"]:
-                        if isinstance(w, dict):
-                            wc = {}
-                            if w.get("evidence") or w.get("handle"):
-                                wc["evidence"] = w.get("evidence") or w.get("handle")
-                            if w.get("path"):
-                                wc["path"] = w["path"]
-                            if w.get("line"):
-                                wc["line"] = w["line"]
-                            if wc:
-                                where_list.append(wc)
-                    fc["where"] = where_list
-                findings.append(fc)
-            if findings:
-                fence_obj["findings"] = findings
-    if not fence_obj:
-        return ""
-    return "```json\n%s\n```" % json.dumps(fence_obj, ensure_ascii=False)
+        return None
+    if report_document_defect_code(message):
+        return "report_defect"
+    if is_host_assembled_closeout(message):
+        return "host_assembled"
+    if grounding.get("evidence_optional"):
+        return "evidence_optional"
+    return "grounded" if has_grounded_citations(message) else "uncited"
 
 
-def render_draft_version_body(body_str):
-    """Render a retracted draft_versions.body JSON envelope back into the assistant's Markdown + trailing fence."""
-    parsed = _parse_json_field(body_str)
-    if not isinstance(parsed, dict):
-        return str(body_str or "").strip()
-    data = dict(parsed)
-    synthesis = str(data.pop("synthesis", "") or "").strip()
-    if not data:
-        return synthesis
-    fence = "```json\n%s\n```" % json.dumps(data, ensure_ascii=False)
-    if not synthesis:
-        return fence
-    return "%s\n\n%s" % (synthesis, fence)
+def is_report_phase(message):
+    """The host stored this reply as a workflow run's report document."""
+    report = _parse_json_field(message.get("completion_report_json") or message.get("completion_report"))
+    return isinstance(report, dict) and report.get("scope") == "run"
 
 
-def strip_thinking(message):
-    """Return an assistant turn with reasoning blocks removed and text + tool_calls normalized."""
-    text_parts = []
+def model_turn(message):
+    """The assistant turn as the model wrote it, reasoning excluded; None if no model output backs the row."""
+    output = message.get("model_output")
+    if not isinstance(output, dict):
+        return None
     tool_calls = []
-    raw_content = message.get("content")
-    if isinstance(raw_content, list):
-        for block in raw_content:
-            btype = block.get("type")
-            if btype == "reasoning":
-                continue
-            if btype == "text" and block.get("text"):
-                text_parts.append(block["text"].strip())
-            elif btype == "tool_calls":
-                for i, call in enumerate(block.get("calls") or []):
-                    args = call.get("arguments", call.get("args", "{}"))
-                    if not isinstance(args, str):
-                        args = json.dumps(args, ensure_ascii=False, sort_keys=True)
-                    tool_calls.append({
-                        "id": call.get("id") or ("call_%d" % i),
-                        "name": call.get("name", ""),
-                        "arguments": args,
-                    })
-    elif isinstance(raw_content, str) and raw_content.strip():
-        text_parts.append(raw_content.strip())
-    tc_json = message.get("tool_calls_json")
-    if tc_json and not tool_calls:
+    raw_calls = output.get("tool_calls_json")
+    if isinstance(raw_calls, str):
         try:
-            parsed_calls = json.loads(tc_json) if isinstance(tc_json, str) else tc_json
+            raw_calls = json.loads(raw_calls) if raw_calls else []
         except ValueError:
-            parsed_calls = []
-        for i, call in enumerate(parsed_calls or []):
-            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
-            name = call.get("name") or fn.get("name") or ""
-            args = call.get("args") if "args" in call else call.get("arguments", fn.get("arguments", "{}"))
-            if not isinstance(args, str):
-                args = json.dumps(args, ensure_ascii=False, sort_keys=True)
-            tool_calls.append({
-                "id": call.get("id") or ("call_%d" % i),
-                "name": name,
-                "arguments": args,
-            })
-    text = "\n\n".join(p for p in text_parts if p) or (message.get("text") or "").strip()
-    if not tool_calls and "```json" not in text and "```citations" not in text:
-        fence = reconstruct_closeout_fence(message)
-        if fence:
-            text = ("%s\n\n%s" % (text, fence)).strip() if text else fence
-    return {"role": "assistant", "text": text, "tool_calls": tool_calls}
+            raw_calls = []
+    for i, call in enumerate(raw_calls or []):
+        fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+        name = call.get("name") or fn.get("name") or ""
+        args = call.get("args") if "args" in call else call.get("arguments", fn.get("arguments", "{}"))
+        if not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False, sort_keys=True)
+        tool_calls.append({"id": call.get("id") or ("call_%d" % i), "name": name, "arguments": args})
+    return {"role": "assistant", "text": output.get("content") or "", "tool_calls": tool_calls}
+
+
+def _without_notes(messages):
+    """A published note repeats its carrier's text, and no model output backs a note row."""
+    return [m for m in messages if m.get("kind") != AGENT_NOTE_KIND]
 
 
 def parse_rejection(result_block):
@@ -372,33 +325,20 @@ def parse_host_user_rejection(message):
     if message.get("origin") not in (None, "", "host"):
         return None
     raw = message.get("content")
-    text = (message.get("text") or (raw if isinstance(raw, str) else "") or "").strip()
+    text = (raw if isinstance(raw, str) else "").strip()
     if not text:
         return None
     code_match = REJECTION_CODE_RE.search(text)
     if text.startswith(">>> Tool feedback"):
         code = code_match.group(1) if code_match else "COORDINATOR_FEEDBACK"
+        if code.startswith(WITHHELD_NOTICE_PREFIX):
+            return None
         return {"code": code, "details": {}, "content": text[:1000]}
     if text.startswith("[host:coordinator-citation-grounding]"):
         code = code_match.group(1) if code_match else "COORDINATOR_CITATION_GROUNDING"
         return {"code": code, "details": {}, "content": text[:1000]}
     if text.startswith("Rejected:"):
-        if code_match:
-            code = code_match.group(1)
-        elif "progress steps" in text:
-            code = "TURN_CLOSEOUT_PENDING_PROGRESS"
-        elif "could not parse the arguments" in text:
-            code = "TOOL_ARGS_MALFORMED"
-        elif "Markdown answer" in text:
-            code = "TURN_CLOSEOUT_FORMAT"
-        elif "complete_leg" in text:
-            code = "WORKER_COMPLETION_REPORT_MISSING"
-        elif "submit_verdict" in text:
-            code = "REVIEW_LOOP_VERDICT_INVALID"
-        elif "fanout_plan" in text or "workflow_advance" in text:
-            code = "WORKFLOW_ADVANCE_REQUIRED"
-        else:
-            code = "TURN_CLOSEOUT_REJECTED"
+        code = code_match.group(1) if code_match else "TURN_CLOSEOUT_REJECTED"
         return {"code": code, "details": {}, "content": text[:1000]}
     if text.startswith("[host:coordinator-survey-streak]"):
         return {"code": "COORDINATOR_SURVEY_STREAK", "details": {}, "content": text[:1000]}
@@ -407,14 +347,29 @@ def parse_host_user_rejection(message):
     return None
 
 
+def _withheld_notice(messages, idx):
+    """The code telling the model its carrier's text at idx never reached the user. Its tools still ran."""
+    at = idx + 1
+    while at < len(messages) and messages[at].get("role") == "tool":
+        at += 1
+    if at == len(messages) or messages[at].get("role") != "user" or not is_coordinator_feedback(messages[at].get("content")):
+        return None
+    match = REJECTION_CODE_RE.search(messages[at]["content"])
+    code = match.group(1) if match else ""
+    return code if code.startswith(WITHHELD_NOTICE_PREFIX) else None
+
+
+def _is_user_opening(message):
+    return (
+        message.get("origin") != "host"
+        and parse_host_user_rejection(message) is None
+        and not is_coordinator_feedback(message.get("content"))
+    )
+
+
 def _tool_results_in(message):
     out = []
     raw_content = message.get("content")
-    if isinstance(raw_content, list):
-        for block in raw_content:
-            if block.get("type") == "tool_results":
-                out.extend(block.get("results") or [])
-        return out
     tr_json = message.get("tool_result_json")
     if tr_json:
         try:
@@ -439,10 +394,10 @@ def _openai_messages(prefix):
         role = msg.get("role")
         if role in ("system", "developer", "user"):
             raw_c = msg.get("content")
-            text = msg.get("text") or (raw_c if isinstance(raw_c, str) else "")
-            out.append({"role": role, "content": text})
+            out.append({"role": role, "content": raw_c if isinstance(raw_c, str) else ""})
         elif role == "assistant":
-            clean = strip_thinking(msg)
+            raw_c = msg.get("content")
+            clean = model_turn(msg) or {"text": raw_c if isinstance(raw_c, str) else "", "tool_calls": []}
             entry = {"role": "assistant", "content": clean["text"] or ""}
             if clean["tool_calls"]:
                 entry["tool_calls"] = [
@@ -495,6 +450,7 @@ WORKFLOW_CONTROL_TOOLS = {
 SCAN_ACCOUNTING_TOOLS = {"scan_summary", "scan_query", "scan_run", "scan_compare"}
 VALID_REPORT_RATINGS = {"clear", "hardening", "elevated", "critical"}
 VALID_FINDING_DISPOSITIONS = {"act", "accept", "held", "unresolved"}
+REPORT_DOCUMENT_MEMBERS = {"headline", "summary", "rating", "findings", "limits", "ask", "set_asides"}
 
 # Rejection codes of the retired pre-Language-v1 command surface. Pairs built on them
 # would penalize valid command programs and teach retired schemas.
@@ -708,14 +664,17 @@ def _completed_openings(messages):
     """Return opening user message ids that settled cleanly before any later timeout."""
     completed = set()
     cur = None
+    messages = _without_notes(messages)
     for idx, msg in enumerate(messages):
         if msg.get("role") == "user":
-            if parse_host_user_rejection(msg) is None and msg.get("origin") != "host":
+            if _is_user_opening(msg):
                 cur = msg.get("id")
             continue
         if msg.get("role") != "assistant" or not cur:
             continue
-        turn = strip_thinking(msg)
+        turn = model_turn(msg)
+        if turn is None:
+            continue
         next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
         results = _tool_results_in(next_msg) if (next_msg and next_msg.get("role") == "tool") else []
         rejs = [r for r in (parse_rejection(res) for res in results) if r is not None]
@@ -727,11 +686,7 @@ def _completed_openings(messages):
         if "complete_leg" in call_names and _calls_succeeded(turn, results):
             completed.add(cur)
             continue
-        turn_text = turn.get("text") or ""
-        if not turn["tool_calls"] and (
-            "```citations" in turn_text
-            or ("```json" in turn_text and not is_host_assembled_closeout(msg) and not report_document_defect_code(msg))
-        ):
+        if not turn["tool_calls"] and has_grounded_citations(msg):
             completed.add(cur)
     return completed
 
@@ -845,6 +800,9 @@ def extract(
         "dropped_retired_rejections": 0,
         "qualified_sft_rows": 0,
         "qualified_dpo_rows": 0,
+        "without_model_output": 0,
+        "evidence_optional_replies": 0,
+        "withheld_carriers": {},
     }
 
     for session in iter_transcripts(transcripts_path):
@@ -854,12 +812,12 @@ def extract(
         sess_rows = by_session.get(sid) or []
         primary_row = sess_rows[0] if sess_rows else None
         meta = _session_meta(session, primary_row)
-        messages = session.get("messages") or []
+        messages = _without_notes(session.get("messages") or [])
         completed_openings = _completed_openings(messages)
         called_in_session = {
             call.get("name")
             for msg in messages if msg.get("role") == "assistant"
-            for call in strip_thinking(msg)["tool_calls"] if call.get("name")
+            for call in (model_turn(msg) or {"tool_calls": []})["tool_calls"] if call.get("name")
         }
         draft_by_slot = {}
         for dv in session.get("draft_versions") or []:
@@ -872,17 +830,22 @@ def extract(
         routine_seen = set()
         for idx, msg in enumerate(messages):
             if msg.get("role") == "user":
-                if parse_host_user_rejection(msg) is None and msg.get("origin") != "host":
+                if _is_user_opening(msg):
                     current_opening = msg.get("id")
                     steps_since_opening = 0
                 continue
             if msg.get("role") != "assistant":
                 continue
+            turn = model_turn(msg)
+            slot_drafts = draft_by_slot.get(msg.get("id")) or []
+            if turn is None:
+                stats["without_model_output"] += 1
+                if not slot_drafts:
+                    continue
             step_offset = steps_since_opening
             steps_since_opening += 1
             row = by_opening.get((sid, current_opening)) or primary_row
             surface = synthesized_surface(row, min_score=min_score, preload_from_judge=preload_from_judge, observed_tools=called_in_session)
-            turn = strip_thinking(msg)
             next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
             results = _tool_results_in(next_msg) if (next_msg and next_msg.get("role") == "tool") else []
             rejections = [r for r in (parse_rejection(res) for res in results) if r is not None]
@@ -896,28 +859,23 @@ def extract(
                     rejections = [r for r in rejections if not is_retired_command_rejection(r.get("code"))]
                     if not rejections:
                         continue
-            turn_text = turn.get("text") or ""
             host_assembled = is_host_assembled_closeout(msg)
             defect_code = report_document_defect_code(msg)
-            has_grounded_citations = (
-                "```citations" in turn_text
-                or ("```json" in turn_text and not host_assembled and not defect_code)
-            )
+            grounded = has_grounded_citations(msg)
             prefix = _openai_messages(messages[:idx])
             captures = session.get("model_requests") or {}
             capture = captures.get(msg.get("id")) if isinstance(captures, dict) else None
             if isinstance(capture, dict) and isinstance(capture.get("messages"), list):
                 prefix = copy.deepcopy(capture["messages"])
 
-            # Extract retracted closeout drafts from draft_versions for this message slot.
-            slot_drafts = draft_by_slot.get(msg.get("id")) or []
+            # A retracted draft's body is the rejected attempt's Markdown.
             if slot_drafts:
                 for dv_idx, dv in enumerate(slot_drafts):
                     dv_code = dv.get("outcome_code") or "TURN_CLOSEOUT_REJECTED"
                     stats["rejection_codes"][dv_code] = stats["rejection_codes"].get(dv_code, 0) + 1
                     rej_turn = {
                         "role": "assistant",
-                        "text": render_draft_version_body(dv.get("body", "")),
+                        "text": str(dv.get("body") or ""),
                         "tool_calls": [],
                     }
                     dpo_rows.append({
@@ -937,7 +895,7 @@ def extract(
                         "meta": meta,
                     })
                     stats["by_source"]["host_rejection"] = stats["by_source"].get("host_rejection", 0) + 1
-            elif (host_assembled or defect_code) and not rejections:
+            elif turn is not None and (host_assembled or defect_code) and not rejections:
                 grounding = _parse_json_field(msg.get("grounding_json") or msg.get("grounding")) or {}
                 comp_meta = _parse_json_field(msg.get("completion_report_json") or msg.get("completion_report")) or {}
                 hint_code = defect_code or grounding.get("hint_code") or "INVEST_CITATIONS_REQUIRED"
@@ -961,7 +919,11 @@ def extract(
                 stats["by_source"]["host_rejection"] = stats["by_source"].get("host_rejection", 0) + 1
                 continue
 
-            if not turn["tool_calls"] and not rejections and not has_grounded_citations:
+            if turn is None:
+                continue
+            if not turn["tool_calls"] and not rejections and not grounded:
+                if closeout_outcome(msg) == "evidence_optional":
+                    stats["evidence_optional_replies"] += 1
                 continue
 
             if rejections:
@@ -971,18 +933,13 @@ def extract(
                 repaired_turn = None
                 if idx + 2 < len(messages) and messages[idx + 2].get("role") == "assistant":
                     candidate_msg = messages[idx + 2]
-                    candidate = strip_thinking(candidate_msg)
+                    candidate = model_turn(candidate_msg)
                     later_msg = messages[idx + 3] if idx + 3 < len(messages) else None
                     later_results = _tool_results_in(later_msg) if (later_msg and later_msg.get("role") == "tool") else []
                     later_rejs = [r for r in (parse_rejection(res) for res in later_results) if r is not None]
                     if parse_host_user_rejection(later_msg) is not None:
                         later_rejs.append(parse_host_user_rejection(later_msg))
-                    cand_text = candidate.get("text") or ""
-                    cand_grounded = (
-                        "```citations" in cand_text
-                        or ("```json" in cand_text and not is_host_assembled_closeout(candidate_msg) and not report_document_defect_code(candidate_msg))
-                    )
-                    if (_calls_succeeded(candidate, later_results) or cand_grounded) and not later_rejs:
+                    if candidate is not None and (_calls_succeeded(candidate, later_results) or has_grounded_citations(candidate_msg)) and not later_rejs:
                         repaired_turn = candidate
                 # 1. Pre-rejection prevention pair at s_t.
                 dpo_rows.append({
@@ -1029,6 +986,10 @@ def extract(
             # Clean turn candidate for Stage 1 SFT warmup.
             if host_assembled or defect_code:
                 continue
+            withheld = _withheld_notice(messages, idx)
+            if withheld:
+                stats["withheld_carriers"][withheld] = stats["withheld_carriers"].get(withheld, 0) + 1
+                continue
             task_status = ((row or {}).get("meta") or {}).get("task_status")
             sess_settled = session.get("status") in ("settled", "idle", "") and task_status in (None, "", "settled")
             opening_settled = (
@@ -1050,7 +1011,7 @@ def extract(
                     continue
             adapted = turn if capture else _adapt_turn_for_preloaded(turn, surface["active_tools"], preload_from_judge=preload_from_judge)
             prior_tool_msgs = sum(1 for m in prefix if m.get("role") == "tool")
-            if not adapted["tool_calls"] and not (has_grounded_citations and prior_tool_msgs >= 1):
+            if not adapted["tool_calls"] and not (grounded and prior_tool_msgs >= 1):
                 continue
             if (
                 max_routine_reads_per_session is not None
@@ -1087,6 +1048,7 @@ def extract(
         for candidate in sft_rows[session_sft_start:] + dpo_rows[session_dpo_start:]:
             message = messages[candidate["turn_index"]]
             candidate["message_id"] = message.get("id")
+            candidate["closeout"] = {"outcome": closeout_outcome(message), "report_phase": is_report_phase(message)}
             captures = session.get("model_requests")
             capture = captures.get(candidate["message_id"]) if isinstance(captures, dict) else None
             if isinstance(capture, dict):
@@ -1131,81 +1093,70 @@ def _prior_tool_signatures(prompt_messages):
     return seen
 
 
-TRAILING_FENCE_RE = re.compile(r"```(?:json|citations)\s*\n(\{[\s\S]*?\})\s*\n```\s*$", re.IGNORECASE)
-UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
+def _is_malformed_where(where):
+    """A finding's source association is typed: an evidence handle, a place, or both."""
+    if not isinstance(where, dict) or not where or set(where) - {"evidence", "path", "line", "end_line", "excerpt"}:
+        return True
+    if "evidence" in where and not citationmd.is_handle(where["evidence"]):
+        return True
+    if not where.get("evidence") and not where.get("path"):
+        return True
+    line, end = where.get("line", 1), where.get("end_line", where.get("line", 1))
+    if type(line) is not int or type(end) is not int or line < 1 or end < line:
+        return True
+    return any(not isinstance(where.get(key, ""), str) for key in ("path", "excerpt"))
 
 
-def _extract_trailing_fence_json(text):
-    if not text:
-        return None
-    m = TRAILING_FENCE_RE.search(text.strip())
-    if not m:
-        return None
+def _is_malformed_report(teacher_fence, student_fence):
+    """Judge a student's report document fence against what the teacher's document carried."""
     try:
-        parsed = json.loads(m.group(1))
-        return parsed if isinstance(parsed, dict) else None
+        teacher, student = json.loads(teacher_fence or "null"), json.loads(student_fence or "null")
     except ValueError:
-        return None
+        return True
+    if not isinstance(teacher, dict):
+        return False
+    if not isinstance(student, dict) or set(student) - REPORT_DOCUMENT_MEMBERS:
+        return True
+    if teacher.get("headline") and not str(student.get("headline") or "").strip():
+        return True
+    if teacher.get("rating"):
+        rating = student.get("rating")
+        if not isinstance(rating, dict) or rating.get("level") not in VALID_REPORT_RATINGS or not str(rating.get("why") or "").strip():
+            return True
+    if teacher.get("findings"):
+        findings = student.get("findings")
+        if not isinstance(findings, list) or not findings or any(not isinstance(f, dict) for f in findings):
+            return True
+        claim_ids = {f.get("id") for f in teacher["findings"] if isinstance(f, dict) and f.get("id")}
+        for finding in findings:
+            if finding.get("disposition") and finding["disposition"] not in VALID_FINDING_DISPOSITIONS:
+                return True
+            if claim_ids and not finding.get("disposition"):
+                return True
+            where = finding.get("where", [])
+            if not isinstance(where, list) or any(_is_malformed_where(w) for w in where):
+                return True
+        if not claim_ids <= {f.get("id") for f in findings}:
+            return True
+    if teacher.get("set_asides") and not isinstance(student.get("set_asides"), list):
+        return True
+    return bool(teacher.get("ask") and not isinstance(student.get("ask"), dict))
 
 
-def _is_malformed_closeout_fence(teacher_fence, student_text, student_fence):
-    if student_fence is None:
-        return True
-    s_ev = student_fence.get("cited_evidence")
-    if isinstance(s_ev, list):
-        for item in s_ev:
-            if not isinstance(item, dict):
-                return True
-            if "handle" in item:
-                return True
-            ev_val = str(item.get("evidence") or "")
-            if ev_val and "#" not in ev_val:
-                return True
-            if UUID_RE.search(ev_val) or UUID_RE.search(str(item.get("path") or "")):
-                return True
-    if teacher_fence.get("cited_evidence") and not s_ev:
-        return True
-    if teacher_fence.get("verification") and not isinstance(student_fence.get("verification"), dict):
-        return True
-    if teacher_fence.get("artifact_ids") and not student_fence.get("artifact_ids"):
-        return True
-    if teacher_fence.get("headline") and not str(student_fence.get("headline") or "").strip():
-        return True
-    if teacher_fence.get("rating"):
-        s_rating = student_fence.get("rating")
-        if not isinstance(s_rating, dict) or s_rating.get("level") not in VALID_REPORT_RATINGS or not str(s_rating.get("why") or "").strip():
-            return True
-    if teacher_fence.get("findings"):
-        s_findings = student_fence.get("findings")
-        if not isinstance(s_findings, list) or not s_findings:
-            return True
-        t_claim_ids = {f.get("id") for f in teacher_fence["findings"] if isinstance(f, dict) and f.get("id")}
-        s_claim_ids = set()
-        for f in s_findings:
-            if not isinstance(f, dict):
-                return True
-            if f.get("id"):
-                s_claim_ids.add(f["id"])
-            if f.get("disposition") and f["disposition"] not in VALID_FINDING_DISPOSITIONS:
-                return True
-            if t_claim_ids and not f.get("disposition"):
-                return True
-            for w in f.get("where") or []:
-                if not isinstance(w, dict) or "handle" in w:
-                    return True
-                ev_w = str(w.get("evidence") or "")
-                if ev_w and "#" not in ev_w:
-                    return True
-        if t_claim_ids and not (t_claim_ids <= s_claim_ids):
-            return True
-    if teacher_fence.get("set_asides") and not isinstance(student_fence.get("set_asides"), list):
-        return True
-    if teacher_fence.get("ask") and not isinstance(student_fence.get("ask"), dict):
-        return True
-    body_without_fence = TRAILING_FENCE_RE.sub("", student_text or "")
-    if teacher_fence.get("artifact_ids") and UUID_RE.search(body_without_fence):
-        return True
-    return False
+def _closeout_divergence(sft_row, teacher_text, student_text):
+    """Judge a student's final reply by inline citation structure, against what the teacher's carried."""
+    teacher, student = citationmd.parse(teacher_text), citationmd.parse(student_text)
+    source_kinds = (citationmd.CITATION, citationmd.WEB_LINK, citationmd.WORKSPACE_LINK, citationmd.REPAIR)
+    if student.issues:
+        return "closeout_citation_malformed"
+    if student.of(citationmd.REPAIR) and not teacher.of(citationmd.REPAIR):
+        return "closeout_citation_malformed"
+    for kinds in (source_kinds, (citationmd.VERIFY,), (citationmd.ARTIFACT,)):
+        if teacher.of(*kinds) and not student.of(*kinds):
+            return "closeout_citation_malformed"
+    if (sft_row.get("closeout") or {}).get("report_phase") and _is_malformed_report(teacher.report_fence, student.report_fence):
+        return "closeout_report_malformed"
+    return None
 
 
 def _has_malformed_workflow_control_args(t_calls, s_calls):
@@ -1256,12 +1207,7 @@ def classify_divergence(sft_row, teacher_turn, student_turn):
     t_text = teacher_turn.get("text") or ""
     s_text = student_turn.get("text") or ""
     if not t_calls:
-        t_fence = _extract_trailing_fence_json(t_text)
-        if t_fence is not None and not s_calls:
-            s_fence = _extract_trailing_fence_json(s_text)
-            if _is_malformed_closeout_fence(t_fence, s_text, s_fence):
-                return "closeout_fence_missing_or_malformed"
-        return None
+        return None if s_calls else _closeout_divergence(sft_row, t_text, s_text)
     if t_calls and not s_calls:
         return "premature_stop"
     for call in s_calls:

@@ -2,6 +2,7 @@ import copy
 import json
 
 import pytest
+from conftest import emitted
 
 from bialy import config, dpo
 from bialy.dpo_qualification import CAPTURE_SCHEMA, HOST_VALIDATOR, VALIDATION_SCHEMA, digest, qualification
@@ -129,7 +130,7 @@ def test_extract_uses_captured_prompt_and_preserves_request_tools(tmp_path):
         "model_requests": {"a1": example["request_capture"]}, "training_validations": {"a1": example["validation"]},
     }
     source, output = tmp_path / "tx.jsonl", tmp_path / "sft.jsonl"
-    source.write_text(json.dumps(tx) + "\n")
+    source.write_text(json.dumps(emitted(tx)) + "\n")
     stats = dpo.extract(source, out_sft=output, preload_from_judge=True)
     extracted = json.loads(output.read_text())
     assert extracted["prompt"] == example["prompt"]
@@ -199,7 +200,7 @@ def test_new_human_turn_does_not_prove_previous_turn_completed():
         {"id": "a1", "role": "assistant", "content": "", "tool_calls_json": '[{"id":"c1","name":"read","args":{"path":"a.py"}}]'},
         {"id": "u2", "role": "user", "content": "Stop and do something else"},
     ]
-    assert not dpo._completed_openings(messages)
+    assert not dpo._completed_openings(emitted({"messages": messages})["messages"])
 
 
 def test_sampling_keeps_command_effects_and_caps_only_duplicate_evidence(tmp_path):
@@ -211,7 +212,7 @@ def test_sampling_keeps_command_effects_and_caps_only_duplicate_evidence(tmp_pat
             {"role": "tool", "tool_result_json": json.dumps({"tool_call_id": call["id"], "is_error": False, "content": "same source"})},
         ])
     source = tmp_path / "tx.jsonl"
-    source.write_text(json.dumps({"session_id": "s1", "status": "settled", "messages": messages}) + "\n")
+    source.write_text(json.dumps(emitted({"session_id": "s1", "status": "settled", "messages": messages})) + "\n")
     stats = dpo.extract(source, max_routine_reads_per_session=2)
     assert stats["capped_routine_sft"] == 3
     command = {"tool_calls": [{"name": "command", "arguments": '{"command":"cat a.py; arbitrary-program"}'}]}

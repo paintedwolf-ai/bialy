@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Open dataset factory for the Painted Wolf Code decision heads"
 license = "Apache-2.0"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6", "openai>=1.40", "jsonschema>=4.23"]
+dependencies = ["pyyaml>=6", "openai>=1.40", "jsonschema>=4.23", "markdown-it-py>=3", "zstandard>=0.23"]
 
 [project.optional-dependencies]
 hub = ["huggingface_hub>=0.30"]

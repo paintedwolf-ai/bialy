@@ -316,6 +316,31 @@ real ambiguity between tools that do the same job.
   independent judge for every held-out label; unverified hindsight cannot qualify
   a head. The host records all candidates when `LYCAON_RETENTION_RECORD=all`.
 
+### Teacher text and inline citations
+
+Custom-model targets are the text the model wrote, read from the host's `model_outputs`.
+`messages.content` holds the presented form, with citations rewritten and removed, so it
+can neither teach citation placement nor be rebuilt from grounding metadata. The bodies
+are zstd files beside the store, under `projects/<project>/model-content/`, and a shard
+retains them with `store.db`. Only sessions from a host with inline citations are
+training data, so a run must pin a build containing them.
+
+A row's `closeout.outcome` comes from the message's grounding, never from its text:
+`grounded` means the host traced citations the model supplied, while
+`evidence_optional`, `host_assembled`, `uncited`, and `report_defect` are distinct
+outcomes and none of them is a teacher example of citing. A carrier whose text the host
+withheld is counted in `withheld_carriers` and is not a target, because its text never
+reached the user; the `MID_TURN_NOTE_*` notice that says so is feedback, not an opening
+or a rejection of the calls, which ran. A published `agent_note` row is dropped because
+its carrier holds the same text.
+
+Shadow judging parses student replies with `bialy.citationmd`, a port of the host
+grammar. `tests/fixtures/citation-grammar.json.gz` is its contract: the host parser's
+answers over the host's own corpus, written by `tests/fixtures/citation-grammar-export.go.txt`
+at the commit it records. It is a copy, so a host grammar change does not fail here until
+the fixture is regenerated: do that when moving the host pin. Report-phase rows also keep
+the document fence check, including typed `findings[].where`.
+
 ## Retention pilot
 
 The pilot collects observations and replays experimental candidates. It does

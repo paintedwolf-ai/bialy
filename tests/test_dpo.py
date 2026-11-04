@@ -2,12 +2,16 @@ import dataclasses
 import gzip
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
-from conftest import row
+import zstandard
+from conftest import emitted, row
 
 from bialy import cli, config, dpo, fleet, tasks
 from bialy import run as runmod
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class FakeStudentChat:
@@ -23,7 +27,7 @@ class FakeStudentChat:
 
 
 def _sample_transcript(session_id="s1", workspace="flask", group="flask:g1", model="gemma-4-31b-it", status="settled"):
-    return {
+    return emitted({
         "shard": "flask-000",
         "session_id": session_id,
         "parent_session_id": None,
@@ -37,100 +41,62 @@ def _sample_transcript(session_id="s1", workspace="flask", group="flask:g1", mod
         "title": "Fix ctx bug",
         "workflow_id": None,
         "messages": [
-            {"id": "m1", "role": "user", "turn_kind": "user", "text": "Inspect ctx.py and summarize the bug.", "content": [], "created_at": "1"},
+            {"id": "m1", "role": "user", "origin": "user", "content": "Inspect ctx.py and summarize the bug."},
             {
                 "id": "m2",
                 "role": "assistant",
-                "turn_kind": None,
-                "text": "Let me read the symbol.",
-                "content": [
-                    {"type": "reasoning", "text": "internal chain of thought to strip"},
-                    {"type": "text", "text": "Let me read the symbol."},
-                    {
-                        "type": "tool_calls",
-                        "calls": [
-                            {"id": "c0", "name": "request_tools", "arguments": json.dumps({"names": ["summarize"]})},
-                            {"id": "c1", "name": "skills_read", "arguments": json.dumps({"name": "commit"})},
-                            {"id": "c2", "name": "read", "arguments": json.dumps({"file_path": "src/flask/ctx.py", "symbol": "AppContext"})},
-                            {"id": "c3", "name": "summarize", "arguments": json.dumps({"file_path": "src/flask/ctx.py"})},
-                        ],
-                    },
-                ],
-                "created_at": "2",
+                "content": "Presented, not what the model wrote.",
+                "reasoning_json": json.dumps({"text": "internal chain of thought to strip"}),
+                "model_output": {
+                    "content": "Let me read the symbol.",
+                    "tool_calls_json": [
+                        {"id": "c0", "name": "request_tools", "args": {"names": ["summarize"]}},
+                        {"id": "c1", "name": "skills_read", "args": {"name": "commit"}},
+                        {"id": "c2", "name": "read", "args": {"file_path": "src/flask/ctx.py", "symbol": "AppContext"}},
+                        {"id": "c3", "name": "summarize", "args": {"file_path": "src/flask/ctx.py"}},
+                    ],
+                },
             },
             {
                 "id": "m3",
                 "role": "tool",
-                "turn_kind": None,
-                "text": "",
-                "content": [
-                    {
-                        "type": "tool_results",
-                        "results": [
-                            {"tool_call_id": "c0", "tool_name": "request_tools", "content": "loaded summarize", "is_error": False},
-                            {"tool_call_id": "c1", "tool_name": "skills_read", "content": "skill card", "is_error": False},
-                            {"tool_call_id": "c2", "tool_name": "read", "content": "class AppContext: ...", "is_error": False},
-                            {"tool_call_id": "c3", "tool_name": "summarize", "content": "summary...", "is_error": False},
-                        ],
-                    }
-                ],
-                "created_at": "3",
+                "tool_result_json": json.dumps([
+                    {"tool_call_id": "c0", "tool_name": "request_tools", "content": "loaded summarize", "is_error": False},
+                    {"tool_call_id": "c1", "tool_name": "skills_read", "content": "skill card", "is_error": False},
+                    {"tool_call_id": "c2", "tool_name": "read", "content": "class AppContext: ...", "is_error": False},
+                    {"tool_call_id": "c3", "tool_name": "summarize", "content": "summary...", "is_error": False},
+                ]),
             },
             {
                 "id": "m4",
                 "role": "assistant",
-                "turn_kind": None,
-                "text": "Trying to edit outside workspace.",
-                "content": [
-                    {"type": "reasoning", "text": "thinking before bad call"},
-                    {"type": "text", "text": "Trying to edit outside workspace."},
-                    {"type": "tool_calls", "calls": [{"id": "c4", "name": "edit", "arguments": json.dumps({"file_path": "../secret.py"})}]},
-                ],
-                "created_at": "4",
+                "content": "Trying to edit outside workspace.",
+                "tool_calls_json": json.dumps([{"id": "c4", "name": "edit", "args": {"file_path": "../secret.py"}}]),
             },
             {
                 "id": "m5",
                 "role": "tool",
-                "turn_kind": None,
-                "text": "",
-                "content": [
-                    {
-                        "type": "tool_results",
-                        "results": [
-                            {
-                                "tool_call_id": "c4",
-                                "tool_name": "edit",
-                                "content": "Status: error\nTool: edit\nCode: outside_roots\nSummary: Path is outside allowed roots.",
-                                "is_error": True,
-                                "details": {"paintedwolf.confinement": {"blocked_path": "../secret.py"}},
-                            }
-                        ],
-                    }
-                ],
-                "created_at": "5",
+                "tool_result_json": json.dumps([{
+                    "tool_call_id": "c4",
+                    "tool_name": "edit",
+                    "content": "Status: error\nTool: edit\nCode: outside_roots\nSummary: Path is outside allowed roots.",
+                    "is_error": True,
+                    "details": {"paintedwolf.confinement": {"blocked_path": "../secret.py"}},
+                }]),
             },
             {
                 "id": "m6",
                 "role": "assistant",
-                "turn_kind": None,
-                "text": "Editing inside src/flask/ctx.py instead.",
-                "content": [
-                    {"type": "reasoning", "text": "recovering after outside_roots"},
-                    {"type": "text", "text": "Editing inside src/flask/ctx.py instead."},
-                    {"type": "tool_calls", "calls": [{"id": "c5", "name": "edit", "arguments": json.dumps({"file_path": "src/flask/ctx.py"})}]},
-                ],
-                "created_at": "6",
+                "content": "Editing inside src/flask/ctx.py instead.",
+                "tool_calls_json": json.dumps([{"id": "c5", "name": "edit", "args": {"file_path": "src/flask/ctx.py"}}]),
             },
             {
                 "id": "m7",
                 "role": "tool",
-                "turn_kind": None,
-                "text": "",
-                "content": [{"type": "tool_results", "results": [{"tool_call_id": "c5", "tool_name": "edit", "content": "ok", "is_error": False}]}],
-                "created_at": "7",
+                "tool_result_json": json.dumps([{"tool_call_id": "c5", "tool_name": "edit", "content": "ok", "is_error": False}]),
             },
         ],
-    }
+    })
 
 
 def test_extract_strips_thinking_preloads_judge_tools_and_pairs_rejections(tmp_path):
@@ -164,6 +130,8 @@ def test_extract_strips_thinking_preloads_judge_tools_and_pairs_rejections(tmp_p
     assert "request_tools" not in call_names
     assert call_names == ["skills_read", "read", "summarize"]
     assert "internal chain of thought" not in json.dumps(first_sft)
+    assert first_sft["target"]["text"] == "Let me read the symbol."
+    assert "Presented" not in json.dumps(first_sft)
 
     dpo_rows = [json.loads(line) for line in dpo_out.read_text().splitlines()]
     prevent, recover = dpo_rows
@@ -237,7 +205,18 @@ def test_repair_fills_missing_chosen_from_teacher(factory, tmp_path, monkeypatch
     assert not teacher_chat.calls
 
 
-def test_export_transcripts_from_shard_sqlite_store(tmp_path):
+MODEL_OUTPUT_SCHEMA = """
+    CREATE TABLE sessions (id TEXT, parent_session_id TEXT, title TEXT, workflow_id TEXT, created_at TEXT);
+    CREATE TABLE messages (id TEXT, session_id TEXT, role TEXT, content TEXT, kind TEXT, origin TEXT, visibility TEXT, seq INT, ord INT, ts TEXT,
+        tool_calls_json TEXT, tool_result_json TEXT, reasoning_json TEXT, grounding_json TEXT, artifact_ids_json TEXT,
+        completion_report_json TEXT, draft_version_count INT, draft_status TEXT);
+    CREATE TABLE model_outputs (id TEXT, session_id TEXT, project_id TEXT, iteration INT, scripted INT, message_id TEXT,
+        content_blob_sha256 TEXT, finish_reason TEXT, settled_at TEXT);
+    CREATE TABLE draft_versions (session_id TEXT, slot_id TEXT, version_index INT, body TEXT, outcome_code TEXT, created_at TEXT);
+"""
+
+
+def _store_shard(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     (tasks_dir / "flask.jsonl").write_text(
@@ -248,17 +227,72 @@ def test_export_transcripts_from_shard_sqlite_store(tmp_path):
     shard.mkdir(parents=True)
     (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t1", "root_session": "s1", "status": "settled"}) + "\n")
     conn = sqlite3.connect(str(shard / "store.db"))
-    conn.execute("CREATE TABLE sessions (id TEXT, parent_session_id TEXT, title TEXT, workflow_id TEXT, created_at TEXT)")
-    conn.execute("CREATE TABLE messages (id TEXT, session_id TEXT, role TEXT, turn_kind TEXT, text TEXT, content_json TEXT, created_at TEXT)")
+    conn.executescript(MODEL_OUTPUT_SCHEMA)
     conn.execute("INSERT INTO sessions VALUES ('s1', NULL, 'test', NULL, '1')")
-    conn.execute("INSERT INTO messages VALUES ('m1', 's1', 'user', 'user', 'hi', '[]', '1')")
+    columns = "id, session_id, role, content, kind, origin, seq"
+    conn.execute("INSERT INTO messages (%s) VALUES ('u1', 's1', 'user', 'hi', '', 'user', 1)" % columns)
+    conn.execute("INSERT INTO messages (%s) VALUES ('a1', 's1', 'assistant', 'Presented without its citation.', '', 'model', 2)" % columns)
+    conn.commit()
+    return tasks_dir, shard, conn
+
+
+def _host_blob(shard, project="p1"):
+    """Retain the body the host wrote, so this reads the host's own compression and envelope."""
+    corpus = json.loads(gzip.decompress((FIXTURES / "citation-grammar.json.gz").read_bytes()))
+    sha = corpus["model_output_blob"]
+    target = shard / "projects" / project / "model-content" / sha[:2]
+    target.mkdir(parents=True)
+    (target / sha[2:]).write_bytes((FIXTURES / "model-output-body.zst").read_bytes())
+    return sha
+
+
+def test_export_reads_exact_model_text_from_retained_outputs(tmp_path):
+    tasks_dir, shard, conn = _store_shard(tmp_path)
+    sha = _host_blob(shard)
+    columns = "id, session_id, project_id, iteration, scripted, message_id, content_blob_sha256, finish_reason, settled_at"
+    # The latest attempt at a slot is the output its row settled on.
+    conn.execute("INSERT INTO model_outputs (%s) VALUES ('o0', 's1', 'p1', 1, 0, 'a1', '', 'stop', '1')" % columns)
+    conn.execute("INSERT INTO model_outputs (%s) VALUES ('o1', 's1', 'p1', 2, 0, 'a1', ?, 'stop', '2')" % columns, (sha,))
     conn.commit()
     conn.close()
 
     out = tmp_path / "transcripts.jsonl.gz"
     assert cli.main(["dpo", "export", "--run", str(tmp_path / "run"), "--tasks", str(tasks_dir), "--out", str(out)]) == 0
-    records = list(dpo.iter_transcripts(out))
-    assert len(records) == 1 and records[0]["workspace"] == "flask" and records[0]["model"] == "gemma-4-31b-it"
+    [record] = list(dpo.iter_transcripts(out))
+    assert record["workspace"] == "flask" and record["model"] == "gemma-4-31b-it"
+    user, assistant = record["messages"]
+    assert "model_output" not in user
+    turn = dpo.model_turn(assistant)
+    assert turn["text"] == "Fixed [read#3:42]."
+    assert [call["name"] for call in turn["tool_calls"]] == ["read"]
+    assert "hidden" not in json.dumps(turn)
+
+
+def test_export_treats_scripted_output_as_no_model_text_and_counts_missing_bodies(tmp_path):
+    tasks_dir, shard, conn = _store_shard(tmp_path)
+    columns = "id, session_id, project_id, iteration, scripted, message_id, content_blob_sha256, finish_reason, settled_at"
+    conn.execute("INSERT INTO model_outputs (%s) VALUES ('o1', 's1', 'p1', 1, 1, 'a1', ?, 'stop', '1')" % columns, ("a" * 64,))
+    conn.commit()
+    out = tmp_path / "scripted.jsonl"
+    assert dpo.export_transcripts(tmp_path / "run", tasks_dir, out)["model_outputs"] == 0
+    assert "model_output" not in list(dpo.iter_transcripts(out))[0]["messages"][1]
+
+    # One lost body is counted; losing every body means the shards never retained them.
+    conn.execute("INSERT INTO model_outputs (%s) VALUES ('o2', 's1', 'p1', 2, 0, 'a1', ?, 'stop', '2')" % columns, ("b" * 64,))
+    conn.commit()
+    with pytest.raises(ValueError, match="retained"):
+        dpo.export_transcripts(tmp_path / "run", tasks_dir, out)
+    sha = _host_blob(shard)
+    conn.execute("INSERT INTO messages (id, session_id, role, content, seq) VALUES ('a2', 's1', 'assistant', '', 3)")
+    conn.execute("INSERT INTO model_outputs (%s) VALUES ('o3', 's1', 'p1', 3, 0, 'a2', ?, 'stop', '3')" % columns, (sha,))
+    conn.commit()
+    conn.close()
+    assert dpo.export_transcripts(tmp_path / "run", tasks_dir, out)["missing_model_outputs"] == 1
+
+    target = shard / "projects" / "p1" / "model-content" / sha[:2] / sha[2:]
+    target.write_bytes(zstandard.ZstdCompressor().compress(b"{}"))
+    with pytest.raises(ValueError, match="does not match its digest"):
+        dpo.export_transcripts(tmp_path / "run", tasks_dir, out)
 
 
 def test_hybrid_generator_weights_local_workers_and_sidecar_request_metering(factory, tmp_path):
@@ -316,7 +350,7 @@ def test_compact_prompt_preserves_head_tail_and_read_receipts():
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "read", "arguments": '{"path":"test_status.py"}'}}]},
         {"role": "tool", "tool_call_id": "c2", "name": "read", "content": "class TestStatus:\n" + ("    pass\n" * 100)},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "edit", "arguments": '{"path":"status.py"}'}}]},
-        {"role": "tool", "tool_call_id": "c3", "name": "edit", "content": "⟦D⟧Rejected:\n⟦D⟧Code: PROGRESS_MISSING"},
+        {"role": "tool", "tool_call_id": "c3", "name": "edit", "content": "Rejected:\nCode: PROGRESS_MISSING"},
     ]
     with pytest.raises(ValueError, match="recapture host compaction"):
         dpo.compact_prompt(msgs, max_chars=800)
@@ -340,14 +374,14 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
              "tool_result_json": json.dumps({"content": "[read#1]\ndef push(): pass"})},
             {"id": "a2", "role": "assistant", "origin": "model", "content": "Done, everything is complete.", "tool_calls_json": None},
             {"id": "u2", "role": "user", "origin": "host",
-             "content": "Rejected: This tool-free response would end the turn with 2 progress steps still pending.\n\nCause: Work remains unfinished."},
+             "content": "Rejected: This tool-free response would end the turn with 2 progress steps still pending.\n\nCause: Work remains unfinished.\nCode: TURN_CLOSEOUT_PENDING_PROGRESS"},
             {"id": "a3", "role": "assistant", "origin": "model", "content": "",
              "tool_calls_json": json.dumps([{"name": "update_progress", "id": "c2", "args": {"content": "## Progress\n- [x] Done"}}])},
             {"id": "t2", "role": "tool", "origin": "tool", "content": "Updated progress.", "tool_result_json": json.dumps({"content": "Updated progress."})},
         ],
     }
     tpath = tmp_path / "real_transcripts.jsonl"
-    tpath.write_text(json.dumps(transcript) + "\n")
+    tpath.write_text(json.dumps(emitted(transcript)) + "\n")
     sft_out = tmp_path / "sft.jsonl"
     dpo_out = tmp_path / "dpo.jsonl"
     stats = dpo.extract(tpath, out_sft=sft_out, out_dpo=dpo_out)
@@ -391,25 +425,27 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
             {"id": "a2", "role": "assistant", "origin": "model", "content": "",
              "tool_calls_json": json.dumps([{"name": "verify", "id": "c2", "args": {"command": "cargo test"}}])},
             {"id": "t2", "role": "tool", "origin": "tool", "content": "[tui#1]\ntest result: ok."},
-            {"id": "a3", "role": "assistant", "origin": "model", "content": "Report body citing bare path.\n```citations\n{\"cited_evidence\": [\"src/engine.rs\"]}\n```"},
+            {"id": "a3", "role": "assistant", "origin": "model", "content": "The engine is sound [src/engine.rs:999]."},
             {"id": "u2", "role": "user", "origin": "host",
-             "content": "[host:coordinator-citation-grounding]\n\nTo repair citations, emit only the citations fence; the host keeps the pinned body. Attempt 2/3.\n\nRejected: src/engine.rs (Code: INVEST_HANDLE_NOT_OBSERVED)"},
-            {"id": "a4", "role": "assistant", "origin": "model", "content": "```citations\n{\"cited_evidence\": [\"read#1\", \"tui#1\"]}\n```"},
+             "content": "[host:coordinator-citation-grounding]\n\nRepair the rejected citation; the host keeps the pinned body. Attempt 2/3.\n\nRejected: src/engine.rs:999 (Code: INVEST_HANDLE_NOT_OBSERVED)"},
+            {"id": "a4", "role": "assistant", "origin": "model", "content": "[cite: c1 => read#1]",
+             "grounding_json": json.dumps({"traced": True, "cited_evidence": [{"evidence": "read#1", "verdict": "traced"}]})},
         ],
     }
     cit_path = tmp_path / "cit_tx.jsonl"
-    cit_path.write_text(json.dumps(cit_tx) + "\n")
+    cit_path.write_text(json.dumps(emitted(cit_tx)) + "\n")
     cit_sft = tmp_path / "cit_sft.jsonl"
     cit_dpo = tmp_path / "cit_dpo.jsonl"
     cit_stats = dpo.extract(cit_path, out_sft=cit_sft, out_dpo=cit_dpo)
     assert cit_stats["rejection_codes"] == {"COORDINATOR_CITATION_GROUNDING": 1}
     assert dpo.parse_host_user_rejection({"role": "user", "content": ">>> Tool feedback\nGap.\nCode: AMBIENT_UNGROUNDED_COMPLETION"})["code"] == "AMBIENT_UNGROUNDED_COMPLETION"
     cit_sft_rows = [json.loads(line) for line in cit_sft.read_text().splitlines()]
-    assert any("```citations" in (r["target"].get("text") or "") for r in cit_sft_rows)
+    assert cit_sft_rows[-1]["target"]["text"] == "[cite: c1 => read#1]"
+    assert cit_sft_rows[-1]["closeout"] == {"outcome": "grounded", "report_phase": False}
     cit_dpo_rows = [json.loads(line) for line in cit_dpo.read_text().splitlines()]
     cit_recover = next(r for r in cit_dpo_rows if r["source"] == "post_rejection_recovery")
     assert cit_recover["chosen"] is None
-    assert '"read#1"' in cit_recover["proposed_chosen"]["text"]
+    assert "read#1" in cit_recover["proposed_chosen"]["text"]
 
     div = dpo.classify_divergence(
         {"surface": {"active_tools": ["list_dir", "summarize", "read", "verify"], "loadable": []}, "prompt": []},
@@ -426,7 +462,12 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     assert web_div == "snippet_only_web_research"
     assert "public_api_cli" in arch_by_id and arch_by_id["public_api_cli"].workspace == "stack"
 
-    # 4. Reconstructed closeout fence from grounding_json/artifact_ids_json + draft_versions extraction.
+    # 4. An exact closeout target, with rejected draft attempts as their own Markdown.
+    final_text = (
+        "Built and verified the game in [write#1:1-40].\n"
+        "[artifact:9823b977-2c86-4057-9fcb-ef92acbbc97d]\n"
+        "[verify: targeted - Captured and played the board] [page#1]"
+    )
     closeout_tx = {
         "id": "sess-closeout-1",
         "parent_session_id": None,
@@ -447,40 +488,26 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
                 "origin": "model",
                 "kind": "completion_report",
                 "content": "Built and verified the game in index.html.",
+                "model_output": {"content": final_text},
                 "grounding_json": json.dumps({
                     "traced": True,
                     "cited_evidence": [
-                        {"handle": "write#1", "path": "index.html", "verdict": "traced"},
-                        {"handle": "page#1", "verdict": "traced"},
+                        {"evidence": "write#1", "path": "index.html", "verdict": "traced"},
+                        {"evidence": "page#1", "verdict": "traced"},
                     ],
-                    "verification": {"method": "targeted", "reason": "Captured and played the board in a headless browser."},
+                    "verification": {"method": "targeted", "reason": "Captured and played the board."},
                 }),
                 "artifact_ids_json": json.dumps(["9823b977-2c86-4057-9fcb-ef92acbbc97d"]),
             },
         ],
         "draft_versions": [
-            {
-                "slot_id": "slot-final",
-                "version_index": 0,
-                "outcome_code": "INVEST_HANDLE_NOT_OBSERVED",
-                "body": json.dumps({
-                    "synthesis": "Built and verified the game in index.html.",
-                    "cited_evidence": [{"evidence": "index.html"}],
-                }),
-            },
-            {
-                "slot_id": "slot-final",
-                "version_index": 1,
-                "outcome_code": "PRESENT_MARKDOWN_EMBED",
-                "body": json.dumps({
-                    "synthesis": "Built the game: ![shot](9823b977-2c86-4057-9fcb-ef92acbbc97d)",
-                    "cited_evidence": [{"evidence": "write#1"}],
-                }),
-            },
+            {"slot_id": "slot-final", "version_index": 0, "outcome_code": "INVEST_HANDLE_NOT_OBSERVED", "body": "Built the game [index.html:999]."},
+            {"slot_id": "slot-final", "version_index": 1, "outcome_code": "PRESENT_MARKDOWN_EMBED",
+             "body": "Built the game: ![shot](9823b977-2c86-4057-9fcb-ef92acbbc97d) [write#1]"},
         ],
     }
     co_path = tmp_path / "closeout_tx.jsonl"
-    co_path.write_text(json.dumps(closeout_tx) + "\n")
+    co_path.write_text(json.dumps(emitted(closeout_tx)) + "\n")
     co_sft = tmp_path / "co_sft.jsonl"
     co_dpo = tmp_path / "co_dpo.jsonl"
     co_stats = dpo.extract(co_path, out_sft=co_sft, out_dpo=co_dpo)
@@ -489,18 +516,16 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
     assert len(co_sft_rows) == 3
     final_sft = co_sft_rows[-1]
     assert final_sft["target"]["tool_calls"] == []
-    assert "```json" in final_sft["target"]["text"]
-    assert '"evidence": "write#1"' in final_sft["target"]["text"]
-    assert '"handle"' not in final_sft["target"]["text"]
-    assert '"artifact_ids": ["9823b977-2c86-4057-9fcb-ef92acbbc97d"]' in final_sft["target"]["text"]
-    assert '"method": "targeted"' in final_sft["target"]["text"]
+    assert final_sft["target"]["text"] == final_text
+    assert final_sft["closeout"]["outcome"] == "grounded"
 
     co_dpo_rows = [json.loads(line) for line in co_dpo.read_text().splitlines()]
-    assert len(co_dpo_rows) == 2
+    assert [r["rejected"]["text"] for r in co_dpo_rows] == [
+        "Built the game [index.html:999].", "Built the game: ![shot](9823b977-2c86-4057-9fcb-ef92acbbc97d) [write#1]"]
     assert all(r["chosen"] is None for r in co_dpo_rows)
     assert all("draft_original_request_unavailable" in r["qualification"]["reasons"] for r in co_dpo_rows)
 
-    # 5. Progress, visual capture, and closeout fence divergence rules + multi-root synthesis.
+    # 5. Progress, visual capture, and closeout citation divergence rules + multi-root synthesis.
     assert dpo.classify_divergence(
         {"surface": {"active_tools": ["update_progress", "write"], "loadable": []}, "prompt": []},
         {"tool_calls": [{"name": "update_progress", "arguments": '{"markdown":"- [ ] Build app"}'}]},
@@ -526,20 +551,87 @@ def test_real_store_db_schema_turn_closeout_rejection_and_attachments(factory, t
         {"tool_calls": [{"name": "capture_page", "arguments": '{"path":"index.html"}'}]},
     ) != "missed_visual_capture"
 
-    assert dpo.classify_divergence(
-        {"surface": {"active_tools": ["read"], "loadable": []}, "prompt": []},
-        {"text": final_sft["target"]["text"], "tool_calls": []},
-        {"text": "Built and verified the game in index.html.", "tool_calls": []},
-    ) == "closeout_fence_missing_or_malformed"
-
-    assert dpo.classify_divergence(
-        {"surface": {"active_tools": ["read"], "loadable": []}, "prompt": []},
-        {"text": final_sft["target"]["text"], "tool_calls": []},
-        {"text": 'Done.\n\n```json\n{"cited_evidence": [{"handle": "write#1"}]}\n```', "tool_calls": []},
-    ) == "closeout_fence_missing_or_malformed"
+    closeout_row = {"surface": {"active_tools": ["read"], "loadable": []}, "prompt": []}
+    teacher = {"text": final_sft["target"]["text"], "tool_calls": []}
+    artifact = "[artifact:9823b977-2c86-4057-9fcb-ef92acbbc97d]"
+    verify = "[verify: inspection - Read the page]"
+    for text, code in (
+        ("Built the game [write#1:3] and captured it [page#1].\n%s\n%s" % (artifact, verify), None),
+        ("Built and verified the game in index.html.\n%s\n%s" % (artifact, verify), "closeout_citation_malformed"),
+        ("Built the game [write#1:3].\n%s" % verify, "closeout_citation_malformed"),
+        ("Built the game [write#1:3].\n%s" % artifact, "closeout_citation_malformed"),
+        # The retired protocol: a fence is literal, so it cites nothing.
+        ('Built it.\n\n```json\n{"cited_evidence": [{"evidence": "write#1"}]}\n```\n%s\n%s' % (artifact, verify), "closeout_citation_malformed"),
+        ("Built the game [a.go:42:10].\n%s\n%s" % (artifact, verify), "closeout_citation_malformed"),
+        ("Built the game [write#1:9-3].\n%s\n%s" % (artifact, verify), "closeout_citation_malformed"),
+        ("Built the game [write#1] [verify: guessed - it works].\n%s" % artifact, "closeout_citation_malformed"),
+        ("Built the game [write#1] [cite: c1 => read#1].\n%s\n%s" % (artifact, verify), "closeout_citation_malformed"),
+        # Code is literal even when it looks like a citation.
+        ("Built the game `[write#1]`.\n%s\n%s" % (artifact, verify), "closeout_citation_malformed"),
+    ):
+        assert dpo.classify_divergence(closeout_row, teacher, {"text": text, "tool_calls": []}) == code, text
+    # A student that stops calling tools at a closeout state is not judged by text it never wrote.
+    assert dpo.classify_divergence(closeout_row, teacher, {"text": "", "tool_calls": [{"name": "read", "arguments": "{}"}]}) is None
 
     with pytest.raises(ValueError, match="real attached-root trajectories"):
         dpo.synthesize_multi_root_pairs(co_sft_rows, companion_label="open-agent-rules")
+
+
+CLEAN_REPORT = {
+    "headline": "Session signing requires explicit SECRET_KEY rotation discipline.",
+    "summary": "Surveyed request and session surfaces.",
+    "rating": {"level": "hardening", "why": "No exploitable RCE; one session hardening claim survived."},
+    "findings": [{
+        "id": "claim-1",
+        "title": "Static SECRET_KEY fallback risk",
+        "disposition": "act",
+        "where": [{"evidence": "scan#1", "path": "src/flask/sessions.py", "line": 42, "end_line": 44}],
+        "action": "Enforce non-default SECRET_KEY at startup.",
+    }],
+    "set_asides": [{"scanner": "lycaon-secrets", "paths": ["tests/**"], "reason": "Test fixtures only"}],
+    "limits": ["Static analysis only"],
+    "ask": {"do": "Enforce SECRET_KEY validation", "effort": "small", "why": "Prevent weak signing keys"},
+}
+
+
+def _report_student(**changes):
+    document = {**CLEAN_REPORT, **changes}
+    return {"text": "## Security survey\n\nAccounted for [scan#1].\n\n```json\n" + json.dumps(document) + "\n```", "tool_calls": []}
+
+
+def test_report_document_fence_is_judged_only_on_report_phase_rows():
+    finding = CLEAN_REPORT["findings"][0]
+    surface = {"surface": {"active_tools": ["read"]}, "prompt": [], "closeout": {"report_phase": True}}
+    teacher = _report_student()
+    assert dpo.classify_divergence(surface, teacher, _report_student()) is None
+    for changes in (
+        {"headline": " "},
+        {"rating": {"level": "fine", "why": "w"}},
+        {"rating": {"level": "hardening"}},
+        {"findings": []},
+        {"findings": [dict(finding, id="other")]},
+        {"findings": [dict(finding, disposition="maybe")]},
+        {"findings": [dict(finding, where=[{"handle": "scan#1"}])]},
+        {"findings": [dict(finding, where=[{"evidence": "scan"}])]},
+        {"findings": [dict(finding, where=[{"evidence": "pr#1"}])]},
+        {"findings": [dict(finding, where=[{"line": 4}])]},
+        {"findings": [dict(finding, where=[{"path": "a.py", "line": "4"}])]},
+        {"findings": [dict(finding, where=[{"path": "a.py", "line": 4, "end_line": 2}])]},
+        {"set_asides": "none"},
+        {"ask": "do it"},
+        {"cited_evidence": [{"evidence": "scan#1"}]},
+        {"verification": {"method": "targeted", "reason": "r"}},
+        {"synthesis": "The answer belongs above the fence."},
+    ):
+        assert dpo.classify_divergence(surface, teacher, _report_student(**changes)) == "closeout_report_malformed", changes
+    no_document = {"text": "## Security survey\n\nAccounted for [scan#1].", "tool_calls": []}
+    assert dpo.classify_divergence(surface, teacher, no_document) == "closeout_report_malformed"
+    broken = {"text": "Accounted for [scan#1].\n\n```json\n{not json\n```", "tool_calls": []}
+    assert dpo.classify_divergence(surface, teacher, broken) == "closeout_report_malformed"
+    unclosed = {"text": "Accounted for [scan#1].\n\n```json\n{}", "tool_calls": []}
+    assert dpo.classify_divergence(surface, teacher, unclosed) == "closeout_report_malformed"
+    # The same reply off a report phase holds no document to judge.
+    assert dpo.classify_divergence({"surface": {}, "prompt": []}, teacher, no_document) is None
 
 
 def test_security_survey_workflow_and_report_document_defects(factory, tmp_path):
@@ -624,12 +716,13 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
             {
                 "id": "a-report-defective",
                 "role": "assistant",
-                "content": "## Security survey\n\nIncomplete report missing claim-1.",
+                "content": "## Security survey\n\nIncomplete report missing claim-1 [scan#1].",
                 "grounding_json": json.dumps({
                     "traced": True,
-                    "cited_evidence": [{"handle": "scan#1", "verdict": "traced"}],
+                    "cited_evidence": [{"evidence": "scan#1", "verdict": "traced"}],
                 }),
                 "completion_report_json": json.dumps({
+                    "scope": "run",
                     "headline": "Incomplete survey",
                     "rating": {"level": "hardening", "why": "Hardening needed."},
                     "defects": [{"code": "REPORT_CLAIM_UNREPORTED", "message": "Claim claim-1 is missing from findings."}],
@@ -639,28 +732,12 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
                 "id": "a-report-clean",
                 "role": "assistant",
                 "content": "## Security survey\n\nAll claims and scan groups accounted for.",
+                "model_output": {"content": "## Security survey\n\nAll claims and scan groups accounted for [scan#1].\n\n```json\n" + json.dumps(CLEAN_REPORT) + "\n```"},
                 "grounding_json": json.dumps({
                     "traced": True,
-                    "cited_evidence": [{"handle": "scan#1", "path": "src/flask/sessions.py", "line": 42, "verdict": "traced"}],
+                    "cited_evidence": [{"evidence": "scan#1", "path": "src/flask/sessions.py", "line": 42, "verdict": "traced"}],
                 }),
-                "completion_report_json": json.dumps({
-                    "headline": "Session signing requires explicit SECRET_KEY rotation discipline.",
-                    "summary": "Surveyed request and session surfaces.",
-                    "rating": {"level": "hardening", "why": "No exploitable RCE; one session hardening claim survived."},
-                    "findings": [
-                        {
-                            "id": "claim-1",
-                            "title": "Static SECRET_KEY fallback risk",
-                            "claim": "hardening",
-                            "disposition": "act",
-                            "where": [{"handle": "scan#1", "path": "src/flask/sessions.py", "line": 42}],
-                            "Fix": "Enforce non-default SECRET_KEY at startup.",
-                        }
-                    ],
-                    "set_asides": [{"scanner": "lycaon-secrets", "paths": ["tests/**"], "reason": "Test fixtures only"}],
-                    "limits": ["Static analysis only"],
-                    "ask": {"do": "Enforce SECRET_KEY validation", "effort": "small", "why": "Prevent weak signing keys"},
-                }),
+                "completion_report_json": json.dumps(dict(CLEAN_REPORT, scope="run")),
             },
         ],
     }
@@ -752,7 +829,7 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
     }
 
     tx_path = tmp_path / "sec_tx.jsonl"
-    tx_path.write_text(json.dumps(coord_session) + "\n" + json.dumps(worker_session) + "\n")
+    tx_path.write_text(json.dumps(emitted(coord_session)) + "\n" + json.dumps(emitted(worker_session)) + "\n")
     sft_out = tmp_path / "sec_sft.jsonl"
     dpo_out = tmp_path / "sec_dpo.jsonl"
     stats = dpo.extract(tx_path, out_sft=sft_out, out_dpo=dpo_out)
@@ -765,6 +842,7 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
     assert '"id": "claim-1"' in clean_report_sft["target"]["text"]
     assert '"disposition": "act"' in clean_report_sft["target"]["text"]
     assert '"evidence": "scan#1"' in clean_report_sft["target"]["text"]
+    assert clean_report_sft["closeout"] == {"outcome": "grounded", "report_phase": True}
 
     # Check shadow divergence rules for security workflow tools, scan accounting, and report document fences.
     surface = {"surface": {"active_tools": ["scan_summary", "scan_query", "scan_list", "fanout_plan", "workflow_advance", "complete_leg", "submit_verdict"], "loadable": []}, "prompt": []}
@@ -793,10 +871,10 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
     ) == "missed_scan_accounting"
 
     assert dpo.classify_divergence(
-        surface,
+        dict(surface, closeout=clean_report_sft["closeout"]),
         {"text": clean_report_sft["target"]["text"], "tool_calls": []},
-        {"text": '## Security survey\n\n```json\n{"headline":"h","rating":{"level":"hardening","why":"w"},"findings":[],"set_asides":[],"ask":{"do":"d","effort":"s","why":"w"},"cited_evidence":[{"evidence":"scan#1"}]}\n```', "tool_calls": []},
-    ) == "closeout_fence_missing_or_malformed"
+        {"text": '## Security survey\n\nDone [scan#1].\n\n```json\n{"headline":"h","rating":{"level":"hardening","why":"w"},"findings":[],"set_asides":[],"ask":{"do":"d","effort":"s","why":"w"},"cited_evidence":[{"evidence":"scan#1"}]}\n```', "tool_calls": []},
+    ) == "closeout_report_malformed"
 
     # Verify that if a multi-turn task settles Turn 1 and times out on Turn 2, Turn 1 and completed worker legs are still kept in SFT.
     timeout_coord = dict(
@@ -810,7 +888,7 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
     )
     timeout_worker = dict(worker_session, session_id="sec-worker-timeout", status="timeout")
     to_path = tmp_path / "sec_timeout.jsonl"
-    to_path.write_text(json.dumps(timeout_coord) + "\n" + json.dumps(timeout_worker) + "\n")
+    to_path.write_text(json.dumps(emitted(timeout_coord)) + "\n" + json.dumps(emitted(timeout_worker)) + "\n")
     to_sft = tmp_path / "sec_timeout_sft.jsonl"
     dpo.extract(to_path, out_sft=to_sft)
     to_sft_rows = [json.loads(line) for line in to_sft.read_text().splitlines()]
@@ -892,7 +970,8 @@ def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(fact
     msgs.append({
         "id": "a-close",
         "role": "assistant",
-        "content": "Audit complete.\n\n```citations\n- read#1: src/mod0.py\n```",
+        "content": "Audit complete [read#1].",
+        "grounding_json": json.dumps({"traced": True, "cited_evidence": [{"evidence": "read#1"}]}),
     })
 
     session = {
@@ -906,7 +985,7 @@ def test_per_session_routine_read_capping_and_stage_custom_model_multi_root(fact
         "messages": msgs,
     }
     tx_path = tmp_path / "long_tx.jsonl"
-    tx_path.write_text(json.dumps(session) + "\n")
+    tx_path.write_text(json.dumps(emitted(session)) + "\n")
     sft_capped = tmp_path / "sft_capped.jsonl"
     stats = dpo.extract(tx_path, out_sft=sft_capped, max_routine_reads_per_session=3)
     assert stats["capped_routine_sft"] == 0
@@ -979,12 +1058,13 @@ def test_command_rework_surface_and_legacy_rejection_filtering(tmp_path):
             {
                 "id": "a3",
                 "role": "assistant",
-                "content": "Inspected engine.\n\n```citations\n- cmd#1: crates/oar-engine/src/engine.rs\n```",
+                "content": "Inspected engine [command#1].",
+                "grounding_json": json.dumps({"traced": True, "cited_evidence": [{"evidence": "command#1"}]}),
             },
         ],
     }
     tx_path = tmp_path / "cmd_rework.jsonl"
-    tx_path.write_text(json.dumps(tx) + "\n")
+    tx_path.write_text(json.dumps(emitted(tx)) + "\n")
     sft_out = tmp_path / "sft.jsonl"
     dpo_out = tmp_path / "dpo.jsonl"
     stats = dpo.extract(tx_path, out_sft=sft_out, out_dpo=dpo_out)
@@ -1136,4 +1216,107 @@ def test_supported_44_language_matrix_coverage():
         assert dpo._is_mutating_command(call), cmd
 
 
+def _closeout_session(reply, *before):
+    return {
+        "session_id": "s", "root_session": "s", "status": "settled", "model": "teacher",
+        "messages": [
+            {"id": "u1", "role": "user", "origin": "user", "content": "Inspect a.py"},
+            {"id": "a1", "role": "assistant", "origin": "model", "content": "",
+             "tool_calls_json": json.dumps([{"id": "c1", "name": "read", "args": {"path": "a.py"}}])},
+            {"id": "t1", "role": "tool", "origin": "tool",
+             "tool_result_json": json.dumps({"tool_call_id": "c1", "tool_name": "read", "is_error": False, "content": "x"})},
+            *before,
+            reply,
+        ],
+    }
 
+
+def _extract(tmp_path, *sessions):
+    source, sft, pairs = tmp_path / "tx.jsonl", tmp_path / "sft.jsonl", tmp_path / "dpo.jsonl"
+    source.write_text("".join(json.dumps(emitted(session)) + "\n" for session in sessions))
+    stats = dpo.extract(source, out_sft=sft, out_dpo=pairs)
+    return stats, [json.loads(line) for line in sft.read_text().splitlines()], [json.loads(line) for line in pairs.read_text().splitlines()]
+
+
+def test_only_host_traced_citations_make_a_reply_a_teacher_example(tmp_path):
+    cited = [{"evidence": "read#1"}]
+    for grounding, outcome, kept in (
+        ({"traced": True, "cited_evidence": cited}, "grounded", True),
+        ({"traced": True, "cited_urls": ["https://example.test/a"]}, "grounded", True),
+        ({"traced": True, "evidence_optional": True}, "evidence_optional", False),
+        ({"traced": True, "evidence_optional": True, "cited_evidence": cited}, "evidence_optional", False),
+        ({"traced": True, "host_assembled": True, "cited_evidence": cited}, "host_assembled", False),
+        ({"traced": False, "cited_evidence": cited}, "host_assembled", False),
+        ({"traced": True}, "uncited", False),
+    ):
+        # The text claims citations in every case; only the row's facts count.
+        reply = {"id": "a2", "role": "assistant", "origin": "model", "content": "Done [read#1].", "grounding_json": json.dumps(grounding)}
+        assert dpo.closeout_outcome(reply) == outcome
+        assert dpo.has_grounded_citations(reply) is (outcome == "grounded")
+        stats, sft, _ = _extract(tmp_path, _closeout_session(reply))
+        assert any(not row["target"]["tool_calls"] for row in sft) is kept, grounding
+        assert stats["evidence_optional_replies"] == (1 if outcome == "evidence_optional" else 0)
+    plain = {"id": "a2", "role": "assistant", "origin": "model", "content": "Done [read#1]."}
+    assert dpo.closeout_outcome(plain) is None and not dpo.has_grounded_citations(plain)
+    defective = dict(plain, grounding_json=json.dumps({"traced": True, "cited_evidence": cited}),
+                     completion_report_json=json.dumps({"scope": "run", "defects": [{"code": "REPORT_CLAIM_UNREPORTED"}]}))
+    assert dpo.closeout_outcome(defective) == "report_defect"
+
+
+def test_a_row_with_no_model_output_is_not_a_teacher_turn(tmp_path):
+    host_written = {"id": "a2", "role": "assistant", "origin": "host", "content": "Host assembled reply.",
+                    "model_output": None, "grounding_json": json.dumps({"traced": True, "host_assembled": True})}
+    stats, sft, pairs = _extract(tmp_path, _closeout_session(host_written))
+    assert stats["without_model_output"] == 1
+    assert all("Host assembled" not in json.dumps(row["target"]) for row in sft)
+    assert not pairs
+    # Its retracted attempts are still rejected model text.
+    session = dict(_closeout_session(host_written), draft_versions=[
+        {"slot_id": "a2", "version_index": 0, "body": "Done [a.go:999].", "outcome_code": "INVEST_HANDLE_NOT_OBSERVED"}])
+    _, _, pairs = _extract(tmp_path, session)
+    assert [p["rejected"]["text"] for p in pairs] == ["Done [a.go:999]."]
+
+
+def test_published_notes_are_not_counted_with_their_carrier(tmp_path):
+    carrier = {"id": "a2", "role": "assistant", "origin": "model", "content": "Reading b.py after [read#1:1].",
+               "tool_calls_json": json.dumps([{"id": "c2", "name": "read", "args": {"path": "b.py"}}])}
+    note = {"id": "note", "role": "assistant", "kind": "agent_note", "origin": "model", "content": "Reading b.py after a.py."}
+    result = {"id": "t2", "role": "tool", "origin": "tool",
+              "tool_result_json": json.dumps({"tool_call_id": "c2", "tool_name": "read", "is_error": False, "content": "y"})}
+    reply = {"id": "a3", "role": "assistant", "origin": "model", "content": "Done [read#1].",
+             "grounding_json": json.dumps({"traced": True, "cited_evidence": [{"evidence": "read#1"}]})}
+    stats, sft, _ = _extract(tmp_path, _closeout_session(reply, carrier, note, result))
+    assert [row["message_id"] for row in sft] == ["a1", "a2", "a3"]
+    assert stats["without_model_output"] == 0
+    # The carrier's tool result is still found behind its note.
+    assert sft[1]["target"]["text"] == "Reading b.py after [read#1:1]."
+    assert "Reading b.py after a.py." not in json.dumps(sft)
+
+
+def test_withheld_text_is_feedback_not_an_answer_or_a_rejection(tmp_path):
+    carrier = {"id": "a2", "role": "assistant", "origin": "model", "content": "Reading b.py next.",
+               "tool_calls_json": json.dumps([{"id": "c2", "name": "read", "args": {"path": "b.py"}}])}
+    result = {"id": "t2", "role": "tool", "origin": "tool",
+              "tool_result_json": json.dumps({"tool_call_id": "c2", "tool_name": "read", "is_error": False, "content": "y"})}
+    notice = {"id": "n", "role": "user", "origin": "host",
+              "content": ">>> Tool feedback\n[HOST: MESSAGE WITHHELD FROM USER] Your text cited nothing.\nCode: MID_TURN_NOTE_UNGROUNDED"}
+    reply = {"id": "a3", "role": "assistant", "origin": "model", "content": "Done [read#1].",
+             "grounding_json": json.dumps({"traced": True, "cited_evidence": [{"evidence": "read#1"}]})}
+    stats, sft, pairs = _extract(tmp_path, _closeout_session(reply, carrier, result, notice))
+    assert stats["withheld_carriers"] == {"MID_TURN_NOTE_UNGROUNDED": 1}
+    assert stats["rejection_codes"] == {} and not pairs
+    assert [row["message_id"] for row in sft] == ["a1", "a3"]
+    assert dpo.parse_host_user_rejection(notice) is None
+    # The notice opens no new request, even with no origin on the row.
+    bare = {key: value for key, value in notice.items() if key != "origin"}
+    _, sft, _ = _extract(tmp_path, _closeout_session(reply, carrier, result, bare))
+    assert [row["message_id"] for row in sft] == ["a1", "a3"]
+    assert not dpo._is_user_opening(bare)
+
+
+def test_rejection_codes_read_plain_lines_only():
+    # A rejection's wording never names its code.
+    assert dpo.parse_host_user_rejection({"role": "user", "content": "Rejected: 2 progress steps still pending."})["code"] == "TURN_CLOSEOUT_REJECTED"
+    assert dpo.REJECTION_CODE_RE.search("Rejected: no\nCode: OUTSIDE_ROOTS").group(1) == "OUTSIDE_ROOTS"
+    assert dpo.REJECTION_CODE_RE.search("⟦D⟧Code: OUTSIDE_ROOTS") is None
+    assert dpo.parse_rejection({"is_error": True, "content": "Status: error\nCode: PROGRESS_MISSING"})["code"] == "PROGRESS_MISSING"

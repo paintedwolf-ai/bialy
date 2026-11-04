@@ -108,7 +108,9 @@ candidates; passing independent quality evidence and nonempty train, validation
 and holdout splits are required for offline SFT admission.
 The run binds its source/configuration before stages execute; changed inputs
 require a new run name. Custom export attempts retain content manifests instead
-of reusing a transcript archive merely because it exists.
+of reusing a transcript archive merely because it exists. Targets are exact model
+text from the host's `model_outputs`; see
+[teacher text](docs/running.md#teacher-text-and-inline-citations).
 
 Candidate extraction is not qualification. Stored messages omit parts of the
 provider request; decision candidates are not offered tool schemas. Model replay

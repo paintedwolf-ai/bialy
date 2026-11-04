@@ -124,3 +124,13 @@ def review_campaign(tmp_path):
     campaign = ReviewCampaign(journal, Review(journal.directory), Lineage(journal))
     yield campaign
     journal.close()
+
+
+def emitted(session):
+    """Back each assistant row with the model output its text and calls came from."""
+    messages = []
+    for message in session["messages"]:
+        if message.get("role") == "assistant" and "model_output" not in message and message.get("kind") != "agent_note":
+            message = dict(message, model_output={"content": message.get("content") or "", "tool_calls_json": message.get("tool_calls_json")})
+        messages.append(message)
+    return dict(session, messages=messages)
