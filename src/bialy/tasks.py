@@ -328,8 +328,12 @@ def workflow_versions(factory):
 def pick_generator(factory, archetype_id, generators, rng):
     """Choose a driving generator for a task, honoring per-archetype and run-wide weights when configured."""
     run_cfg = getattr(factory, "run", None) or {}
-    arch_map = (run_cfg.get("archetype_generators") or {}).get(archetype_id)
-    base_weights = run_cfg.get("generator_weights") or {}
+    configured_generators = run_cfg.get("generators") or []
+    if configured_generators and set(generators) - set(configured_generators):
+        arch_map, base_weights = None, {}
+    else:
+        arch_map = (run_cfg.get("archetype_generators") or {}).get(archetype_id)
+        base_weights = run_cfg.get("generator_weights") or {}
     if not generators:
         raise ConfigError("at least one generator is required")
     if arch_map is None and not base_weights:

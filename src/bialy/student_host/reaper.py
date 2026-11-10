@@ -5,9 +5,12 @@ from pathlib import Path
 
 from .resources import Resources
 from .scaleway import Scaleway
+from .vastai import VastAI
 
 
 def provider(configuration):
+    if configuration.get('provider') == 'vastai':
+        return VastAI(configuration.get('api_key_file'))
     return Scaleway(configuration['profile'], configuration['project'], configuration['zone'])
 
 

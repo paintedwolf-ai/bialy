@@ -3,12 +3,19 @@
 # run happened, not how to reproduce it, so they stay out of the repository and
 # out of release provenance, which records only how many replicas served.
 #
-# A replica runs on another host, bound to its loopback, and is reached through
-# an SSH tunnel onto this host's bridge. The tunnel key may forward to that one
-# address and nothing else (authorized_keys: restrict,port-forwarding,permitopen=...).
+# A replica runs on another host or container, bound to its loopback, and is
+# reached through an SSH tunnel onto this host's bridge. The tunnel key may
+# forward to that one address and nothing else (authorized_keys:
+# restrict,port-forwarding,permitopen=...).
+#
+# When all GPUs are remote (e.g. Vast.ai containers), a replica may forward onto
+# the model's primary bridge port (such as 8002 for gemma-4-26b-a4b-it) so the
+# coordinator uses the remote tunnel instead of starting a local vLLM process.
+# Optional ssh_port connects to dynamic non-22 container SSH ports.
 replicas:
-  qwen3.6-35b-a3b:
-    - {port: 8003, ssh: root@gpu-2.example, key: /root/.ssh/bialy_tunnel, remote: "127.0.0.1:8000"}
+  gemma-4-26b-a4b-it:
+    - {port: 8002, ssh: root@ssh5.vast.ai, ssh_port: 41234, key: /root/.ssh/bialy_tunnel, remote: "127.0.0.1:8000"}
+    - {port: 8005, ssh: root@ssh6.vast.ai, ssh_port: 41890, key: /root/.ssh/bialy_tunnel, remote: "127.0.0.1:8000"}
 
 # A model with serve.external in models.yaml is served outside the factory (a
 # consumer-GPU llama-server). models.yaml pins its alias and artifact; this file

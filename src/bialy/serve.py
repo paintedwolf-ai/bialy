@@ -30,8 +30,15 @@ def snapshot(factory, model):
     return factory.root / "hf" / "hub" / ("models--" + model.hf.replace("/", "--")) / "snapshots" / model.revision
 
 
+def _primary_tunnel(model):
+    external = (model.serve or {}).get("external")
+    if external:
+        return dict(external, port=model.port)
+    return next((r for r in model.replicas if int(r["port"]) == model.port), None)
+
+
 def start(factory, model):
-    if (model.serve or {}).get("external"):
+    if _primary_tunnel(model):
         return None
     record = _record(factory, model)
     if running(factory, model):
@@ -69,8 +76,9 @@ def start_tunnels(factory, model):
                     raise ValueError("live model tunnel configuration changed; stop its recorded tunnel before restarting")
                 continue
         forward = "%s:%d:%s" % (factory.network["gateway"], int(replica["port"]), replica["remote"])
-        loop = ("while true; do ssh -N -i %s -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 "
-                "-o StrictHostKeyChecking=accept-new -o GatewayPorts=yes -L %s -- %s; sleep 5; done") % (shlex.quote(replica["key"]), shlex.quote(forward), shlex.quote(replica["ssh"]))
+        port_opt = ("-p %d " % int(replica["ssh_port"])) if replica.get("ssh_port") else ""
+        loop = ("while true; do ssh -N %s-i %s -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 "
+                "-o StrictHostKeyChecking=accept-new -o GatewayPorts=yes -L %s -- %s; sleep 5; done") % (port_opt, shlex.quote(replica["key"]), shlex.quote(forward), shlex.quote(replica["ssh"]))
         log = open(factory.root / "logs" / ("tunnel-%s-%d.log" % (model.id, int(replica["port"]))), "w")
         proc = subprocess.Popen(["bash", "-c", loop], stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
         time.sleep(1)
@@ -89,8 +97,8 @@ def stop_tunnels(factory, model):
 
 
 def running(factory, model):
-    external = (model.serve or {}).get("external")
-    record = _tunnel_record(factory, model, dict(external, port=model.port)) if external else _record(factory, model)
+    primary = _primary_tunnel(model)
+    record = _tunnel_record(factory, model, primary) if primary else _record(factory, model)
     if not record.exists():
         return False
     entry = json.loads(record.read_text())
@@ -110,7 +118,7 @@ def ready(factory, model):
 
 
 def stop(factory, model):
-    if (model.serve or {}).get("external"):
+    if _primary_tunnel(model):
         return False
     record = _record(factory, model)
     if not running(factory, model):

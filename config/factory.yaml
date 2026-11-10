@@ -25,11 +25,51 @@ judge:
 # and code-rank pairs.
 run:
   lycaon_checkout: ../paintedwolf-code   # built into the runner binaries, engine, and trainer the run uses
-  generators: [glm-5.3-flash]      # hosted or served generators; with several, tasks spread across them
-  generator_weights: {}            # optional {model_id: weight} for hybrid local + hosted driving shares
-  archetype_generators: {}         # optional {archetype_id: [model_id, ...] or {model_id: weight}}
-  local_workers_only: false        # when true, sidecar lite and agent_pool use local served generators
-  judges: [deepseek-v4.1-flash, glm-5.3-flash]  # hybrid local runs must explicitly select their local judges
+  generators: [gemma-4-26b-a4b-it, muse-glimmer-30b, gemma-4-31b, beam-1.0-501b, mistral-large-4]
+  generator_weights:                     # hybrid local + hosted driving shares
+    gemma-4-26b-a4b-it: 0.38
+    muse-glimmer-30b: 0.25
+    gemma-4-31b: 0.20
+    beam-1.0-501b: 0.12
+    mistral-large-4: 0.05
+  archetype_generators:
+    # Routine orientation, search, and chores weight local Gemma 26B with Gemma 31B
+    question: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    explain_code: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    locate: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    git_history: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    data_files: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    docs: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    chores: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    # Mainstream coding, verification, web, and greenfield share local Gemma 26B, Muse, and Gemma 31B
+    bugfix: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    small_change: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    run_and_verify: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    commit: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    web: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    docs_online: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    dependencies: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    new_module: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    project_setup: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    ui_mockup: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    ops: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    new_project: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    prototype: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    public_api_cli: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    scaffold: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
+    # Hard multi-file, architecture, compliance, security, and auth weight Beam 1.0 501B, Muse, Gemma 31B, and Mistral Large 4
+    refactor: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    design_review: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    compliance_audit: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    security: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    security_survey: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    secrets_and_auth: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    multi_part: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    research_change: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    greenfield_auth: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+    port: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
+  local_workers_only: false              # when true, sidecar lite and agent_pool use local served generators
+  judges: [gemma-4-26b-a4b-it, beam-1.0-501b, mistral-large-4]  # local Gemma card judge + cross-family independent reviewers
   runners: 4                       # concurrent runner containers on this machine
   task_timeout: null               # optional whole-task wall-clock cap, including follow-ups, e.g. 45m
   tasks_per_runner: null           # optional shard size override; use 1 for smokes
@@ -42,7 +82,7 @@ run:
     enabled: true                  # a second pass with the pilot heads deciding
     deadline_ms: 120000            # turn decision deadline for the runners' CPU engine; a 2-CPU runner's first turns run long
   skillreq:
-    writer: null                   # the first usable writer in models.yaml
+    writer: gemma-4-26b-a4b-it     # the configured writer in models.yaml
     families: {clear: 2, nearmiss: 1, multi: 1}   # request families per skill and kind
     none_families: 24
     per_family: 6
@@ -71,7 +111,7 @@ run:
     enabled: false                 # custom-model collection is opt-in
     diagnostic_only: false         # allow a host without the receipt exporter; its captures cannot train
     student: gemma-4-e4b-it        # student model evaluated in shadow mode with thinking off
-    teacher: gemma-4-26b-a4b-it-q4 # teacher model that repairs host rejections and nudges (repair stays off)
+    teacher: mistral-large-4       # teacher model that repairs host rejections and nudges (repair stays off)
     min_score: 3                   # minimum judge score for synthetic engine-on preloading and skill/tool gates
     epoch: null                    # explicit collection identity; each collection takes a new one
     tool_surface: legacy           # legacy or command-v1; never mix their trajectories
