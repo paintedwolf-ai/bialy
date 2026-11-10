@@ -586,11 +586,17 @@ def health_snapshot(shard, name, proc, code):
         return faults.snapshot(shard), code
 
 
+def retain_store(name):
+    """Keep a running container's store and the model output bodies its rows name."""
+    sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+    sh("docker", "exec", name, "/opt/bialy/retain-model-outputs.sh", "/shard", check=False)
+
+
 def stop_shard(name, child, shard, work, output):
     """Preserve this owned container's live evidence before stopping it."""
     if child.poll() is None:
         export_live(name, shard, output)
-        sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+        retain_store(name)
         sh("docker", "stop", "--time", "10", name, check=False)
         child.wait()
     release_work(work)
@@ -694,7 +700,7 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
                     raise faults.RunFault(reason, shard.name)
             if code is None and time.time() > deadline:
                 exported = export_live(name, shard, "overdue-rows.part")
-                sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+                retain_store(name)
                 sh("docker", "kill", name, check=False)
                 code = proc.wait()
                 kept = exported and keep_overdue(shard, shard / "overdue-rows.part")
