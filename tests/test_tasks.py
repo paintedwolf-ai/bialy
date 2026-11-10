@@ -211,4 +211,4 @@ def test_a_scenario_sample_is_seeded_and_bounded():
     many = scenario("many", ["Variant number %d of the same flaky session test complaint, typed differently" % i for i in range(30)])
     first, again, other = many.sample(10, 7), many.sample(10, 7), many.sample(10, 8)
     assert len(first.variants) == 10 and first == again and first != other
-    assert many.sample(None, 7) is many and many.sample(40, 7) is many
+    assert many.sample(30, 7) is many and many.sample(40, 7) is many

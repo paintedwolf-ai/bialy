@@ -426,13 +426,13 @@ def test_a_run_scales_and_filters_scenarios_like_archetypes(factory, tmp_path):
 
     from bialy.config import Scenario
 
-    def written(sid, workspace, archetype, n):
+    def written(sid, workspace, archetype):
         return Scenario(id=sid, workspace=workspace, archetype=archetype,
-                        variants=tuple({"prompt": "variant %d of scenario %s, typed another way" % (i, sid), "follow_ups": []} for i in range(n)))
-    f = dataclasses.replace(factory, max_variants=10, scenarios=[
-        written("flask-bug", "flask", "bugfix", 20), written("flask-where", "flask", "locate", 4), written("gin-bug", "gin", "bugfix", 6)])
+                        variants=tuple({"prompt": "variant %d of scenario %s, typed another way" % (i, sid), "follow_ups": []} for i in range(12)))
+    f = dataclasses.replace(factory, scenario_variants=10, scenarios=[
+        written("flask-bug", "flask", "bugfix"), written("flask-where", "flask", "locate"), written("gin-bug", "gin", "bugfix")])
     capped = runmod.scaled_factory(make_run(f, tmp_path, task_cap=2, workspaces=["flask"], archetypes=["bugfix", "locate"]))
-    assert [s.id for s in capped.scenarios] == ["flask-bug", "flask-where"] and capped.max_variants == 2
-    shared = runmod.scaled_factory(make_run(f, tmp_path, task_share=0.5, archetypes=["bugfix"]))
-    # A share scales the configured mix: half of at most max_variants.
-    assert {s.id: len(s.variants) for s in shared.scenarios} == {"flask-bug": 5, "gin-bug": 3} and shared.max_variants == 10
+    assert [s.id for s in capped.scenarios] == ["flask-bug", "flask-where"] and capped.scenario_variants == 2
+    shared = runmod.scaled_factory(make_run(f, tmp_path, task_share=0.25, archetypes=["bugfix"]))
+    assert [s.id for s in shared.scenarios] == ["flask-bug", "gin-bug"] and shared.scenario_variants == 2
+    assert runmod.scaled_factory(make_run(f, tmp_path)).scenario_variants == 10

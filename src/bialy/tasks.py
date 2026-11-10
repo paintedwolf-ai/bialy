@@ -302,7 +302,7 @@ def generate(factory, repos_dir, out_dir, seed=7, workers=48):
             raw += [{**t, "archetype": entry["archetype"], "lang": entry["lang"], "author": entry["author"], "seed": entry.get("seed")}
                     for t in entry["tasks"]]
         files = repo_files(Path(repos_dir) / workspace.name) if workspace.kind == "repository" else []
-        scenarios = [s.sample(factory.max_variants, seed) for s in factory.scenarios if s.workspace == workspace.name]
+        scenarios = [s.sample(factory.scenario_variants, seed) for s in factory.scenarios if s.workspace == workspace.name]
         counts[workspace.name] = finalize(factory, workspace, raw, files, out_dir / (workspace.name + ".jsonl"), seed, scenarios)
     return counts
 
