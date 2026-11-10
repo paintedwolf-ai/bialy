@@ -17,6 +17,35 @@ def test_row_review_uses_the_first_configured_judge(factory):
     assert factory.reviewer() == expected
 
 
+def test_quality_focused_model_plan(factory, tmp_path):
+    import random
+
+    from bialy import run as runmod
+    from bialy import tasks
+
+    assert factory.run["generators"] == ["gemma-4-26b-a4b-it", "muse-glimmer-30b", "gemma-4-31b", "beam-1.0-501b", "mistral-large-4"]
+    assert factory.run["judges"] == ["gemma-4-26b-a4b-it", "beam-1.0-501b", "mistral-large-4"]
+    assert factory.run["skillreq"]["writer"] == "gemma-4-26b-a4b-it"
+    assert factory.run["custom_model"]["teacher"] == "mistral-large-4"
+    assert factory.model("muse-glimmer-30b").hosted["provider"] == "doubleword"
+    assert factory.model("gemma-4-31b").hosted["provider"] == "deepinfra"
+    assert factory.model("beam-1.0-501b").hosted["provider"] == "openrouter"
+    assert factory.model("mistral-large-4").hosted["provider"] == "mistral"
+    assert factory.model("nemotron-3.5-lightning").hosted["provider"] == "deepinfra"
+
+    run = runmod.Run(factory=factory, name="quality", settings=runmod.settings_for(factory, {}))
+    scaled = runmod.scaled_factory(run)
+    gen_ids = [m.id for m in scaled.generators()]
+    assert set(gen_ids) == {"gemma-4-26b-a4b-it", "muse-glimmer-30b", "gemma-4-31b", "beam-1.0-501b", "mistral-large-4"}
+    for arch in scaled.archetypes:
+        chosen = tasks.pick_generator(scaled, arch.id, gen_ids, random.Random(7))
+        assert chosen in gen_ids
+    judge_families = {scaled.reviewer(slot).family for slot in range(len(factory.run["judges"]))}
+    assert judge_families == {"gemma", "beam", "mistral"}
+    for teacher_id in gen_ids:
+        assert any(jf != scaled.model(teacher_id).family for jf in judge_families)
+
+
 def test_a_hosted_judge_needs_its_key(factory, monkeypatch):
     judge = next(m for m in factory.models if m.hosted)
     assert judge.ports() == [] and judge not in factory.served()

@@ -1079,6 +1079,11 @@ def execute(run, start=None, until=None, funcs=None, redo=()):
 
 def settings_for(factory, overrides):
     settings = json.loads(json.dumps(factory.run))
+    if "generators" in overrides and overrides["generators"] is not None:
+        if "generator_weights" not in overrides:
+            settings["generator_weights"] = {}
+        if "archetype_generators" not in overrides:
+            settings["archetype_generators"] = {}
     for key, value in overrides.items():
         if value is None:
             continue

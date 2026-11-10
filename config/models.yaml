@@ -27,7 +27,7 @@ models:
     license: Apache-2.0
     outputs_trainable: true
     reviewed: "2026-09-27: Apache-2.0 model card; no terms on outputs"
-    roles: [generator, teacher]
+    roles: [generator, judge, writer, teacher]
     serve:
       gpu: 1
       port: 8002
@@ -52,7 +52,7 @@ models:
     license: Apache-2.0
     outputs_trainable: true
     reviewed: "2026-10-20: Apache-2.0 model card; Google's own QAT q4_0 of google/gemma-4-26B-A4B-it (Apache-2.0); no terms on outputs"
-    roles: [generator, teacher]
+    roles: [generator, judge, writer, teacher]
     serve:
       port: 8012
       external: {model: gemma-4-26b-a4b-it-q4, artifact: gemma-4-26B_q4_0-it.gguf,
@@ -84,11 +84,61 @@ models:
     license: Apache-2.0
     outputs_trainable: true
     reviewed: "2026-10-19: Apache-2.0 model card; no terms on outputs"
-    roles: [teacher]
+    roles: [judge, writer, teacher]
     serve:
       gpu: 1
       port: 8003
       args: [--quantization, fp8, --kv-cache-dtype, fp8, --tool-call-parser, gemma4, --reasoning-parser, gemma4]
+  - id: gemma-4-31b
+    hf: google/gemma-4-31B-it
+    revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
+    family: gemma
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-30: Apache-2.0 model card; no terms on outputs"
+    roles: [judge, writer, teacher]
+    hosted: {provider: deepinfra, base_url: "https://api.deepinfra.com/v1/openai", model: google/gemma-4-31B-it, key_env: DEEPINFRA_API_KEY,
+             price_per_million: {input: 0.09, output: 0.34}, reasoning_effort: low}
+  - id: muse-glimmer-30b
+    hf: meta-models/Muse-Glimmer-30B
+    revision: cec94fcfd6512f2cfe708138c32533b346ea4f69
+    family: muse
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-10-30: Apache-2.0 model card; no terms on outputs"
+    roles: [judge, writer, teacher]
+    hosted: {provider: doubleword, base_url: "https://api.doubleword.ai/v1", model: meta-models/Muse-Glimmer-30B, key_env: DOUBLEWORD_API_KEY,
+             price_per_million: {input: 0.11, output: 0.32}, reasoning_effort: low}
+  - id: mistral-large-4
+    hf: mistralai/Mistral-Large-4-1T-A52B
+    revision: f12dabdc0c1e99e7f7924461a6f308859b05af4d
+    family: mistral
+    license: Mistral-Ecosystem-Open-Weight-1.0
+    outputs_trainable: true
+    reviewed: "2026-10-30: Mistral Ecosystem Open-Weight License reviewed and approved for training"
+    roles: [judge, writer, teacher]
+    hosted: {provider: mistral, base_url: "https://api.mistral.ai/v1", model: mistral-large-2610, key_env: MISTRAL_API_KEY,
+             price_per_million: {input: 0.70, output: 2.10}, reasoning_effort: medium}
+  - id: beam-1.0-501b
+    hf: reflection/Beam-1.0-501B-A23B
+    revision: 12950ae640b48cbbe9b5bb7735bf197507d6383f
+    family: beam
+    license: Apache-2.0
+    outputs_trainable: true
+    reviewed: "2026-11-08: Apache-2.0 model card; no terms on outputs"
+    roles: [judge, writer, teacher]
+    hosted: {provider: openrouter, base_url: "https://openrouter.ai/api/v1", model: reflection/beam-1.0-501b-a23b, key_env: OPENROUTER_API_KEY,
+             price_per_million: {input: 0.30, output: 1.00}, reasoning_effort: medium}
+  - id: nemotron-3.5-lightning
+    hf: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+    revision: a9904d24bcc1d289a1950fa9d2b978c47cf903b9
+    family: nemotron
+    license: OpenMDW-1.1
+    outputs_trainable: true
+    reviewed: "2026-10-30: OpenMDW-1.1 license reviewed and approved for training"
+    roles: [teacher]
+    hosted: {provider: deepinfra, base_url: "https://api.deepinfra.com/v1/openai", model: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B, key_env: DEEPINFRA_API_KEY,
+             price_per_million: {input: 0.06, output: 0.16}, reasoning_effort: low}
   - id: gemma-4-e4b-it
     hf: google/gemma-4-E4B-it
     revision: ee0ef6023621cff504d758262d4e04895a5af4a2

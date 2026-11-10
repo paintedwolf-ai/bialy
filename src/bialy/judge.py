@@ -156,7 +156,8 @@ def run(factory, corpus, rows_in, rows_out, workers=48, second=None, units=UNITS
     inputs, units, judges, or prompts differ is refused instead of mixing labels."""
     skill_cards = {s["name"]: s["card"] for s in corpus["skills"]}
     tool_cards = {t["name"]: t["card"] for t in corpus["tools"] if t.get("card")}
-    chats = {m.id: factory.chats(m) for m in factory.models if "judge" in m.roles}
+    selected = set(factory.run.get("judges") or [m.id for m in factory.models if "judge" in m.roles])
+    chats = {m.id: factory.chats(m) for m in factory.models if m.id in selected and "judge" in m.roles}
     rows = [json.loads(line) for line in open(rows_in, encoding="utf-8") if line.strip()]
     fraction = factory.judge["second_judge_fraction"] if second is None else second
     sig = signature(factory, corpus, rows_in, units, fraction)

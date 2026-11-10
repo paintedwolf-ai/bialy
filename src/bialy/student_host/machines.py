@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 from .jobs import JobError
 from .reaper import provider
 from .resources import Resources, write
+from .vastai import ALLOWED_SPECIFICATION, REQUIRED_SPECIFICATION
 
 
 def validate(configuration):
@@ -42,15 +43,27 @@ def validate(configuration):
         if not re.fullmatch('[a-zA-Z0-9][a-zA-Z0-9.:-]*', machine.get('host', '')):
             raise JobError('machine host is missing or invalid')
     else:
-        if 'host' in machine or set(provision) != {'provider', 'profile', 'project', 'zone', 'registry', 'specification'}:
+        if 'host' in machine or not isinstance(provision, dict):
             raise JobError('provisioning configuration is invalid')
-        if provision['provider'] != 'scaleway' or not Path(provision['registry']).is_absolute():
+        provider_name = provision.get('provider')
+        if provider_name not in {'scaleway', 'vastai'} or not Path(str(provision.get('registry', ''))).is_absolute():
             raise JobError('unsupported instance provider or invalid registry')
-        if any(not isinstance(provision[key], str) or not provision[key] for key in ('profile', 'project', 'zone')):
-            raise JobError('instance provider configuration is incomplete')
-        spec = provision['specification']
-        if not isinstance(spec, dict) or set(spec) != {'type', 'image', 'root_volume'} or any(not isinstance(value, str) or not value for value in spec.values()):
-            raise JobError('instance specification is incomplete')
+        spec = provision.get('specification')
+        if provider_name == 'scaleway':
+            if set(provision) != {'provider', 'profile', 'project', 'zone', 'registry', 'specification'}:
+                raise JobError('provisioning configuration is invalid')
+            if any(not isinstance(provision[key], str) or not provision[key] for key in ('profile', 'project', 'zone')):
+                raise JobError('instance provider configuration is incomplete')
+            if not isinstance(spec, dict) or set(spec) != {'type', 'image', 'root_volume'} or any(not isinstance(value, str) or not value for value in spec.values()):
+                raise JobError('instance specification is incomplete')
+        else:
+            if not {'provider', 'registry', 'specification'} <= set(provision) or set(provision) - {'provider', 'registry', 'specification', 'api_key_file'}:
+                raise JobError('provisioning configuration is invalid')
+            if provision.get('api_key_file') and not Path(provision['api_key_file']).is_file():
+                raise JobError('Vast.ai API key file is unavailable')
+            if (not isinstance(spec, dict) or not REQUIRED_SPECIFICATION <= set(spec) or set(spec) - ALLOWED_SPECIFICATION
+                    or any(not isinstance(spec[key], str) or not spec[key] for key in REQUIRED_SPECIFICATION)):
+                raise JobError('instance specification is incomplete')
 
 
 @contextlib.contextmanager
@@ -79,7 +92,8 @@ def connect(configuration, directory, resume, remote_type, renewal_type):
             write(path, allocation)
             server = allocation['server']
             address = (server.get('public_ip') or server['public_ips'][0])['address']
-            yield remote_type(address, machine), renewal.check
+            target_machine = {**machine, 'port': int(server['ssh_port'])} if server.get('ssh_port') else machine
+            yield remote_type(address, target_machine), renewal.check
     finally:
         try:
             resources.release(record['token'])

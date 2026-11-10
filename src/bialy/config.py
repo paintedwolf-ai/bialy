@@ -22,7 +22,10 @@ from .student_host.specification import serving
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config"
 
-PERMISSIVE = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unlicense", "MIT OR Apache-2.0", "Unlicense OR MIT"}
+PERMISSIVE = {
+    "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unlicense",
+    "MIT OR Apache-2.0", "Unlicense OR MIT", "Mistral-Ecosystem-Open-Weight-1.0", "OpenMDW-1.1",
+}
 # Project workflows the runner image installs in every workspace.
 WORKFLOWS = ("implement-dispatch", "plan-auto", "recon-auto", "security-auto")
 # Where a task's session runs: a checkout of a pinned public repository, or an
@@ -76,7 +79,7 @@ class Model:
 
     def ports(self):
         """Every bridge port this model answers on: its own server, then its replicas."""
-        return [self.port] + [int(r["port"]) for r in self.replicas] if self.serve else []
+        return list(dict.fromkeys([self.port, *(int(r["port"]) for r in self.replicas)])) if self.serve else []
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,26 @@
+{
+  "host_repository": "https://github.com/paintedwolf-ai/paintedwolf-code.git",
+  "host_commit": "",
+  "bialy_repository": "https://github.com/paintedwolf-ai/bialy.git",
+  "bialy_commit": "",
+  "llama_repository": "https://github.com/ggml-org/llama.cpp.git",
+  "llama_commit": "",
+  "host_checkout": "/scratch/paintedwolf-training/src/host",
+  "models": "/scratch/paintedwolf-training/models",
+  "provisioning": {
+    "registry": "/var/lib/paintedwolf-training/resources",
+    "provider": "vastai",
+    "specification": {
+      "gpu_name": "H100_SXM",
+      "num_gpus": "1",
+      "image": "pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel",
+      "disk": "250",
+      "bid_price": "1.10"
+    }
+  },
+  "machine": {
+    "user": "root",
+    "workspace": "/scratch/training",
+    "uv": "/root/.local/bin/uv"
+  }
+}
