@@ -598,6 +598,7 @@ def hung_fleet(factory, monkeypatch, tmp_path, docker, export):
     monkeypatch.setattr(fleet, "shard_deadline", lambda factory, shard, started: 0)
     monkeypatch.setattr(fleet, "export_live", export)
     monkeypatch.setattr(fleet, "sh", docker)
+    monkeypatch.setattr(fleet, "account_refusal", lambda factory: None)
     return factory, run_dir, shard
 
 
