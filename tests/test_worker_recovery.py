@@ -66,7 +66,7 @@ def test_merge_preserves_split_and_refuses_unrelated_label_changes():
     import copy
 
     original = row() | {'receipt': 1, 'meta': {'split': 'historical-value'},
-                        'labels': {'requests': [], 'guides': {'guide': None}, 'skill_scores': {'x': 0}}}
+                        'labels': {'requests': [], 'skill_scores': {'x': 0}}}
     fixed = copy.deepcopy(original)
     fixed['state']['user'] = 'actual task'
     fixed['meta'] = {'split': 'wrong', 'worker_request_recovery': {'job': 'job'}}
@@ -75,7 +75,7 @@ def test_merge_preserves_split_and_refuses_unrelated_label_changes():
     result = worker_merge.merge(original, fixed)
     assert result['state']['user'] == 'actual task'
     assert result['meta']['split'] == 'historical-value'
-    assert result['labels']['guides'] == original['labels']['guides']
+    assert result['labels']['requests'] == original['labels']['requests']
     assert original['labels']['skill_scores']['x'] == 0
     fixed['labels']['requests'] = [{'need': 'changed'}]
     with pytest.raises(ValueError, match='unrelated labels'):

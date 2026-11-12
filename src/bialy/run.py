@@ -382,7 +382,7 @@ def recipes(run):
 
 def judging_off(run):
     """Whether this run passes rows through unjudged: judging is a paid stage only the
-    tool, guide, and skill recipes need."""
+    tool and skill recipes need."""
     return not run.setting("judge", {}).get("enabled", True)
 
 

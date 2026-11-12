@@ -245,8 +245,7 @@ characters) under the 1,600-character budget. Done-when criteria stay out.
 
 ## Models
 
-The driver sets every label a judge does not: guides, kind, the skill a turn
-read, and the tools a `request_tools` need went on to use. On coordinator
+The driver sets every label a judge does not: kind, the skill a turn read, and the tools a `request_tools` need went on to use. On coordinator
 turns:
 
 | Driver | Loadable calls per turn | Needs whose tools were used | Turns reading a skill |
@@ -312,9 +311,8 @@ real ambiguity between tools that do the same job.
   two-skill, and no-skill requests for every skill, and the rubric scores a
   generic procedure likely only when the request asks for that step. Measure
   discovery with `skill_discovery.py` by band of training support.
-- Checkpoints are chosen by tool plus guide validation loss, so selection
-  mostly follows guides. More worker rows of the right kinds, not heavier
-  ones, is the worker fix.
+- Checkpoints are chosen by tool validation loss. More worker rows of the
+  right kinds, not heavier ones, is the worker fix.
 - Retention rows capture later use as positive observational evidence. Missing use
   is not a negative label. R1 qualification requires verified task truth or an
   independent judge for every held-out label; unverified hindsight cannot qualify

@@ -66,9 +66,8 @@ repositories. Trained and replayed with Painted Wolf Code at commit
 
 Replayed through the shipped engine on sets neither head trained on. Tool
 columns are precision / recall / F1 of the loadable tools a turn used, at
-the catalog's load threshold; guide omission precision is the share of
-omitted instruction units the turn did not need; need MRR ranks the tools a
-`request_tools` need went on to use.
+the catalog's load threshold; need MRR ranks the tools a `request_tools`
+need went on to use.
 
 {results}
 
@@ -91,7 +90,6 @@ compares every metric with the shipped report.
 COLUMNS = (("tools P/R/F1", lambda r: "%.2f / %.2f / %.2f" % tuple(r["tools"]["_all"][k] for k in ("precision", "recall", "f1"))),
            ("macro R", lambda r: r["tools"]["_all"].get("macro_recall")),
            ("loads/turn", lambda r: r["tools"]["_all"].get("loads_per_turn")),
-           ("guide omit P", lambda r: r["guides"]["_all"].get("omission_precision")),
            ("kind acc", lambda r: r["kind"].get("accuracy")),
            ("need MRR", lambda r: r["requests"].get("mrr")))
 
