@@ -554,16 +554,17 @@ def test_runner_image_requires_and_stages_document_helper(factory, tmp_path, mon
     assert (factory.root / 'build/runner/bin/pw-document-core').read_bytes() == b'core'
 
 
-def container_export(docker, lycaon_debug):
-    """export_live through FakeDocker's paths, with the store-reading exporter."""
+def container_export(docker):
+    """export_live through FakeDocker's paths, exporting in-process as the store-reading
+    exporter does, since these tests replace subprocess.Popen with a container."""
     def export(container, shard, out_name, roots=None, db=preservation.CONTAINER_STORE):
-        args = [str(lycaon_debug), "decide", "export", "--db", str(docker.host(db)), "--out", str(shard / out_name)]
-        for kind, flag in fleet.SIDE_ROWS:
-            args += [flag, str(fleet.side_file(shard / out_name, kind))]
-        if roots is not None:
-            (shard / (out_name + ".roots")).write_text("".join(r + "\n" for r in roots))
-            args += ["--roots", str(shard / (out_name + ".roots"))]
-        return subprocess.run(args, capture_output=True, text=True).returncode == 0
+        with sqlite3.connect("file:%s?mode=ro" % docker.host(db), uri=True) as store:
+            rows = [{"root_session": r, "receipt": n} for r, n in store.execute("SELECT root_session, receipt FROM turns ORDER BY receipt")
+                    if roots is None or r in roots]
+        targets = [(shard / out_name, None)] + [(fleet.side_file(shard / out_name, kind), kind) for kind, _ in fleet.SIDE_ROWS]
+        for path, kind in targets:
+            path.write_text("".join(json.dumps(dict(row, kind=kind) if kind else row) + "\n" for row in rows))
+        return True
     return export
 
 
@@ -604,10 +605,11 @@ def test_an_overdue_archive_exports_again_to_the_same_rows(factory, monkeypatch,
     live = sqlite_store(tmp_path / "live.db", ["s1", "s2", "s1"], wal=True)
     docker = FakeDocker(live, tmp_path)
     lycaon_debug = exporter(tmp_path / "lycaon-debug")
-    factory, run_dir, shard = hung_fleet(factory, monkeypatch, tmp_path, docker, container_export(docker, lycaon_debug))
+    factory, run_dir, shard = hung_fleet(factory, monkeypatch, tmp_path, docker, container_export(docker))
     assert fleet.run(factory, run_dir, runners=1) == (1, 0)
     kept = (shard / "rows.jsonl").read_text()
     assert [json.loads(line)["root_session"] for line in kept.splitlines()] == ["s1", "s2", "s1"]
+    monkeypatch.undo()
     with sqlite3.connect(live) as db:
         db.execute("INSERT INTO turns VALUES('s1', 99)")
     assert fleet.reexport(run_dir, lycaon_debug) == [shard.name]
@@ -617,7 +619,7 @@ def test_an_overdue_archive_exports_again_to_the_same_rows(factory, monkeypatch,
 def test_an_overdue_shard_whose_store_cannot_be_kept_keeps_no_rows_and_runs_again(factory, monkeypatch, tmp_path):
     live = sqlite_store(tmp_path / "live.db", ["s1", "s2"])
     docker = FakeDocker(live, tmp_path, fail="backup")
-    factory, run_dir, shard = hung_fleet(factory, monkeypatch, tmp_path, docker, container_export(docker, exporter(tmp_path / "lycaon-debug")))
+    factory, run_dir, shard = hung_fleet(factory, monkeypatch, tmp_path, docker, container_export(docker))
     assert fleet.run(factory, run_dir, runners=1) == (0, 1)
     assert not (shard / "rows.jsonl").exists() and preservation.recorded(shard) is None
     assert (shard / "unpreserved-overdue-rows.part").exists()
@@ -671,7 +673,7 @@ def test_salvage_keeps_a_verified_store_whose_rows_export_again_identically(tmp_
     lycaon_debug = exporter(tmp_path / "lycaon-debug")
     monkeypatch.setattr(fleet, "running_containers", lambda run_dir: {"flask-000": "c1"})
     monkeypatch.setattr(fleet, "sh", docker)
-    monkeypatch.setattr(fleet, "export_live", container_export(docker, lycaon_debug))
+    monkeypatch.setattr(fleet, "export_live", container_export(docker))
     saved, settled = fleet.salvage(run_dir, into)
     dest = into / "shards" / "flask-000"
     assert saved == 1 and settled == {"t1"}
@@ -694,7 +696,7 @@ def test_salvage_skips_a_shard_whose_store_cannot_be_kept(tmp_path, monkeypatch)
     docker = FakeDocker(live, shard, fail="journal")
     monkeypatch.setattr(fleet, "running_containers", lambda run_dir: {"flask-000": "c1"})
     monkeypatch.setattr(fleet, "sh", docker)
-    monkeypatch.setattr(fleet, "export_live", container_export(docker, exporter(tmp_path / "lycaon-debug")))
+    monkeypatch.setattr(fleet, "export_live", container_export(docker))
     saved, settled = fleet.salvage(run_dir, into)
     assert saved == 0 and settled == {"t1"} and not (into / "shards" / "flask-000").exists()
     assert (shard / "store.salvage.unverified.db").exists()
