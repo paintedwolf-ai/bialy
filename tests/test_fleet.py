@@ -1,6 +1,6 @@
 import json
+import sqlite3
 import subprocess
-from pathlib import Path
 
 import pytest
 from conftest import FakeDocker, exporter, sqlite_store
@@ -608,7 +608,7 @@ def test_an_overdue_archive_exports_again_to_the_same_rows(factory, monkeypatch,
     assert fleet.run(factory, run_dir, runners=1) == (1, 0)
     kept = (shard / "rows.jsonl").read_text()
     assert [json.loads(line)["root_session"] for line in kept.splitlines()] == ["s1", "s2", "s1"]
-    with __import__("sqlite3").connect(live) as db:
+    with sqlite3.connect(live) as db:
         db.execute("INSERT INTO turns VALUES('s1', 99)")
     assert fleet.reexport(run_dir, lycaon_debug) == [shard.name]
     assert (shard / "rows.jsonl").read_text() == kept
@@ -679,7 +679,7 @@ def test_salvage_keeps_a_verified_store_whose_rows_export_again_identically(tmp_
     assert [json.loads(line)["root_session"] for line in salvaged.splitlines()] == ["s1", "s1"]
     assert preservation.check(dest)["sha256"] == preservation.check(shard)["sha256"]
     assert (dest / "retention.jsonl").exists() and (dest / "requests.jsonl").exists()
-    with __import__("sqlite3").connect(live) as db:
+    with sqlite3.connect(live) as db:
         db.execute("INSERT INTO turns VALUES('s1', 99)")
     assert fleet.reexport(into, lycaon_debug) == ["flask-000"]
     assert (dest / "rows.jsonl").read_text() == salvaged

@@ -1,10 +1,11 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from bialy import config
 
-FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(scope="session")
