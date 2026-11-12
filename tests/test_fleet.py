@@ -3,8 +3,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import FakeDocker, exporter, sqlite_store
 
-from bialy import fleet
+from bialy import fleet, preservation
+
+
+def preserved_store(shard, roots=("s1",)):
+    """A verified store for a shard, as a completed runner leaves one."""
+    sqlite_store(shard / preservation.STORE, roots)
+    preservation.adopt(shard, "completed")
 
 
 def write_tasks(path, repo, n):
@@ -118,9 +125,10 @@ def test_collect_joins_rows_to_their_task_and_lists_what_it_drove(tmp_path):
     shard.mkdir(parents=True)
     (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "flask0", "root_session": "s1", "status": "settled", "meta": {"workspace": "flask"}}) + "\n")
     (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s1", "receipt": 1}) + "\n")
+    preserved_store(shard)
     out, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
     row = json.loads(out.read_text())
-    assert stats == {"rows": 1, "retention_rows": 0, "request_rows": 0, "shards": 1, "tasks": 1, "settled": 1}
+    assert stats == {"rows": 1, "retention_rows": 0, "request_rows": 0, "shards": 1, "unpreserved": 0, "tasks": 1, "settled": 1}
     assert row["meta"] == {"workspace": "flask", "task_status": "settled", "run": "run", "pass_name": "engine-off"}
     assert row["model"] == json.loads((tmp_path / "tasks" / "flask.jsonl").read_text().splitlines()[0])["model"]
     driven = json.loads((tmp_path / "run" / "tasks-driven.jsonl").read_text())
@@ -135,6 +143,7 @@ def test_collect_gathers_retention_rows_beside_the_turn_rows(tmp_path):
         shard.mkdir(parents=True)
         (shard / "manifest.jsonl").write_text(json.dumps({"task_id": task, "root_session": session, "status": "settled"}) + "\n")
         (shard / "rows.jsonl").write_text(json.dumps({"root_session": session, "receipt": 1}) + "\n")
+        preserved_store(shard, (session,))
     (with_retention / "retention.jsonl").write_text(json.dumps({"schema": "pw-retention-row/1", "root_session": "s1", "receipt": 1}) + "\n")
     (with_retention / "requests.jsonl").write_text(json.dumps({"schema": "pw-request-row/1", "root_session": "s1", "receipt": 1}) + "\n")
     out, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
@@ -297,6 +306,7 @@ def test_a_refused_account_stops_the_fleet_and_keeps_lost_shards_for_a_resume(fa
             started.append(shard.name)
             (shard / "manifest.jsonl").write_text("".join(json.dumps({"status": s}) + "\n" for s in outcomes[shard.name]))
             (shard / "rows.jsonl").write_text("{}\n")
+            sqlite_store(shard / preservation.STORE, ["s1"])
 
         def poll(self):
             return 0
@@ -372,26 +382,32 @@ def test_an_overdue_shard_keeps_its_finished_sessions_and_the_turns_it_cut_off(t
     assert len((shard / "rows.jsonl").read_text().splitlines()) == 3 and not exported.exists()
 
 
-def test_reexport_rewrites_finished_shards_from_their_stores(tmp_path, monkeypatch):
+def test_reexport_rewrites_finished_shards_from_their_stores(tmp_path):
     shards = tmp_path / "run" / "shards"
     done, undriven = shards / "flask-000", shards / "flask-001"
     for shard in (done, undriven):
         shard.mkdir(parents=True)
-        (shard / "store.db").write_bytes(b"db")
+        sqlite_store(shard / preservation.STORE, ["s1", "s9"])
     (done / "manifest.jsonl").write_text(json.dumps({"task_id": "t", "root_session": "s1", "status": "settled"}) + "\n")
     (done / "rows.jsonl").write_text("old\n")
-    calls = []
-
-    def fake_run(args, capture_output=None, text=None):
-        calls.append(args)
-        for name in ("rows", "retention", "requests"):
-            Path(args[args.index("--%s" % ("out" if name == "rows" else name)) + 1]).write_text(name + "\n")
-        return subprocess.CompletedProcess(args, 0, "", "")
-    monkeypatch.setattr(fleet.subprocess, "run", fake_run)
-    assert fleet.reexport(tmp_path / "run", "/bin/lycaon-debug") == ["flask-000"]
-    assert len(calls) == 1 and calls[0][:3] == ["/bin/lycaon-debug", "decide", "export"] and "--retention" in calls[0] and "--requests" in calls[0]
-    assert (done / "rows.jsonl").read_text() == "rows\n" and (done / "requests.jsonl").read_text() == "requests\n"
+    assert fleet.reexport(tmp_path / "run", exporter(tmp_path / "lycaon-debug")) == ["flask-000"]
+    assert [json.loads(line)["root_session"] for line in (done / "rows.jsonl").read_text().splitlines()] == ["s1"]
+    assert json.loads((done / "requests.jsonl").read_text())["kind"] == "requests"
+    assert preservation.check(done)["attempt"] == "archived"
     assert (done / "roots.txt").read_text() == "s1\n" and not (done / "rows.part").exists() and not (undriven / "rows.jsonl").exists()
+
+
+def test_reexport_refuses_a_store_that_no_longer_matches_its_record(tmp_path):
+    shard = tmp_path / "run" / "shards" / "flask-000"
+    shard.mkdir(parents=True)
+    preserved_store(shard)
+    (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t", "root_session": "s1", "status": "settled"}) + "\n")
+    (shard / "rows.jsonl").write_text("{}\n")
+    record = json.loads((shard / preservation.RECORD).read_text())
+    (shard / preservation.RECORD).write_text(json.dumps(dict(record, sha256="0" * 64)))
+    with pytest.raises(preservation.PreservationFault, match="store_changed"):
+        fleet.reexport(tmp_path / "run", exporter(tmp_path / "lycaon-debug"))
+    assert (shard / "rows.jsonl").read_text() == "{}\n"
 
 
 def test_an_overdue_shard_keeps_the_retention_rows_of_the_sessions_it_kept(tmp_path):
@@ -425,8 +441,6 @@ def test_the_fleet_stops_an_overdue_shard_and_counts_what_it_kept(factory, monke
     shard.mkdir(parents=True)
     (shard / "tasks.jsonl").write_text(json.dumps({"id": "t1"}) + "\n" + json.dumps({"id": "t2"}) + "\n")
     (shard / "workspace.json").write_text(json.dumps({"workspace": "react-vite", "kind": "stack", "prompt_timeout": "5m"}))
-    commands = []
-
     class Hung:
         def __init__(self, args, **kw):
             (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t1", "root_session": "s1", "status": "settled"}) + "\n")
@@ -437,7 +451,12 @@ def test_the_fleet_stops_an_overdue_shard_and_counts_what_it_kept(factory, monke
         def wait(self):
             return 137
 
-    def export(container, shard, out_name, roots=None):
+    live = sqlite_store(tmp_path / "live.db", ["s1", "s2"], wal=True)
+    docker = FakeDocker(live, shard)
+    exported_from = []
+
+    def export(container, shard, out_name, roots=None, db=preservation.CONTAINER_STORE):
+        exported_from.append(db)
         (shard / out_name).write_text(json.dumps({"root_session": "s1"}) + "\n" + json.dumps({"root_session": "s2"}) + "\n")
         return True
 
@@ -448,11 +467,12 @@ def test_the_fleet_stops_an_overdue_shard_and_counts_what_it_kept(factory, monke
     monkeypatch.setattr(fleet.time, "sleep", lambda s: None)
     monkeypatch.setattr(fleet, "shard_deadline", lambda factory, shard, started: 0)
     monkeypatch.setattr(fleet, "export_live", export)
-    monkeypatch.setattr(fleet, "sh", lambda *args, **kw: commands.append(args))
+    monkeypatch.setattr(fleet, "sh", docker)
     assert fleet.run(factory, run_dir, runners=1) == (1, 0)
-    assert ("docker", "kill", "react-vite-000") in commands
+    assert ("docker", "kill", "react-vite-000") in docker.calls
+    assert exported_from == [fleet.SNAPSHOT] and preservation.check(shard)["attempt"] == "overdue"
     ledger = [json.loads(line) for line in (run_dir / "ledger.jsonl").read_text().splitlines()]
-    assert {"event": "overdue", "container": "react-vite-000", "shard": "react-vite-000", "kept": True}.items() <= ledger[-2].items()
+    assert {"event": "overdue", "container": "react-vite-000", "shard": "react-vite-000", "kept": True, "preserved": True}.items() <= ledger[-2].items()
     manifest = [json.loads(line) for line in (shard / "manifest.jsonl").read_text().splitlines()]
     assert manifest[-1] == {"task_id": "t2", "root_session": "s2", "status": "overdue"}
 
@@ -466,6 +486,7 @@ def test_collect_lists_a_task_an_overdue_shard_never_reached(tmp_path):
     (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "a", "root_session": "s1", "status": "overdue"}) + "\n" +
                                           json.dumps({"task_id": "b", "root_session": None, "status": "overdue"}) + "\n")
     (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s1", "receipt": 1}) + "\n")
+    preserved_store(shard)
     _, stats = fleet.collect(tmp_path / "run", "engine-off", tasks)
     driven = [json.loads(line) for line in (tmp_path / "run" / "tasks-driven.jsonl").read_text().splitlines()]
     assert stats["rows"] == 1 and stats["tasks"] == 2
@@ -531,3 +552,163 @@ def test_runner_image_requires_and_stages_document_helper(factory, tmp_path, mon
     fleet.build_image(factory, binaries, engine)
     assert len(calls) == 1
     assert (factory.root / 'build/runner/bin/pw-document-core').read_bytes() == b'core'
+
+
+def container_export(docker, lycaon_debug):
+    """export_live through FakeDocker's paths, with the store-reading exporter."""
+    def export(container, shard, out_name, roots=None, db=preservation.CONTAINER_STORE):
+        args = [str(lycaon_debug), "decide", "export", "--db", str(docker.host(db)), "--out", str(shard / out_name)]
+        for kind, flag in fleet.SIDE_ROWS:
+            args += [flag, str(fleet.side_file(shard / out_name, kind))]
+        if roots is not None:
+            (shard / (out_name + ".roots")).write_text("".join(r + "\n" for r in roots))
+            args += ["--roots", str(shard / (out_name + ".roots"))]
+        return subprocess.run(args, capture_output=True, text=True).returncode == 0
+    return export
+
+
+def hung_fleet(factory, monkeypatch, tmp_path, docker, export):
+    """A one-shard fleet whose runner finished task t1 (session s1), started t2 and hung."""
+    import dataclasses
+
+    factory = dataclasses.replace(factory, root=tmp_path)
+    run_dir = tmp_path / "runs" / "r"
+    shard = run_dir / "shards" / "react-vite-000"
+    shard.mkdir(parents=True)
+    (shard / "tasks.jsonl").write_text(json.dumps({"id": "t1"}) + "\n" + json.dumps({"id": "t2"}) + "\n")
+    (shard / "workspace.json").write_text(json.dumps({"workspace": "react-vite", "kind": "stack", "prompt_timeout": "5m"}))
+    docker.shard = shard
+
+    class Hung:
+        def __init__(self, args, **kw):
+            (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t1", "root_session": "s1", "status": "settled"}) + "\n")
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 137
+
+    monkeypatch.setattr(fleet, "running_containers", lambda run_dir: {})
+    monkeypatch.setattr(fleet, "container_args", lambda factory, run_name, shard, mounts, image: (shard.name, None, [shard.name]))
+    monkeypatch.setattr(fleet, "release_work", lambda work: None)
+    monkeypatch.setattr(fleet.subprocess, "Popen", Hung)
+    monkeypatch.setattr(fleet.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fleet, "shard_deadline", lambda factory, shard, started: 0)
+    monkeypatch.setattr(fleet, "export_live", export)
+    monkeypatch.setattr(fleet, "sh", docker)
+    return factory, run_dir, shard
+
+
+def test_an_overdue_archive_exports_again_to_the_same_rows(factory, monkeypatch, tmp_path):
+    live = sqlite_store(tmp_path / "live.db", ["s1", "s2", "s1"], wal=True)
+    docker = FakeDocker(live, tmp_path)
+    lycaon_debug = exporter(tmp_path / "lycaon-debug")
+    factory, run_dir, shard = hung_fleet(factory, monkeypatch, tmp_path, docker, container_export(docker, lycaon_debug))
+    assert fleet.run(factory, run_dir, runners=1) == (1, 0)
+    kept = (shard / "rows.jsonl").read_text()
+    assert [json.loads(line)["root_session"] for line in kept.splitlines()] == ["s1", "s2", "s1"]
+    with __import__("sqlite3").connect(live) as db:
+        db.execute("INSERT INTO turns VALUES('s1', 99)")
+    assert fleet.reexport(run_dir, lycaon_debug) == [shard.name]
+    assert (shard / "rows.jsonl").read_text() == kept
+
+
+def test_an_overdue_shard_whose_store_cannot_be_kept_keeps_no_rows_and_runs_again(factory, monkeypatch, tmp_path):
+    live = sqlite_store(tmp_path / "live.db", ["s1", "s2"])
+    docker = FakeDocker(live, tmp_path, fail="backup")
+    factory, run_dir, shard = hung_fleet(factory, monkeypatch, tmp_path, docker, container_export(docker, exporter(tmp_path / "lycaon-debug")))
+    assert fleet.run(factory, run_dir, runners=1) == (0, 1)
+    assert not (shard / "rows.jsonl").exists() and preservation.recorded(shard) is None
+    assert (shard / "unpreserved-overdue-rows.part").exists()
+    assert json.loads((shard / preservation.FAULT).read_text())["code"] == "store_backup_failed"
+    ledger = [json.loads(line) for line in (run_dir / "ledger.jsonl").read_text().splitlines()]
+    assert {"event": "overdue", "kept": False, "preserved": False}.items() <= ledger[-2].items()
+    attempt = preservation.archive_attempt(shard, [p.name for p in shard.glob("unpreserved-*")])
+    assert (attempt / preservation.FAULT).exists() and (attempt / "unpreserved-overdue-rows.part").exists()
+
+
+def test_a_completed_shard_without_a_verifiable_store_is_set_aside_and_driven_again(factory, monkeypatch, tmp_path):
+    import dataclasses
+
+    factory = dataclasses.replace(factory, root=tmp_path)
+    run_dir = tmp_path / "runs" / "r"
+    shard = run_dir / "shards" / "flask-000"
+    shard.mkdir(parents=True)
+    (shard / "tasks.jsonl").write_text('{"id":1}\n')
+    (shard / "workspace.json").write_text(json.dumps({"workspace": "flask", "kind": "repository", "commit": "c", "prompt_timeout": "5m"}))
+
+    class Done:
+        def __init__(self, args, **kw):
+            (shard / "manifest.jsonl").write_text(json.dumps({"status": "settled"}) + "\n")
+            (shard / "rows.jsonl").write_text("{}\n")
+            (shard / "requests.jsonl").write_text("{}\n")
+            sqlite_store(shard / preservation.STORE, ["s1"], wal=True)
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(fleet, "running_containers", lambda run_dir: {})
+    monkeypatch.setattr(fleet, "container_args", lambda factory, run_name, shard, mounts, image: (shard.name, None, [shard.name]))
+    monkeypatch.setattr(fleet, "release_work", lambda work: None)
+    monkeypatch.setattr(fleet.subprocess, "Popen", Done)
+    monkeypatch.setattr(fleet.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fleet, "account_refusal", lambda factory: None)
+    assert fleet.run(factory, run_dir, runners=1) == (0, 1)
+    assert not (shard / "rows.jsonl").exists() and (shard / "unpreserved-rows.jsonl").exists() and (shard / "unpreserved-requests.jsonl").exists()
+    assert (shard / "store.completed.unverified.db").exists() and not (shard / preservation.STORE).exists()
+    ledger = [json.loads(line) for line in (run_dir / "ledger.jsonl").read_text().splitlines()]
+    assert {"event": "store_fault", "code": "store_not_self_contained"}.items() <= ledger[-1].items()
+
+
+def test_salvage_keeps_a_verified_store_whose_rows_export_again_identically(tmp_path, monkeypatch):
+    run_dir, into = tmp_path / "run", tmp_path / "salvaged"
+    shard = run_dir / "shards" / "flask-000"
+    shard.mkdir(parents=True)
+    (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t1", "root_session": "s1", "status": "settled"}) + "\n")
+    live = sqlite_store(tmp_path / "live.db", ["s1", "s2", "s1"], wal=True)
+    docker = FakeDocker(live, shard)
+    lycaon_debug = exporter(tmp_path / "lycaon-debug")
+    monkeypatch.setattr(fleet, "running_containers", lambda run_dir: {"flask-000": "c1"})
+    monkeypatch.setattr(fleet, "sh", docker)
+    monkeypatch.setattr(fleet, "export_live", container_export(docker, lycaon_debug))
+    saved, settled = fleet.salvage(run_dir, into)
+    dest = into / "shards" / "flask-000"
+    assert saved == 1 and settled == {"t1"}
+    salvaged = (dest / "rows.jsonl").read_text()
+    assert [json.loads(line)["root_session"] for line in salvaged.splitlines()] == ["s1", "s1"]
+    assert preservation.check(dest)["sha256"] == preservation.check(shard)["sha256"]
+    assert (dest / "retention.jsonl").exists() and (dest / "requests.jsonl").exists()
+    with __import__("sqlite3").connect(live) as db:
+        db.execute("INSERT INTO turns VALUES('s1', 99)")
+    assert fleet.reexport(into, lycaon_debug) == ["flask-000"]
+    assert (dest / "rows.jsonl").read_text() == salvaged
+
+
+def test_salvage_skips_a_shard_whose_store_cannot_be_kept(tmp_path, monkeypatch):
+    run_dir, into = tmp_path / "run", tmp_path / "salvaged"
+    shard = run_dir / "shards" / "flask-000"
+    shard.mkdir(parents=True)
+    (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t1", "root_session": "s1", "status": "settled"}) + "\n")
+    live = sqlite_store(tmp_path / "live.db", ["s1"])
+    docker = FakeDocker(live, shard, fail="journal")
+    monkeypatch.setattr(fleet, "running_containers", lambda run_dir: {"flask-000": "c1"})
+    monkeypatch.setattr(fleet, "sh", docker)
+    monkeypatch.setattr(fleet, "export_live", container_export(docker, exporter(tmp_path / "lycaon-debug")))
+    saved, settled = fleet.salvage(run_dir, into)
+    assert saved == 0 and settled == {"t1"} and not (into / "shards" / "flask-000").exists()
+    assert (shard / "store.salvage.unverified.db").exists()
+
+
+def test_collect_admits_only_shards_with_a_verified_store(tmp_path):
+    write_tasks(tmp_path / "tasks", "flask", 2)
+    shards = tmp_path / "run" / "shards"
+    for n, preserved in ((0, True), (1, False)):
+        shard = shards / ("flask-%03d" % n)
+        shard.mkdir(parents=True)
+        (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "flask%d" % n, "root_session": "s%d" % n, "status": "settled"}) + "\n")
+        (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s%d" % n, "receipt": 1}) + "\n")
+        if preserved:
+            preserved_store(shard, ("s0",))
+    _, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
+    assert stats["shards"] == 1 and stats["unpreserved"] == 1 and stats["rows"] == 1
