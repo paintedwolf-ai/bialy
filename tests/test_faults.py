@@ -125,7 +125,7 @@ def test_first_failed_turn_stops_only_this_runs_active_containers_and_retains_ev
     monkeypatch.setattr(fleet.time, "sleep", lambda _: None)
     monkeypatch.setattr(fleet, "sh", command)
     monkeypatch.setattr(fleet, "release_work", lambda _: None)
-    monkeypatch.setattr(fleet, "export_live", lambda name, *_: exported.append(name))
+    monkeypatch.setattr(fleet, "export_live", lambda name, *_, **__: exported.append(name))
     monkeypatch.setattr(faults, "snapshot", lambda shard, container: {"shard": shard.name, "failed_turns": 1})
     with pytest.raises(faults.RunFault, match="turn_failed"):
         fleet.run(factory, directory, runners=2)
@@ -207,7 +207,7 @@ def test_isolated_model_miss_stops_one_task_continues_pending_and_survives_resum
     monkeypatch.setattr(fleet.time, "sleep", lambda _: None)
     monkeypatch.setattr(fleet, "sh", command)
     monkeypatch.setattr(fleet, "release_work", lambda _: None)
-    monkeypatch.setattr(fleet, "export_live", lambda name, *_: exported.append(name))
+    monkeypatch.setattr(fleet, "export_live", lambda name, *_, **__: exported.append(name))
     monkeypatch.setattr(faults, "snapshot", lambda shard, container: {"failed_turns": 1, "codes": {"turn_closeout_tool_call": {"count": 1}}} if shard.name == "a" else {})
     assert fleet.run(factory, directory, runners=2) == (2, 1)
     assert started == ["a", "b", "c"]
