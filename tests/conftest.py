@@ -1,11 +1,12 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from bialy import config
 from bialy.campaign.scenarios import load as load_scenarios
 
-FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parent / "fixtures"
 # The scenario catalog's focus IDs, which every lineage covers.
 FOCUSES = load_scenarios().focuses
 
@@ -126,19 +127,22 @@ class ReviewCampaign:
                              'prompt': 'Add a --json flag to the list command and verify it'}], assignment)
         return json.loads(self.journal.db.execute('SELECT spec FROM tasks WHERE id=?', (task_id,)).fetchone()[0])
 
+    messages = [
+        {'role': 'user', 'content': 'Add a --json flag to the list command and verify it'},
+        {'role': 'assistant', 'content': 'Running the tests.',
+         'tool_calls': [{'id': 'call-1', 'name': 'command', 'args': {'argv': ['go', 'test', './...']}}]},
+        {'role': 'tool', 'content': '', 'tool_result': {'tool_call_id': 'call-1', 'content': '\n'.join(
+            'FAIL line %d' % index for index in range(20))}},
+        {'role': 'assistant', 'content': 'Done, the --json flag works.'}]
+
     def trial(self, name, reviews=('pass', 'pass'), deterministic=True, exit_status=0, record=True):
+        from host_bundles import operation, write_episode
+
         from bialy.campaign.grading import DIMENSIONS
         directory = self.journal.directory / 'trials' / name
         directory.mkdir(parents=True)
-        facts = {'version': 1, 'root_session_id': 'root', 'sessions': [{'id': 'root', 'parent_id': '', 'messages': [
-            {'role': 'user', 'content': 'Add a --json flag to the list command and verify it'},
-            {'role': 'assistant', 'content': 'Running the tests.',
-             'tool_calls': [{'id': 'call-1', 'name': 'command', 'args': {'argv': ['go', 'test', './...']}}]},
-            {'role': 'tool', 'content': '', 'tool_result': {'tool_call_id': 'call-1', 'content': '\n'.join(
-                'FAIL line %d' % index for index in range(20))}},
-            {'role': 'assistant', 'content': 'Done, the --json flag works.'}],
-            'invocations': [{'id': 'invocation-1', 'tool': 'command', 'tool_call_id': 'call-1', 'status': 'completed'}]}]}
-        (directory / 'host-evidence.json').write_text(json.dumps(facts))
+        write_episode(directory / 'host-bundle', sessions=[{'id': 'root', 'messages': self.messages}],
+                      operations=[operation('invocation-1', call='call-1', tool='command')])
         passed = deterministic and exit_status == 0 and all(value == 'pass' for value in reviews)
         output = {'success': passed, 'exit_status': exit_status, 'directory': str(directory),
                   'human_interventions': 0, 'unauthorized_effects': 0, 'effective_thinking': False,
@@ -180,3 +184,79 @@ def register_bank(lineage, tasks):
     assignment = ancestry.allocate(graph, 7, {"train": 1.0})
     lineage.roots(tasks, assignment)
     return assignment
+
+
+def sqlite_store(path, roots=(), wal=False):
+    """A real SQLite store holding one exported row per root session, as a sidecar's
+    store would hold the sessions a shard drove."""
+    import sqlite3
+
+    path = Path(path)
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA journal_mode=%s" % ("WAL" if wal else "DELETE"))
+        db.execute("CREATE TABLE IF NOT EXISTS turns(root_session TEXT, receipt INTEGER)")
+        db.executemany("INSERT INTO turns VALUES(?, ?)", [(root, n) for n, root in enumerate(roots)])
+    return path
+
+
+class FakeDocker:
+    """Answers the `docker exec <container> sqlite3 ...` commands the fleet uses to
+    snapshot a container's store, with /cfg/store.db at `live` and /shard at `shard`.
+    `fail` names the step that exits nonzero: "backup", "journal" or "retention"."""
+
+    def __init__(self, live, shard, fail=None):
+        self.live, self.shard, self.fail, self.calls = Path(live), Path(shard), fail, []
+
+    def host(self, container_path):
+        if container_path == "/cfg/store.db":
+            return self.live
+        return self.shard / container_path.removeprefix("/shard/")
+
+    def __call__(self, *args, check=True, **kw):
+        import sqlite3
+        import subprocess as sp
+
+        self.calls.append(args)
+        if args[:2] == ("docker", "exec") and args[3] == "/opt/bialy/retain-model-outputs.sh":
+            return sp.CompletedProcess(args, 1 if self.fail == "retention" else 0, "", "")
+        if args[:2] != ("docker", "exec") or args[3] != "sqlite3":
+            return sp.CompletedProcess(args, 0, "", "")
+        source, command = self.host(args[4]), args[5]
+        if command.startswith(".backup"):
+            if self.fail == "backup":
+                return sp.CompletedProcess(args, 1, "", "disk I/O error")
+            target = self.host(command.split("'")[1])
+            with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+                src.backup(dst)
+            return sp.CompletedProcess(args, 0, "", "")
+        if self.fail == "journal":
+            return sp.CompletedProcess(args, 1, "", "locked")
+        with sqlite3.connect(source) as db:
+            db.execute(command.rstrip(";"))
+        return sp.CompletedProcess(args, 0, "", "")
+
+
+EXPORTER = '''#!/usr/bin/env python3
+import json, sqlite3, sys
+args = sys.argv[1:]
+def opt(name):
+    return args[args.index(name) + 1] if name in args else None
+roots = set(open(opt("--roots")).read().split()) if opt("--roots") else None
+db = sqlite3.connect("file:%s?mode=ro" % opt("--db"), uri=True)
+rows = [{"root_session": r, "receipt": n} for r, n in db.execute("SELECT root_session, receipt FROM turns ORDER BY receipt")
+        if roots is None or r in roots]
+for flag, kind in (("--out", None), ("--retention", "retention"), ("--requests", "requests")):
+    if opt(flag):
+        with open(opt(flag), "w") as fh:
+            for row in rows:
+                fh.write(json.dumps(dict(row, kind=kind) if kind else row) + "\\n")
+'''
+
+
+def exporter(path):
+    """A stand-in for lycaon-debug decide export that reads the turns table of the store
+    it is given, so an export is a function of the store alone."""
+    path = Path(path)
+    path.write_text(EXPORTER)
+    path.chmod(0o755)
+    return path

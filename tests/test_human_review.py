@@ -323,7 +323,7 @@ def test_collection_exports_and_offers_episodes_a_label_could_change(review_camp
     stage = Collection(review_campaign.journal, review_campaign.lineage, Driver(), export, ['e4b'], True,
                        minimum={'train': 8, 'validation': 8, 'system_test': 8}, review=gate)
     inputs = {'host': {}, 'selector': {}, 'teachers': {'teachers': [{'id': 'teacher'}],
-              'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}}}
+              'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}}}
     output = stage.execute(inputs, 'attempt')
     kinds = [outcomes[plan[episode['repetition']]] for episode in output['episodes']]
     assert kinds == ['split', 'fail', 'pass'] * 24

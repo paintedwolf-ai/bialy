@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..host_bundle import Episode, HostEvidenceError
 from ..provenance import file_sha256
 from .episodes import Episodes
 from .execution import atomic_json
@@ -31,17 +32,17 @@ def verified_exports(manifests, host_commit):
     for manifest in map(Path, manifests):
         exported = json.loads(manifest.read_text())
         identity = exported.get('identity', {})
-        if exported.get('schema') != 'pw-receipt-export/1' or identity.get('host_commit') != host_commit:
+        if exported.get('schema') != 'pw-training-rows/1' or identity.get('host_commit') != host_commit:
             raise CampaignFault('host_export_identity_mismatch')
-        current = {key: identity.get(key) for key in ('epoch', 'host_commit', 'tool_surface', 'student_provider', 'student_kind', 'student_model')}
+        current = {key: identity.get(key) for key in ('epoch', 'host_commit', 'contract_sha256', 'student_provider', 'student_kind', 'student_model')}
         if binding is not None and binding != current:
             raise CampaignFault('host_export_identity_mismatch')
         binding = current
-        for name, checksum in exported['inputs'].items():
-            if file_sha256(Path(name)) != checksum or name in inputs and inputs[name] != checksum:
+        for name, checksum in exported['bundles'].items():
+            if file_sha256(Path(name) / 'manifest.json') != checksum or name in inputs and inputs[name] != checksum:
                 raise CampaignFault('host_export_input_changed')
             inputs[name] = checksum
-        path = manifest.parent / 'sft.receipts.jsonl'
+        path = manifest.parent / 'rows.jsonl'
         if file_sha256(path) != exported.get('rows_sha256'):
             raise CampaignFault('host_export_rows_changed')
         for row in (json.loads(line) for line in path.read_text().splitlines() if line.strip()):
@@ -51,14 +52,31 @@ def verified_exports(manifests, host_commit):
     return binding, inputs, candidates
 
 
+def exported_episode(inputs, bundle_sha256):
+    """The verified bundle a row names, from the bundles its export read."""
+    name = next((name for name, checksum in inputs.items() if checksum == bundle_sha256), None)
+    if name is None:
+        raise CampaignFault('row_source_not_in_host_export')
+    try:
+        episode = Episode(name)
+    except HostEvidenceError as exc:
+        raise CampaignFault('host_capture_changed') from exc
+    if episode.manifest_sha256 != bundle_sha256:
+        raise CampaignFault('host_capture_changed')
+    return episode
+
+
 def seal_dataset(journal, lineage, files, export_manifests, decisions, checkout, host_commit, run=subprocess.run):
     binding, inputs, candidates = verified_exports(export_manifests, host_commit)
-    permitted_hashes = set(inputs.values())
     sources, approved = {}, {}
     episodes = Episodes(journal, lineage)
     for path in map(Path, files):
         for row in (json.loads(line) for line in path.read_text().splitlines() if line.strip()):
-            candidate = {key: value for key, value in row.items() if key not in {'meta', 'split_group'}}
+            # Assembly adds split_group and meta.task_id; the exported row is the rest.
+            meta = {key: value for key, value in row.get('meta', {}).items() if key != 'task_id'}
+            candidate = {key: value for key, value in row.items() if key not in ('split_group', 'meta')}
+            if meta:
+                candidate['meta'] = meta
             if digest(candidate) not in candidates:
                 raise CampaignFault('row_not_in_host_export')
             meta = row.get('meta', {})
@@ -66,16 +84,15 @@ def seal_dataset(journal, lineage, files, export_manifests, decisions, checkout,
             if task['root'] != row.get('split_group') or task['id'] != meta.get('task_id'):
                 raise CampaignFault('row_lineage_mismatch')
             source = row.get('source', {})
-            verdict = episodes.admit(binding['epoch'], row['session'], source.get('store_sha256'), decisions)
-            if (source.get('capture_sha256') not in permitted_hashes or source.get('store_sha256') not in permitted_hashes
-                    or row.get('request_capture', {}).get('host_revision') != host_commit):
+            if row.get('request_capture', {}).get('host_revision') != host_commit:
                 raise CampaignFault('row_source_not_in_host_export')
-            raw_path = next((Path(name) for name, checksum in inputs.items() if checksum == source['capture_sha256']), None)
-            if raw_path is None or file_sha256(raw_path) != source['capture_sha256']:
+            episode = exported_episode(inputs, source.get('bundle_sha256'))
+            capture = next((record for record in episode.captures if digest(record) == source.get('capture_sha256')), None)
+            if capture is None:
                 raise CampaignFault('host_capture_changed')
-            capture = json.loads(raw_path.read_text())
             if capture.get('session_id') != row.get('session') or capture.get('epoch') != binding['epoch']:
                 raise CampaignFault('capture_run_binding_mismatch')
+            verdict = episodes.admit(binding['epoch'], row['session'], episode.manifest['store_sha256'], decisions)
             root = lineage.task(task['root'])
             specification = json.loads(root['spec'])
             sources[root['id']] = {'source_class': root['source_class'], 'training_allowed': True, 'parents': [],

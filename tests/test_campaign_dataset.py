@@ -2,6 +2,7 @@ import json
 
 import pytest
 from conftest import FOCUSES, register_bank
+from host_bundles import write_episode
 
 from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.dataset import assemble
@@ -21,7 +22,7 @@ def bank(tmp_path, monkeypatch):
                       for partition in sorted(PARTITIONS) for family in FOCUSES]
     register_bank(lineage, specifications)
     lineage.freeze()
-    rows = []
+    rows, bundles = [], {}
     for task in specifications:
         session = task['id']
         lineage.bind_session('epoch', session, task['id'])
@@ -33,19 +34,21 @@ def bank(tmp_path, monkeypatch):
         reviews = [{'reviewer_slot': name, 'judge_id': name, 'judge_family': name, 'episode_sha256': digest(receipt), 'controls_passed': True,
                     'evidence_ids': ['check'], 'dimensions': dict.fromkeys(DIMENSIONS, 'pass')} for name in ('first', 'second')]
         Episodes(journal, lineage).record('epoch', session, task['id'], [session], task, receipt, reviews, 'grader')
-        rows.append({'session': session, 'source': {'store_sha256': 'store'}, 'target': {'content': 'complete row ' * 10000}})
+        bundle = write_episode(tmp_path / 'bundles' / session, sessions=[{'id': session}], store='store')
+        bundles[str(bundle)] = file_sha256(bundle / 'manifest.json')
+        rows.append({'session': session, 'source': {'bundle_sha256': bundles[str(bundle)]}, 'target': {'content': 'complete row ' * 10000}})
     manifests = {}
     for name, model in load()['models'].items():
         folder = tmp_path / name
         folder.mkdir()
-        candidates = folder / 'sft.receipts.jsonl'
+        candidates = folder / 'rows.jsonl'
         candidates.write_text(''.join(json.dumps(row) + '\n' for row in rows))
         manifest = folder / 'manifest.json'
-        manifest.write_text(json.dumps({'schema': 'pw-receipt-export/1', 'identity': {
+        manifest.write_text(json.dumps({'schema': 'pw-training-rows/1', 'identity': {
             'host_commit': 'host', 'epoch': 'epoch', 'student_model': model['directory']},
-            'inputs': {}, 'rows_sha256': file_sha256(candidates)}))
+            'bundles': bundles, 'rows_sha256': file_sha256(candidates)}))
         manifests[name] = [manifest]
-    monkeypatch.setattr('bialy.campaign.dataset.training_eligible', lambda row: True)
+    monkeypatch.setattr('bialy.campaign.dataset.training_ready', lambda row: True)
     return journal, lineage, manifests
 
 

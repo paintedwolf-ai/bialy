@@ -4,14 +4,14 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from ..dpo import training_eligible
 from ..provenance import file_sha256
 from ..student_host.specification import identity
+from ..training_rows import training_ready
 from .episodes import Episodes
 from .execution import atomic_json
 from .grading import decided
 from .journal import CampaignFault, canonical, digest
-from .sources import seal_dataset, verified_exports
+from .sources import exported_episode, seal_dataset, verified_exports
 
 FILES = {'train': 'train.jsonl', 'validation': 'val.jsonl', 'system_test': 'holdout.jsonl'}
 
@@ -30,7 +30,7 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
     episodes = Episodes(journal, lineage)
     outputs = {}
     for student in specification['models']:
-        binding, _, candidates = verified_exports(manifests[student], host_commit)
+        binding, inputs, candidates = verified_exports(manifests[student], host_commit)
         if binding['student_model'] != specification['models'][student]['directory']:
             raise CampaignFault('dataset_student_identity_mismatch')
         rows = {partition: [] for partition in FILES}
@@ -44,16 +44,17 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
                 exclusions['development_partition'] += 1
                 continue
             try:
-                verdict = episodes.admit(binding['epoch'], candidate['session'], candidate['source']['store_sha256'], decisions)
+                episode = exported_episode(inputs, candidate['source']['bundle_sha256'])
+                verdict = episodes.admit(binding['epoch'], candidate['session'], episode.manifest['store_sha256'], decisions)
             except CampaignFault as exc:
                 if exc.code != 'episode_not_qualified':
                     raise
                 exclusions[exc.code] += 1
                 continue
-            if not training_eligible(candidate):
+            if not training_ready(candidate):
                 exclusions['response_not_qualified'] += 1
                 continue
-            row = {**candidate, 'meta': {'task_id': task['id']}, 'split_group': task['root']}
+            row = {**candidate, 'meta': {**candidate.get('meta', {}), 'task_id': task['id']}, 'split_group': task['root']}
             rows[partition].append(row)
             independent[partition].add(task['root'])
             covered[partition].add(task['focus'])

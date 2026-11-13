@@ -19,6 +19,5 @@ def test_example_run_sections_load_and_name_known_inputs(path, factory):
     assert set(run["archetypes"]) <= archetypes
     for model in [*run["generators"], *run["judges"]]:
         factory.model(model)
-    student = run["custom_model"]
-    factory.model(student["student"])
-    factory.model(student["teacher"])
+    custom = run["custom_model"]
+    assert set(custom["students"]) == set(config.load().run["custom_model"]["students"])

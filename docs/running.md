@@ -49,30 +49,31 @@ scanner probe alone does not establish behavioral fidelity. Unattended approval
 settings and fixed question answers are explicit collection assumptions, and the
 mechanical pilot does not establish equivalence to every human configuration.
 
-Campaign episode collection checks the pinned host's SQLite schema before
-starting a runner. Runs selecting `command-v1` require the command program and
-child-execution fields consumed by grading and export; a missing field produces
-`host_command_receipts_unavailable`. A mechanical pilot may explicitly select
-`legacy`, which uses terminal command verdicts and records that surface in its
-evidence. It does not qualify revised portable-command behavior. This source
-check does not qualify live execution, capture, or the runner image.
+Campaign episode collection checks the pinned host's training contract before
+starting a runner: the runner image's `lycaon-debug eval training-contract` must
+name the pinned commit, unmodified, and the bundle schema this factory reads.
+Grading and export read each episode from the host's bundle, whose operations
+the host has already normalized, so no host tool or storage layout is named
+here. This source check does not qualify live execution, capture, or the runner
+image.
 
 Run the source check separately before preparing a pilot:
 
 ```sh
 python -m bialy.campaign.preflight --host-checkout /path/to/paintedwolf-code \
-  --host-commit FULL_COMMIT --out /path/to/new-preflight-directory
+  --host-commit FULL_COMMIT --host-image RUNNER_IMAGE --out /path/to/new-preflight-directory
 ```
 
-The directory must be new. It retains the pinned inputs and a terminal result,
-including missing receipt fields. A failed check exits nonzero without starting
+The directory must be new. It retains the pinned inputs, the exported contract
+and a terminal result. A failed check exits nonzero without starting
 collection or training. Use a new directory after changing the source.
 
 The mechanical pilot is `python -m bialy.campaign.pilot --configuration FILE`.
 Its JSON configuration pins the host checkout and commit, runner image, student
 models, llama.cpp revision, serving image, reviewer slots, and storage locations.
-The selected `tool_surface` is part of the immutable run input. The runner image
-must carry its source commit in the `pw.host_commit` label.
+The runner image must carry its source commit in the `pw.host_commit` label, and
+the training contract it exports must name the same commit; the contract's digest
+is part of the immutable run input.
 
 The pilot takes its tasks from the scenario bank in `config/campaign/scenarios.yaml`:
 eight behavior focuses, each a set of groups whose variants differ only in
@@ -82,8 +83,23 @@ leave its partition. Graders run outside the agent's workspace against the
 delivered source and the episode's host bundle; mutation tests hold every grader
 to refusing unchanged code, manufactured passes and missing verification. A full
 campaign needs more groups per focus than the pilot, and planning reports each
-focus's exact deficit. The pilot measures two fixed teacher attempts per development
-task, retains every outcome, collects whole qualified episodes, exports an
+focus's exact deficit.
+
+Before any episode is reviewed, every reviewer slot answers the versioned controls
+in `config/campaign/reviewer-controls.yaml`: verified successes it must pass, and
+false successes it must fail (an unverified artifact, a read cited as a run, an
+ignored failed check, a repeated append, unfinished workers, a closeout the host
+wrote). A slot that passes any false success never reviews; with none left the
+campaign stops as `reviewers_unqualified`. Slots are independent, with no
+model-family pairing. Each provider call is recorded before it is sent, so a call
+interrupted by a restart is recorded as unknown before it is retried.
+
+Teacher qualification then runs every generator on the development tasks of each
+focus and writes `teacher-policy.json`: per focus, the teachers with a verified
+success ranked by the lower bound of their success rate. It is written once, never
+after a student result, and a focus with no verified success stops the campaign
+as `teachers_unqualified`. The pilot measures two attempts per development task,
+retains every outcome, collects whole qualified episodes, exports an
 unchanged baseline, trains, exports the
 adapter result, and drives paired host evaluations with thinking off. Its result
 separates pipeline completion from behavioral success and never qualifies a model

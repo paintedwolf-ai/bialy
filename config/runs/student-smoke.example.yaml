@@ -23,14 +23,7 @@ run:
   custom_model:
     enabled: true
     epoch: smoke-1
-    tool_surface: legacy
     host_commit: <host commit>
-    quality_judge: true
-    student: gemma-4-e4b-it
-    teacher: gemma-4-26b-a4b-it-q4
-    preload_from_judge: false
-    shadow: false
-    repair: false
     students:
       e4b: {provider: student-e4b, kind: openai-compatible, model: gemma-4-E4B-it,
             base_url: "http://127.0.0.1:8080/v1", context_window: 65536}

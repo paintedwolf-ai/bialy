@@ -98,43 +98,30 @@ of any head and every loadable tool a turn uses arrives through a
 (`--pilot`): its needs are the tools a live head missed, which is exactly what
 the rank head ranks in production.
 
-## Custom-model candidates
+## Custom-model training rows
 
-The optional `custom_model` stage exports transcript-derived SFT and preference
-**candidates** alongside the decision-head dataset. It does not train or release
-a custom coordinator model. Leave `run.custom_model.enabled` off for ordinary
-head-only passes. When enabling it, declare a unique `epoch`, `tool_surface`
-(`legacy` or `command-v1`), and full `host_commit` matching the clean checkout.
-Non-diagnostic runs require the pinned host capture/export capability in
-`scripts/bialy/custom_model/collect.py`. Diagnostic collection remains ineligible
-for custom-model training or publication. Exact host receipts produce SFT
-candidates; passing independent quality evidence and nonempty train, validation
-and holdout splits are required for offline SFT admission.
-The run binds its source/configuration before stages execute; changed inputs
-require a new run name. Custom export attempts retain content manifests instead
-of reusing a transcript archive merely because it exists.
+Custom-model training data comes from campaign episodes (`python -m
+bialy.campaign.pilot`): each graded, reviewed episode is exported by the pinned
+host as a bundle, the host's `scripts/bialy/custom_model/collect.py` turns its
+captures into candidates, and `src/bialy/training_rows.py` admits each candidate
+as a `pw-training-row/1`. Admission records every turn: eligible as an ordinary
+step, a diagnostic failure the task declared and its witness check confirmed, a
+recovery after an earlier failure, or a grounded closeout; otherwise excluded
+with its reason (unknown effects, an authorization refusal, an unoffered or
+unrecorded call, a replay after unknown effects, an unwitnessed failure, an
+uncommitted or uncited reply, a closeout the host wrote, stale verification, or
+the host's own capture exclusion). A row never carries state from after its turn,
+and its semantic outcome is the host's. A qualified reviewer then reviews every
+eligible row; only reviewed rows reach a dataset.
 
-Candidate extraction is not qualification. Stored messages omit parts of the
-provider request; decision candidates are not offered tool schemas. Model replay
-requires exact captured messages and schemas, and training admission requires
-acceptance evidence bound to the same request and response. Teacher repairs and
-heuristic divergences remain proposals until independently validated. Missing
-capture/validation evidence means `not_ready`, including when archive extraction
-itself succeeds. No permissive schemas, synthetic preloading, translated legacy
-calls or fabricated multi-root failures may establish training eligibility.
-
-Command adoption requires a fresh collection epoch using the integrated host,
-prompt/catalog/exporter versions and executed child-operation facts. Preserve
-stable scenario focuses and split assignments for comparison, but never reuse old
-answers as command-surface labels. The existing Bialy training/release pipeline
-produces matching decision heads; custom-model SFT/DPO training is a separate
-consumer with additional qualification requirements.
-
-Use `custom_model.quality_judge: true` for explicit receipt-bound quality review during
-collection, or `bialy dpo quality --sft ROWS --transcripts ARCHIVE --out REPORTS`
-for a separate review stage. These operations make provider calls. Reviews bind
-verdicts to exact request/response digests and actual evidence identifiers;
-acceptance alone is not quality. Training and export run the host repository’s implementations.
+A head run's `run.custom_model` turns on capture in its runners and qualifies
+the capture path in preflight. Declare a unique `epoch` and the full
+`host_commit` matching the clean checkout. The pinned runner image states its
+training contract (`lycaon-debug eval training-contract`), whose digest binds
+the run; bialy never reads host storage. Changed inputs require a new run name.
+The existing Bialy training and release pipeline produces the decision heads;
+custom-model training is a separate consumer that runs the host repository's
+implementations.
 
 A consumer-GPU server launched outside the factory is a model with
 `serve.external` in `models.yaml`: `model` (the alias the server advertises on

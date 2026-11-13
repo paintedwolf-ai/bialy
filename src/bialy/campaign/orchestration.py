@@ -52,7 +52,7 @@ class Campaign:
         if not reference or reference.get('qualified') is not True:
             return self.finish('conservative_reference_unqualified')
         common = {'host': host['output']}
-        teachers = self.stage('teacher_baseline', common)
+        teachers = self.stage('teacher_qualification', common)
         selector = self.stage('selector_training', common)
         selected = reference
         selector_status = 'conservative'

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from conftest import FOCUSES, register_bank
+from host_bundles import write_episode
 
 from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.episodes import Episodes
@@ -20,17 +21,16 @@ def fixture(tmp_path):
                    for partition in PARTITIONS for family in FOCUSES])
     lineage.freeze()
     lineage.bind_session('epoch', 'session', 'train' + FOCUSES[0])
-    capture, store = tmp_path / 'capture.json', tmp_path / 'store.db'
-    capture.write_text(json.dumps({'session_id': 'session', 'epoch': 'epoch'}))
-    store.write_bytes(b'fixture database')
-    candidate = {'session': 'session', 'source': {'capture_sha256': file_sha256(capture), 'store_sha256': file_sha256(store)},
+    capture = {'schema': 'pw-training-turn/1', 'session_id': 'session', 'epoch': 'epoch'}
+    bundle = write_episode(tmp_path / 'bundle', sessions=[{'id': 'session'}], captures=[capture], store='a' * 64)
+    candidate = {'session': 'session', 'source': {'bundle_sha256': file_sha256(bundle / 'manifest.json'), 'capture_sha256': digest(capture)},
                  'request_capture': {'host_revision': 'host'}, 'target': {'content': 'answer'}}
-    candidates = tmp_path / 'sft.receipts.jsonl'
+    candidates = tmp_path / 'rows.jsonl'
     candidates.write_text(json.dumps(candidate) + '\n')
     manifest = tmp_path / 'manifest.json'
-    manifest.write_text(json.dumps({'schema': 'pw-receipt-export/1', 'identity': {'host_commit': 'host', 'epoch': 'epoch'},
+    manifest.write_text(json.dumps({'schema': 'pw-training-rows/1', 'identity': {'host_commit': 'host', 'epoch': 'epoch'},
                                    'rows_sha256': file_sha256(candidates),
-                                   'inputs': {str(capture): file_sha256(capture), str(store): file_sha256(store)}}))
+                                   'bundles': {str(bundle): file_sha256(bundle / 'manifest.json')}}))
     row = dict(candidate, meta={'task_id': 'train' + FOCUSES[0]}, split_group='train' + FOCUSES[0])
     dataset = tmp_path / 'train.jsonl'
     dataset.write_text(json.dumps(row) + '\n')
@@ -39,16 +39,16 @@ def fixture(tmp_path):
                'checks': [{'id': 'outcome', 'source_sha256': 'final', 'passed': True}],
                'final_source_sha256': 'final', 'evidence_ids': ['check'], 'human_interventions': 0,
                'unauthorized_effects': 0, 'unresolved_effects': 0, 'teacher_family': 'teacher',
-               'epoch': 'epoch', 'root_session': 'session', 'store_sha256': file_sha256(store)}
+               'epoch': 'epoch', 'root_session': 'session', 'store_sha256': 'a' * 64}
     reviews = [{'reviewer_slot': name, 'judge_id': name, 'judge_family': name, 'episode_sha256': digest(receipt),
                 'controls_passed': True, 'evidence_ids': ['check'], 'dimensions': dict.fromkeys(DIMENSIONS, 'pass')}
                for name in ('first', 'second')]
     Episodes(journal, lineage).record('epoch', 'session', 'train' + FOCUSES[0], ['session'], specification, receipt, reviews, 'grader')
-    return journal, lineage, dataset, manifest, store
+    return journal, lineage, dataset, manifest, bundle
 
 
 def test_issuance_uses_frozen_ancestry_and_exported_bytes(tmp_path):
-    journal, lineage, dataset, manifest, store = fixture(tmp_path)
+    journal, lineage, dataset, manifest, bundle = fixture(tmp_path)
     requests = []
     def run(args, **kwargs):
         request = json.loads(Path(args[args.index('--request') + 1]).read_text())
@@ -58,7 +58,7 @@ def test_issuance_uses_frozen_ancestry_and_exported_bytes(tmp_path):
     binding = next(iter(requests[0]['approved'].values()))
     assert binding['partition'] == 'train' and binding['root'] == 'train' + FOCUSES[0]
     assert authority_key(journal.directory).stat().st_mode & 0o077 == 0
-    store.write_bytes(b'changed')
+    (bundle / 'manifest.json').write_text((bundle / 'manifest.json').read_text().replace('a' * 64, 'b' * 64))
     with pytest.raises(CampaignFault, match='input_changed'):
         seal_dataset(journal, lineage, [dataset], [manifest], {}, tmp_path, 'host', run=run)
     assert len(requests) == 1
@@ -93,5 +93,26 @@ def test_successful_turn_without_a_qualified_episode_cannot_receive_a_permit(tmp
     journal.db.execute('DELETE FROM episodes')
     journal.db.commit()
     with pytest.raises(CampaignFault, match='episode_missing'):
+        seal_dataset(journal, lineage, [dataset], [manifest], {}, tmp_path, 'host')
+    journal.close()
+
+
+def test_a_row_naming_a_capture_its_bundle_lacks_cannot_receive_a_permit(tmp_path):
+    journal, lineage, dataset, manifest, bundle = fixture(tmp_path)
+    row = json.loads(dataset.read_text())
+    row['source']['capture_sha256'] = 'f' * 64
+    candidates = manifest.parent / 'rows.jsonl'
+    candidate = {key: value for key, value in row.items() if key not in ('meta', 'split_group')}
+    candidates.write_text(json.dumps(candidate) + '\n')
+    exported = json.loads(manifest.read_text())
+    manifest.write_text(json.dumps(dict(exported, rows_sha256=file_sha256(candidates))))
+    dataset.write_text(json.dumps(row) + '\n')
+    with pytest.raises(CampaignFault, match='host_capture_changed'):
+        seal_dataset(journal, lineage, [dataset], [manifest], {}, tmp_path, 'host')
+    row['source']['bundle_sha256'] = 'e' * 64
+    candidates.write_text(json.dumps({key: value for key, value in row.items() if key not in ('meta', 'split_group')}) + '\n')
+    manifest.write_text(json.dumps(dict(exported, rows_sha256=file_sha256(candidates))))
+    dataset.write_text(json.dumps(row) + '\n')
+    with pytest.raises(CampaignFault, match='row_source_not_in_host_export'):
         seal_dataset(journal, lineage, [dataset], [manifest], {}, tmp_path, 'host')
     journal.close()

@@ -26,7 +26,6 @@
   bialy audit dataset --release DIR [--unanchored] [--rejudge N --endpoint URL --model ID]
   bialy audit heads --release DIR --dataset DIR --lycaon CHECKOUT --engine LAUNCHER
   bialy check
-  bialy dpo export|extract|shadow|repair ...
   bialy run --run NAME [--until STAGE] [--from STAGE] [--redo STAGE ...] [--dry-run] [--push] [--rebuild-image]
             [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
   bialy run-status --run NAME
@@ -42,7 +41,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import audit, coderank, config, custom_quality, dpo, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
+from . import audit, coderank, config, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
 from . import run as runmod
 from .campaign import ancestry
 from .review import cli as review_cli
@@ -161,24 +160,6 @@ def main(argv=None):
     p.add_argument("--model", help="the pinned judge the endpoint serves, as rows name it")
     p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
     sub.add_parser("check", help="validate the configuration and pins, offline")
-    p = sub.add_parser("dpo", help="extract SFT warmup and multi-source DPO pairs for custom small-model training")
-    p.add_argument("action", choices=("export", "extract", "shadow", "repair", "quality"))
-    p.add_argument("--run", help="export: pass directory containing shards/*/store.db")
-    p.add_argument("--tasks", help="export: task directory")
-    p.add_argument("--transcripts", help="extract: transcripts.jsonl or transcripts.jsonl.gz")
-    p.add_argument("--rows", action="append", default=[], help="extract: judged pw-decide-row/2 JSONL files (repeatable)")
-    p.add_argument("--out", help="export/shadow/repair: output JSONL path")
-    p.add_argument("--out-sft", help="extract: output SFT JSONL path")
-    p.add_argument("--out-dpo", help="extract: output DPO JSONL path")
-    p.add_argument("--sft", help="shadow: input SFT JSONL path")
-    p.add_argument("--dpo", help="repair: input DPO JSONL path")
-    p.add_argument("--student", default="gemma-4-e4b-it", help="shadow: student model id")
-    p.add_argument("--teacher", default="gemma-4-31b-it", help="repair: teacher model id")
-    p.add_argument("--min-score", type=int, default=3, help="extract: minimum judge score for synthetic preloading")
-    p.add_argument("--synthetic-preload", action="store_true", help="extract: diagnostic candidates only; synthesize a counterfactual offered surface")
-    p.add_argument("--max-routine-reads", type=int, default=6, help="extract: max mid-loop unscoped read/grep/list_dir steps per session in SFT (0 disables)")
-    p.add_argument("--workers", type=int, default=16)
-    p.add_argument("--seed", type=int, default=7)
     p = sub.add_parser("run", help="drive a whole pass on this machine, resumable; uploads only with --push")
     p.add_argument("--run", required=True)
     p.add_argument("--until", choices=runmod.STAGES, help="stop after this stage")
@@ -210,33 +191,6 @@ def main(argv=None):
     factory = config.load()
     runs = factory.root / "runs"
 
-    if args.cmd == "dpo":
-        if args.action == "quality":
-            if not (args.sft and args.transcripts and args.out):
-                ap.error("dpo quality needs --sft, --transcripts, and --out")
-            print(json.dumps(custom_quality.judge_rows(factory, args.sft, args.transcripts, args.out, args.seed), indent=2))
-            return 0
-        if args.action == "export":
-            if not (args.run and args.tasks and args.out):
-                ap.error("dpo export needs --run, --tasks, and --out")
-            print(json.dumps(dpo.export_transcripts(args.run, args.tasks, args.out), indent=2))
-            return 0
-        if args.action == "extract":
-            if not args.transcripts:
-                ap.error("dpo extract needs --transcripts")
-            print(json.dumps(dpo.extract(args.transcripts, rows_paths=args.rows, out_sft=args.out_sft, out_dpo=args.out_dpo,
-                                         min_score=args.min_score, preload_from_judge=args.synthetic_preload,
-                                         max_routine_reads_per_session=args.max_routine_reads), indent=2))
-            return 0
-        if args.action == "shadow":
-            if not (args.sft and args.out):
-                ap.error("dpo shadow needs --sft and --out")
-            print(json.dumps(dpo.shadow(factory, args.sft, args.out, student_id=args.student, workers=args.workers, seed=args.seed), indent=2))
-            return 0
-        if not (args.dpo and args.out):
-            ap.error("dpo repair needs --dpo and --out")
-        print(json.dumps(dpo.repair(factory, args.dpo, args.out, teacher_id=args.teacher, workers=args.workers, seed=args.seed), indent=2))
-        return 0
     if args.cmd == "run-faults":
         from . import faults
         directory = runs / args.run
