@@ -26,13 +26,40 @@ def _sha256(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+class Docker:
+    """The pinned runner image, run offline and read-only with the given mounts."""
+
+    def __init__(self, image):
+        self.image = image
+
+    def command(self, mounts, arguments):
+        command = ['docker', 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+                   '--user', '%d:%d' % (os.getuid(), os.getgid())]
+        for source, target, mode in mounts:
+            command += ['-v', '%s:%s:%s' % (Path(source).resolve(), target, mode)]
+        return [*command, '--entrypoint', ENTRYPOINT, self.image, 'eval', *arguments]
+
+
+class Local:
+    """The host's lycaon-debug run directly, each mount target read as its source path."""
+
+    def __init__(self, binary):
+        self.binary = binary
+
+    def command(self, mounts, arguments):
+        mapped = []
+        for argument in arguments:
+            for source, target, _ in mounts:
+                if argument == target or argument.startswith(target + '/'):
+                    argument = str(Path(source).resolve()) + argument[len(target):]
+                    break
+            mapped.append(argument)
+        return [str(self.binary), 'eval', *mapped]
+
+
 def _evaluate(image, mounts, arguments, process):
-    command = ['docker', 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-               '--user', '%d:%d' % (os.getuid(), os.getgid())]
-    for source, target, mode in mounts:
-        command += ['-v', '%s:%s:%s' % (Path(source).resolve(), target, mode)]
-    return process([*command, '--entrypoint', ENTRYPOINT, image, 'eval', *arguments],
-                   check=False, capture_output=True, text=True)
+    runner = image if hasattr(image, 'command') else Docker(image)
+    return process(runner.command(mounts, arguments), check=False, capture_output=True, text=True)
 
 
 def _failed(destination, result, code):
@@ -86,13 +113,17 @@ class Episode:
 
     def __init__(self, directory):
         self.directory = Path(directory)
-        raw = (self.directory / 'manifest.json').read_bytes()
+        try:
+            raw = (self.directory / 'manifest.json').read_bytes()
+            self.manifest = json.loads(raw)
+        except (OSError, ValueError) as exc:
+            raise HostEvidenceError('host_bundle_missing', {'directory': str(self.directory)}) from exc
         self.manifest_sha256 = _sha256(raw)
-        self.manifest = json.loads(raw)
-        if self.manifest.get('schema') != BUNDLE:
+        if not isinstance(self.manifest, dict) or self.manifest.get('schema') != BUNDLE:
             raise HostEvidenceError('host_bundle_unsupported')
         for name, expected in self.manifest['files'].items():
-            if _sha256((self.directory / name).read_bytes()) != expected:
+            path = self.directory / name
+            if not path.is_file() or _sha256(path.read_bytes()) != expected:
                 raise HostEvidenceError('host_bundle_changed', {'file': name})
         self.contract_sha256 = self.manifest['files']['catalog.json']
         self.root_session = self.manifest['root_session_id']
