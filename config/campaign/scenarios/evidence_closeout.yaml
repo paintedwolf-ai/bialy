@@ -113,3 +113,254 @@ groups:
         # SPDX-License-Identifier: $license
         print(2)
     variants: [{license: MIT}, {license: Apache-2.0}]
+
+  - id: dependency-pin
+    workspace: python-cli
+    prompt: >-
+      Pin requests to exactly $version in requirements.txt, leaving the other lines as they are. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      requirements.txt: |
+        click>=8
+        requests
+        rich==13.7.0
+    grader: |
+      assert Path('requirements.txt').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      requirements.txt: |
+        $expected
+    superficial:
+      requirements.txt: |
+        $superficial
+    variants:
+      - {"version": "2.31.0", "expected": "click>=8\nrequests==2.31.0\nrich==13.7.0", "superficial": "click>=8\nrequests>=2.31.0\nrich==13.7.0"}
+      - {"version": "2.32.3", "expected": "click>=8\nrequests==2.32.3\nrich==13.7.0", "superficial": "click>=8\nrequests>=2.32.3\nrich==13.7.0"}
+
+  - id: env-example-key
+    workspace: python-cli
+    prompt: >-
+      Add $key with an empty value to .env.example, keeping the keys in alphabetical order and changing nothing else. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      .env.example: |
+        API_URL=
+        LOG_LEVEL=info
+        TIMEOUT=30
+    grader: |
+      assert Path('.env.example').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      .env.example: |
+        $expected
+    superficial:
+      .env.example: |
+        $superficial
+    variants:
+      - {"key": "DATABASE_URL", "expected": "API_URL=\nDATABASE_URL=\nLOG_LEVEL=info\nTIMEOUT=30", "superficial": "API_URL=\nLOG_LEVEL=info\nTIMEOUT=30\nDATABASE_URL="}
+      - {"key": "REDIS_URL", "expected": "API_URL=\nLOG_LEVEL=info\nREDIS_URL=\nTIMEOUT=30", "superficial": "API_URL=\nLOG_LEVEL=info\nTIMEOUT=30\nREDIS_URL="}
+
+  - id: readme-status-line
+    workspace: python-cli
+    prompt: >-
+      Add the line "Status: $status" directly under the title in README.md and change nothing else. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      README.md: |
+        # $project
+
+        A small service.
+    grader: |
+      assert Path('README.md').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      README.md: |
+        $expected
+    superficial:
+      README.md: |
+        $superficial
+    variants:
+      - {"project": "Harbor", "status": "beta", "expected": "# Harbor\nStatus: beta\n\nA small service.", "superficial": "# Harbor\n\nA small service.\nStatus: beta"}
+      - {"project": "Kestrel", "status": "stable", "expected": "# Kestrel\nStatus: stable\n\nA small service.", "superficial": "# Kestrel\n\nA small service.\nStatus: stable"}
+
+  - id: json-timeout-value
+    workspace: python-cli
+    prompt: >-
+      Set the timeout in settings.json to $timeout, keeping the key order and the two-space formatting. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      settings.json: |
+        {
+          "name": "api",
+          "timeout": 10,
+          "retries": 3
+        }
+    grader: |
+      assert Path('settings.json').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      settings.json: |
+        $expected
+    superficial:
+      settings.json: |
+        $superficial
+    variants:
+      - {"timeout": 45, "expected": "{\n  \"name\": \"api\",\n  \"timeout\": 45,\n  \"retries\": 3\n}", "superficial": "{\"name\": \"api\", \"timeout\": 45, \"retries\": 3}"}
+      - {"timeout": 90, "expected": "{\n  \"name\": \"api\",\n  \"timeout\": 90,\n  \"retries\": 3\n}", "superficial": "{\"name\": \"api\", \"timeout\": 90, \"retries\": 3}"}
+
+  - id: patch-version-bump
+    workspace: python-cli
+    prompt: >-
+      Bump the patch version in pyproject.toml from $current by one and touch nothing else. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      pyproject.toml: |
+        [project]
+        name = "toolkit"
+        version = "$current"
+        requires-python = ">=3.11"
+    grader: |
+      assert Path('pyproject.toml').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      pyproject.toml: |
+        $expected
+    superficial:
+      pyproject.toml: |
+        $superficial
+    variants:
+      - {"current": "1.4.2", "expected": "[project]\nname = \"toolkit\"\nversion = \"1.4.3\"\nrequires-python = \">=3.11\"", "superficial": "[project]\nname = \"toolkit\"\nversion = \"1.5.0\"\nrequires-python = \">=3.11\""}
+      - {"current": "0.9.7", "expected": "[project]\nname = \"toolkit\"\nversion = \"0.9.8\"\nrequires-python = \">=3.11\"", "superficial": "[project]\nname = \"toolkit\"\nversion = \"0.10.0\"\nrequires-python = \">=3.11\""}
+
+  - id: deprecated-call-once
+    workspace: python-cli
+    prompt: >-
+      Replace the one call to fetch_legacy with fetch in client.py; do not rename the function definition or change anything else. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      client.py: |
+        def fetch_legacy(path):
+            return fetch(path)
+
+        def load():
+            return fetch_legacy("/$resource")
+    grader: |
+      assert Path('client.py').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      client.py: |
+        $expected
+    superficial:
+      client.py: |
+        $superficial
+    variants:
+      - {"resource": "users", "expected": "def fetch_legacy(path):\n    return fetch(path)\n\ndef load():\n    return fetch(\"/users\")", "superficial": "def fetch(path):\n    return fetch(path)\n\ndef load():\n    return fetch(\"/users\")"}
+      - {"resource": "orders", "expected": "def fetch_legacy(path):\n    return fetch(path)\n\ndef load():\n    return fetch(\"/orders\")", "superficial": "def fetch(path):\n    return fetch(path)\n\ndef load():\n    return fetch(\"/orders\")"}
+
+  - id: copyright-years
+    workspace: python-cli
+    prompt: >-
+      Extend the copyright year in LICENSE from $start to the range $start-2026 and change nothing else. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      LICENSE: |
+        Copyright (c) $start $holder
+
+        Permission is hereby granted.
+    grader: |
+      assert Path('LICENSE').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      LICENSE: |
+        $expected
+    superficial:
+      LICENSE: |
+        $superficial
+    variants:
+      - {"start": "2021", "holder": "Juno Labs", "expected": "Copyright (c) 2021-2026 Juno Labs\n\nPermission is hereby granted.", "superficial": "Copyright (c) 2026 Juno Labs\n\nPermission is hereby granted."}
+      - {"start": "2019", "holder": "Vale Tools", "expected": "Copyright (c) 2019-2026 Vale Tools\n\nPermission is hereby granted.", "superficial": "Copyright (c) 2026 Vale Tools\n\nPermission is hereby granted."}
+
+  - id: makefile-test-target
+    workspace: python-cli
+    prompt: >-
+      Add a test target to the Makefile after build that runs "$command"; keep the other targets as they are. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      Makefile: |
+        .PHONY: build clean
+
+        build:
+        	python -m build
+
+        clean:
+        	rm -rf dist
+    grader: |
+      assert Path('Makefile').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      Makefile: |
+        $expected
+    superficial:
+      Makefile: |
+        $superficial
+    variants:
+      - {"command": "pytest -q", "expected": ".PHONY: build test clean\n\nbuild:\n\tpython -m build\n\ntest:\n\tpytest -q\n\nclean:\n\trm -rf dist", "superficial": ".PHONY: build clean\n\nbuild:\n\tpython -m build\n\nclean:\n\trm -rf dist\n\ntest:\n\tpytest -q"}
+      - {"command": "python -m unittest", "expected": ".PHONY: build test clean\n\nbuild:\n\tpython -m build\n\ntest:\n\tpython -m unittest\n\nclean:\n\trm -rf dist", "superficial": ".PHONY: build clean\n\nbuild:\n\tpython -m build\n\nclean:\n\trm -rf dist\n\ntest:\n\tpython -m unittest"}
+
+  - id: csv-append-row
+    workspace: python-cli
+    prompt: >-
+      Append a row for $item at $price to prices.csv, keeping the header and existing rows unchanged. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      prices.csv: |
+        item,price
+        bread,2.40
+        milk,1.10
+    grader: |
+      assert Path('prices.csv').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      prices.csv: |
+        $expected
+    superficial:
+      prices.csv: |
+        $superficial
+    variants:
+      - {"item": "eggs", "price": "3.20", "expected": "item,price\nbread,2.40\nmilk,1.10\neggs,3.20", "superficial": "item,price\neggs,3.20\nbread,2.40\nmilk,1.10"}
+      - {"item": "rice", "price": "1.95", "expected": "item,price\nbread,2.40\nmilk,1.10\nrice,1.95", "superficial": "item,price\nrice,1.95\nbread,2.40\nmilk,1.10"}
+
+  - id: todo-mark-done
+    workspace: python-cli
+    prompt: >-
+      Mark "$task" as done in TODO.md and leave the other items exactly as they are. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      TODO.md: |
+        - [ ] write docs
+        - [ ] $task
+        - [x] set up CI
+    grader: |
+      assert Path('TODO.md').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      TODO.md: |
+        $expected
+    superficial:
+      TODO.md: |
+        $superficial
+    variants:
+      - {"task": "add caching", "expected": "- [ ] write docs\n- [x] add caching\n- [x] set up CI", "superficial": "- [x] write docs\n- [x] add caching\n- [x] set up CI"}
+      - {"task": "rotate logs", "expected": "- [ ] write docs\n- [x] rotate logs\n- [x] set up CI", "superficial": "- [x] write docs\n- [x] rotate logs\n- [x] set up CI"}
+
+  - id: remove-stale-entry
+    workspace: python-cli
+    prompt: >-
+      Remove $host from hosts.txt and keep the remaining entries in their order. Check the file and finish with exactly what you changed and how you checked it.
+    fixtures:
+      hosts.txt: |
+        alpha.internal
+        $host
+        gamma.internal
+    grader: |
+      assert Path('hosts.txt').read_text() == '''$expected''' + '\n'
+    verification: false
+    solution:
+      hosts.txt: |
+        $expected
+    superficial:
+      hosts.txt: |
+        $superficial
+    variants:
+      - {"host": "beta.internal", "expected": "alpha.internal\ngamma.internal", "superficial": "alpha.internal\n\ngamma.internal"}
+      - {"host": "zeta.internal", "expected": "alpha.internal\ngamma.internal", "superficial": "alpha.internal\n\ngamma.internal"}

@@ -109,15 +109,17 @@ the run keeps waiting with the differences listed. A run that ended in
 requested before every student's rows are measured, and running out of memory
 ends that student's training as a terminal failure that is never retried.
 
-A campaign takes its tasks from the scenario bank in `config/campaign/scenarios.yaml`:
-eight behavior focuses, each a set of groups whose variants differ only in
-parameters. Ancestry allocation gives every focus one group in each of training,
-validation, development and held-out evaluation, and a group's variants never
-leave its partition. Graders run outside the agent's workspace against the
-delivered source and the episode's host bundle; mutation tests hold every grader
-to refusing unchanged code, manufactured passes and missing verification. A full
-campaign needs more groups per focus than the pilot, and planning reports each
-focus's exact deficit.
+A campaign takes its tasks from the scenario bank: `config/campaign/scenarios.yaml`
+holds the quotas and the eight behavior focuses, and `config/campaign/scenarios/`
+holds one groups file per focus. A group's variants differ only in parameters.
+Ancestry allocation meets each quota's per-focus minimums: one group in each
+partition for the pilot, and for the full campaign ten training groups, one
+validation, one development and three held-out. A group's variants never leave
+its partition. The bank holds fifteen groups per focus, enough for both quotas;
+planning a quota the bank cannot meet reports each focus's exact deficit.
+Graders run outside the agent's workspace against the delivered source and the
+episode's host bundle; mutation tests hold every grader to refusing unchanged
+code, manufactured passes, tampered tests and missing verification.
 
 Before any episode is reviewed, every reviewer slot answers the versioned controls
 in `config/campaign/reviewer-controls.yaml`: verified successes it must pass, and
