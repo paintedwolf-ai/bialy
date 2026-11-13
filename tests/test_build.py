@@ -7,10 +7,10 @@ from bialy import build
 
 
 def test_launcher_uses_the_hosts_serve_arguments_without_a_head_budget(tmp_path):
-    out = build.launcher("/e/bialy", "/m/snap", {"turn-load": "/h/turn-load.safetensors", "guide-load": "/h/guide-load.safetensors"}, tmp_path / "l.sh")
+    out = build.launcher("/e/bialy", "/m/snap", {"turn-load": "/h/turn-load.safetensors", "unit-rank": "/h/unit-rank.safetensors"}, tmp_path / "l.sh")
     text = out.read_text()
     assert text.startswith("#!/bin/sh\nexec /e/bialy serve --model /m/snap --model-id convaiinnovations/laya-multilingual")
-    assert "--head guide-load=/h/guide-load.safetensors --head turn-load=/h/turn-load.safetensors" in text
+    assert "--head turn-load=/h/turn-load.safetensors --head unit-rank=/h/unit-rank.safetensors" in text
     assert "--head-max-len" not in text and "--device" not in text
     assert "--device cpu" in build.launcher("/e/bialy", "/m", {}, tmp_path / "c.sh", device="cpu").read_text()
 
@@ -77,12 +77,12 @@ def test_pilot_carries_the_engine_checkpoint_and_heads(tmp_path):
     (tmp_path / "m/.complete").write_text("")
     (tmp_path / "h").mkdir()
     (tmp_path / "h/turn-load.safetensors").write_bytes(b"h")
-    (tmp_path / "h/guide-load.safetensors").write_bytes(b"h")
+    (tmp_path / "h/unit-rank.safetensors").write_bytes(b"h")
     (tmp_path / "h/B5.log").write_text("log")
     report = build.pilot(tmp_path / "e", tmp_path / "m", tmp_path / "h", tmp_path / "pilot")
-    assert report == {"heads": ["guide-load", "turn-load"]}
+    assert report == {"heads": ["turn-load", "unit-rank"]}
     assert (tmp_path / "pilot/bialy").exists() and (tmp_path / "pilot/model/config.json").exists()
-    assert sorted(p.name for p in (tmp_path / "pilot/heads").iterdir()) == ["guide-load.safetensors", "turn-load.safetensors"]
+    assert sorted(p.name for p in (tmp_path / "pilot/heads").iterdir()) == ["turn-load.safetensors", "unit-rank.safetensors"]
 
 
 def test_binaries_write_a_build_record(tmp_path, monkeypatch):

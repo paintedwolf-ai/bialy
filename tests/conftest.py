@@ -13,14 +13,14 @@ def factory():
 
 
 def row(repo, group, n, host="coordinator", judge_model="glm-5.3-flash", **labels):
-    """A minimal pw-decide-row/1 row, as decide export writes it plus factory metadata."""
-    base = {"tools": [], "requests": [], "requested_names": [], "requested_groups": [], "skills": [], "kind": "inspect", "guides": {}}
+    """A minimal pw-decide-row/2 row, as decide export writes it plus factory metadata."""
+    base = {"tools": [], "requests": [], "requested_names": [], "requested_groups": [], "skills": [], "kind": "inspect"}
     base.update(labels)
     return {
-        "schema": "pw-decide-row/1", "receipt": n, "session": "s%d" % n, "root_session": "s%d" % n, "opening_message_id": "m%d" % n,
+        "schema": "pw-decide-row/2", "receipt": n, "session": "s%d" % n, "root_session": "s%d" % n, "opening_message_id": "m%d" % n,
         "host": host, "surface": "implement_investigate", "catalog_revision": "rev", "project": repo, "model": "qwen3.6-35b-a3b",
-        "partial": False, "lang": "en", "engine": {"state": "abstained", "reason": "engine disabled", "preloaded": [], "omitted": []},
-        "offered": {"floor": ["read"], "loadable": ["edit", "command"], "guides": []},
+        "partial": False, "lang": "en", "engine": {"state": "abstained", "reason": "engine disabled", "preloaded": []},
+        "offered": {"floor": ["read"], "loadable": ["edit", "command"]},
         "state": {"host": host, "user": "request %d" % n, "surface": "implement_investigate"},
         "labels": base, "judge": {"model": judge_model},
         "meta": {"workspace": repo, "prompt_group": group, "task_id": "t%d" % n},
