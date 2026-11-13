@@ -129,7 +129,7 @@ def test_planned_fallback_episodes_run_on_the_conservative_reference(tmp_path):
     conservative = {'qualified': True, 'mode': 'explicit_tool_loading'}
     p0 = {'pilot': '/pilot', 'policy': 'p0', 'fallback_rate': 0.5}
     inputs = {'host': {'conservative_reference': conservative}, 'selector': p0, 'teachers': {
-        'teachers': [{'id': 'teacher'}], 'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}}}
+        'teachers': [{'id': 'teacher'}], 'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}}}
     minimum = dict.fromkeys(('train', 'validation', 'system_test'), 8)
     result = Collection(journal, lineage, driver, export, students(), True, minimum=minimum).execute(inputs, 'pilot')
     strata = [episode['stratum'] for episode in result['episodes']]
