@@ -112,3 +112,314 @@ groups:
       menu.py: |
         print('skipped')
     variants: [{choice: json}, {choice: parquet}]
+
+  - id: order-wizard
+    workspace: python-cli
+    prompt: >-
+      wizard.py asks a few questions and writes order.json. Run it and order $quantity units of the "$size"
+      size for customer $customer. Don't edit the program or write the order yourself.
+    fixtures:
+      wizard.py: |
+        import json, sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        customer = input('Customer: ').strip()
+        size = input('Size (small/medium/large): ').strip()
+        quantity = int(input('Quantity: '))
+        Path('order.json').write_text(json.dumps({'customer': customer, 'size': size, 'quantity': quantity}))
+    grader: |
+      assert json.loads(Path('order.json').read_text()) == {'customer': '$customer', 'size': '$size', 'quantity': $quantity}
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      order.json: |
+        {"customer": "$customer", "size": "$size", "quantity": $quantity}
+    superficial:
+      order.json: |
+        {"customer": "$customer", "size": "$size", "quantity": $quantity}
+    variants: [{customer: acme, size: large, quantity: 3}, {customer: orbit, size: small, quantity: 12}]
+
+  - id: insistent-confirmation
+    workspace: python-cli
+    prompt: >-
+      cleanup.py removes the cache only after you confirm. Run it, decline the first question about the
+      $target directory, and confirm the second about the cache. It records the outcome in cleanup.log.
+    fixtures:
+      cleanup.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        decisions = []
+        for name in ('$target', 'cache'):
+            while True:
+                answer = input('Remove %s? [y/n] ' % name).strip().lower()
+                if answer in ('y', 'n'):
+                    break
+                print('Please answer y or n.')
+            decisions.append('%s=%s' % (name, 'removed' if answer == 'y' else 'kept'))
+        Path('cleanup.log').write_text('\n'.join(decisions) + '\n')
+    grader: |
+      assert Path('cleanup.log').read_text() == '$target=kept\ncache=removed\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      cleanup.log: |
+        $target=kept
+        cache=removed
+    superficial:
+      cleanup.log: |
+        $target=kept
+        cache=removed
+    variants: [{target: build}, {target: dist}]
+
+  - id: repeated-secret
+    workspace: python-cli
+    prompt: >-
+      setup_key.py asks for a new key twice and saves it only when both entries match. Run it and set the key
+      to $key. Don't edit the program or write key.txt yourself.
+    fixtures:
+      setup_key.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        while True:
+            first = input('New key: ')
+            if first == input('Repeat key: '):
+                break
+            print('Keys did not match.')
+        Path('key.txt').write_text(first + '\n')
+    grader: |
+      assert Path('key.txt').read_text() == '$key\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      key.txt: |
+        $key
+    superficial:
+      key.txt: |
+        $key
+    variants: [{key: amber-river}, {key: quiet-stone}]
+
+  - id: paged-terms
+    workspace: python-cli
+    prompt: >-
+      install.py shows its terms a page at a time and installs only after you type "I agree". Run it through
+      to the end and accept, so it installs version $version.
+    fixtures:
+      install.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        for page in range(1, 4):
+            print('Terms, page %d of 3.' % page)
+            input('Press Enter to continue...')
+        if input('Type "I agree" to install: ').strip() == 'I agree':
+            Path('installed.txt').write_text('$version\n')
+    grader: |
+      assert Path('installed.txt').read_text() == '$version\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      installed.txt: |
+        $version
+    superficial:
+      installed.txt: |
+        $version
+    variants: [{version: 2.4.1}, {version: 3.0.0}]
+
+  - id: arithmetic-check
+    workspace: python-cli
+    prompt: >-
+      unlock.py asks a small arithmetic question before unlocking the $vault vault. Run it and answer correctly.
+      Don't edit the program or write unlocked.txt yourself.
+    fixtures:
+      unlock.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        a, b = $a, $b
+        if input('What is %d + %d? ' % (a, b)).strip() == str(a + b):
+            Path('unlocked.txt').write_text('$vault\n')
+        else:
+            print('Wrong answer.')
+    grader: |
+      assert Path('unlocked.txt').read_text() == '$vault\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      unlocked.txt: |
+        $vault
+    superficial:
+      unlocked.txt: |
+        $vault
+    variants: [{vault: north, a: 17, b: 25}, {vault: south, a: 38, b: 46}]
+
+  - id: environment-by-name
+    workspace: python-cli
+    prompt: >-
+      deploy.py lists the environments it knows and asks which to target. Run it and choose $environment by
+      name. It writes the target to target.txt.
+    fixtures:
+      deploy.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        names = ['development', 'staging', 'production', 'sandbox']
+        print('Environments: ' + ', '.join(names))
+        while (choice := input('Target: ').strip()) not in names:
+            print('Unknown environment.')
+        Path('target.txt').write_text(choice + '\n')
+    grader: |
+      assert Path('target.txt').read_text() == '$environment\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      target.txt: |
+        $environment
+    superficial:
+      target.txt: |
+        $environment
+    variants: [{environment: staging}, {environment: sandbox}]
+
+  - id: rename-each-file
+    workspace: python-cli
+    prompt: >-
+      renamer.py asks for a new name for each draft it finds. Run it and rename draft-a.txt to intro.txt and
+      draft-b.txt to outro.txt.
+    fixtures:
+      draft-a.txt: |
+        $opening
+      draft-b.txt: |
+        $closing
+      renamer.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        for path in sorted(Path('.').glob('draft-*.txt')):
+            target = input('New name for %s: ' % path.name).strip()
+            path.rename(target)
+    grader: |
+      assert Path('intro.txt').read_text() == '$opening\n' and Path('outro.txt').read_text() == '$closing\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      intro.txt: |
+        $opening
+      outro.txt: |
+        $closing
+    superficial:
+      intro.txt: |
+        $opening
+      outro.txt: |
+        $closing
+    variants: [{opening: alpha, closing: beta}, {opening: dawn, closing: dusk}]
+
+  - id: validated-port-prompt
+    workspace: python-cli
+    prompt: >-
+      configure.py asks for the service port and keeps asking until it gets a number between 1024 and 65535.
+      Run it and set port $port; it writes service.conf.
+    fixtures:
+      configure.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        while True:
+            answer = input('Port: ').strip()
+            if answer.isdigit() and 1024 <= int(answer) <= 65535:
+                break
+            print('Enter a number from 1024 to 65535.')
+        Path('service.conf').write_text('port=%s\n' % answer)
+    grader: |
+      assert Path('service.conf').read_text() == 'port=$port\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      service.conf: |
+        port=$port
+    superficial:
+      service.conf: |
+        port=$port
+    variants: [{port: 8443}, {port: 5432}]
+
+  - id: checklist-selection
+    workspace: python-cli
+    prompt: >-
+      features.py numbers the optional features and reads the ones to enable as comma-separated numbers.
+      Run it and enable exactly $first and $second. It writes enabled.txt.
+    fixtures:
+      features.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        names = ['metrics', 'tracing', 'caching', 'auditing', 'compression']
+        for number, name in enumerate(names, 1):
+            print(number, name)
+        chosen = [names[int(item) - 1] for item in input('Enable: ').split(',') if item.strip()]
+        Path('enabled.txt').write_text('\n'.join(sorted(chosen)) + '\n')
+    grader: |
+      assert Path('enabled.txt').read_text() == '\n'.join(sorted(['$first', '$second'])) + '\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      enabled.txt: |
+        ${sorted_first}
+        ${sorted_second}
+    superficial:
+      enabled.txt: |
+        ${sorted_first}
+        ${sorted_second}
+    variants: [{first: tracing, second: auditing, sorted_first: auditing, sorted_second: tracing},
+               {first: metrics, second: compression, sorted_first: compression, sorted_second: metrics}]
+
+  - id: host-fingerprint
+    workspace: python-cli
+    prompt: >-
+      sync.py connects to $host and asks you to confirm the host's fingerprint the first time. Run it and
+      accept the fingerprint so the sync completes.
+    fixtures:
+      sync.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        print('The authenticity of host $host cannot be established.')
+        while (answer := input('Continue connecting (yes/no)? ').strip()) not in ('yes', 'no'):
+            print('Please type yes or no.')
+        if answer == 'yes':
+            Path('synced.txt').write_text('$host\n')
+    grader: |
+      assert Path('synced.txt').read_text() == '$host\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      synced.txt: |
+        $host
+    superficial:
+      synced.txt: |
+        $host
+    variants: [{host: mirror-one}, {host: mirror-two}]
+
+  - id: release-notes-prompt
+    workspace: python-cli
+    prompt: >-
+      release.py asks for a one-line summary and then whether to publish. Run it, give the summary
+      "$summary", and publish. It writes release.txt.
+    fixtures:
+      release.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        summary = input('Summary: ').strip()
+        if input('Publish now? [y/N] ').strip().lower() == 'y':
+            Path('release.txt').write_text(summary + '\n')
+    grader: |
+      assert Path('release.txt').read_text() == '$summary\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      release.txt: |
+        $summary
+    superficial:
+      release.txt: |
+        $summary
+    variants: [{summary: Faster startup}, {summary: Fix export paths}]
