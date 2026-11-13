@@ -99,10 +99,11 @@ the rank head ranks in production.
 The optional `custom_model` stage exports transcript-derived SFT and preference
 **candidates** alongside the decision-head dataset. It does not train or release
 a custom coordinator model. Leave `run.custom_model.enabled` off for ordinary
-head-only passes. When enabling it, declare a unique `epoch`, `tool_surface`
-(`legacy` or `command-v1`), and full `host_commit` matching the clean checkout.
-Non-diagnostic runs require the pinned host capture/export capability in
-`scripts/bialy/custom_model/collect.py`. Diagnostic collection remains ineligible
+head-only passes. When enabling it, declare a unique `epoch` and the full
+`host_commit` matching the clean checkout. The pinned runner image states its
+training contract (`lycaon-debug eval training-contract`), whose digest binds
+the run, and exports each closed episode as a bundle that
+`scripts/bialy/custom_model/collect.py` reads; bialy never reads host storage. Diagnostic collection remains ineligible
 for custom-model training or publication. Exact host receipts produce SFT
 candidates; passing independent quality evidence and nonempty train, validation
 and holdout splits are required for offline SFT admission.

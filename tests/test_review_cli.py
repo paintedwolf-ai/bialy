@@ -1,6 +1,8 @@
 import json
+import shutil
 
 import pytest
+from host_bundles import operation, write_episode
 
 from bialy import cli
 from bialy.campaign.human_review import CollectionGate, EvaluationGate, subject
@@ -56,7 +58,7 @@ def test_show_prints_the_transcript_with_short_evidence_references(review_campai
     out = capsys.readouterr().out
     assert f'#{item} · Collection (pilot) · disagreement · build_test_repair · 7 rows' in out
     assert 'One reviewer failed this. Pass recovers 7 training rows' in out
-    assert '→ command {"argv": ["go", "test", "./..."]} [r1]' in out and '[r1] completed' in out
+    assert '→ command {"argv": ["go", "test", "./..."]} [r1]' in out and '[r1] success' in out
     assert '… 8 more lines (show --full)' in out and 'Not decided.' in out
     assert bialy(review_campaign, 'show', str(item), '--full') == 0
     assert 'FAIL line 19' in capsys.readouterr().out
@@ -141,10 +143,11 @@ def test_pairs_render_both_sides(review_campaign):
 
 def test_workers_appear_in_the_transcript(review_campaign):
     item = review_campaign.review.item(queued(review_campaign))
-    path = review_campaign.journal.directory / 'trials' / 'a' / 'host-evidence.json'
-    facts = json.loads(path.read_text())
-    facts['sessions'].append({'id': 'worker', 'parent_id': 'root', 'messages': [{'role': 'assistant', 'content': ''}]})
-    path.write_text(json.dumps(facts))
+    bundle = review_campaign.journal.directory / 'trials' / 'a' / 'host-bundle'
+    shutil.rmtree(bundle)
+    write_episode(bundle, sessions=[{'id': 'root', 'messages': review_campaign.messages},
+                                    {'id': 'worker', 'parent_id': 'root', 'messages': [{'role': 'assistant', 'content': ''}]}],
+                  operations=[operation('invocation-1', call='call-1', tool='command')])
     assert '  ── worker worker' in render.item_text(item)
 
 
