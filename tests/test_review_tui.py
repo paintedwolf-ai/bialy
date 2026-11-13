@@ -177,7 +177,7 @@ def test_pairs_switch_sides_with_tab(review_campaign):
     review_campaign.review.offer('evaluation', 'pair', [subject('x-' + arm, trials[arm], arm) for arm in trials],
                                  [{'side': 'base', 'trial': 'x-base', 'success': False},
                                   {'side': 'trained', 'trial': 'x-trained', 'success': True}],
-                                 {'task_id': 't1', 'family': 'build_test_repair', 'student': 'e4b', 'repetition': 0,
+                                 {'task_id': 't1', 'focus': 'build_test_repair', 'student': 'e4b', 'repetition': 0,
                                   'prompt': 'Add a flag', 'arms': {'base': False, 'trained': True}}, 0)
     model = press(reviewer(review_campaign), 'enter', 'enter', 'enter')
     text = screen(model)
@@ -307,7 +307,7 @@ def test_a_fully_labelled_pair_reads_labelled(review_campaign):
     trials = {arm: review_campaign.trial('y-' + arm) for arm in ('base', 'trained')}
     review_campaign.review.open('evaluation', 'evaluation')
     item = review_campaign.review.offer('evaluation', 'pair', [subject('y-' + arm, trials[arm], arm) for arm in trials], [],
-                                        {'task_id': 't1', 'family': 'build_test_repair', 'student': 'e4b', 'repetition': 0,
+                                        {'task_id': 't1', 'focus': 'build_test_repair', 'student': 'e4b', 'repetition': 0,
                                          'prompt': 'Add a flag', 'arms': {}}, 0)
     for arm in trials:
         review_campaign.review.label(item, 'episode-y-' + arm, *review_campaign.verdict(), '')

@@ -1,13 +1,13 @@
 import copy
 
 import pytest
-from conftest import register_bank
+from conftest import FOCUSES, register_bank
 
 from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.evaluation import Evaluation, EvaluationPlan
 from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal
-from bialy.campaign.lineage import FAMILIES, Lineage
+from bialy.campaign.lineage import Lineage
 
 
 class Driver:
@@ -27,10 +27,10 @@ class Driver:
 
 def test_every_planned_attempt_is_retained_and_resume_does_not_replay(tmp_path):
     journal = Journal(tmp_path, {})
-    lineage = Lineage(journal)
+    lineage = Lineage(journal, FOCUSES)
     register_bank(lineage, [{'id': f'{partition}-{family}-{index}', 'partition': partition,
-                    'family': family, 'source_class': 'synthetic'}
-                   for partition in PARTITIONS for family in FAMILIES for index in range(3)])
+                    'focus': family, 'source_class': 'synthetic'}
+                   for partition in PARTITIONS for family in FOCUSES for index in range(3)])
     lineage.freeze()
     planner = EvaluationPlan(journal, lineage, repetitions=2)
     plan = planner.execute({'measurements': {'accepted': 32}}, 'plan')

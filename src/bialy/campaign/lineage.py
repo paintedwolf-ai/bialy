@@ -7,18 +7,14 @@ import sqlite3
 from . import ancestry
 from .journal import CampaignFault, canonical, digest
 
-FAMILIES = (
-    "implementation_investigation", "missing_path_or_executable", "interactive_capture",
-    "build_test_repair", "partial_effect_recovery", "selection_miss", "long_history", "structured_closeout",
-)
-
 
 class Lineage:
-    def __init__(self, journal):
-        self.db = journal.db
+    """`focuses` are the scenario catalog's focus IDs; every partition covers each."""
+    def __init__(self, journal, focuses):
+        self.db, self.focuses = journal.db, tuple(focuses)
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, root TEXT NOT NULL, parent TEXT,
-          partition TEXT NOT NULL, family TEXT NOT NULL, source_class TEXT NOT NULL,
+          partition TEXT NOT NULL, focus TEXT NOT NULL, source_class TEXT NOT NULL,
           spec TEXT NOT NULL, spec_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS lineage_freeze(id INTEGER PRIMARY KEY CHECK(id=1), digest TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS lineage_ancestry(id INTEGER PRIMARY KEY CHECK(id=1), assignment_sha256 TEXT NOT NULL);
@@ -38,15 +34,15 @@ class Lineage:
             for task in specifications:
                 if "partition" in task:
                     raise CampaignFault("task_declares_partition", details={"task": task["id"]})
-                if task["family"] not in FAMILIES:
-                    raise CampaignFault("invalid_task_family")
+                if task["focus"] not in self.focuses:
+                    raise CampaignFault("invalid_task_focus")
                 if task["source_class"] not in {"synthetic", "permitted_repository"}:
                     raise CampaignFault("source_not_permitted")
                 if task["source_class"] == "permitted_repository" and not task.get("permission_sha256"):
                     raise CampaignFault("repository_permission_missing")
                 try:
                     self.db.execute("INSERT INTO tasks VALUES(?,?,NULL,?,?,?,?,?)",
-                                    (task["id"], task["id"], assignment.partition(ancestry.task_node(task["id"])), task["family"],
+                                    (task["id"], task["id"], assignment.partition(ancestry.task_node(task["id"])), task["focus"],
                                      task["source_class"], canonical(task), digest(task)))
                 except sqlite3.IntegrityError as exc:
                     raise CampaignFault("duplicate_task_identity") from exc
@@ -56,8 +52,8 @@ class Lineage:
         if not roots:
             raise CampaignFault("empty_task_bank")
         for partition in ancestry.PARTITIONS:
-            if {row["family"] for row in roots if row["partition"] == partition} != set(FAMILIES):
-                raise CampaignFault("task_family_coverage_missing", details={"partition": partition})
+            if {row["focus"] for row in roots if row["partition"] == partition} != set(self.focuses):
+                raise CampaignFault("task_focus_coverage_missing", details={"partition": partition})
         bound = self.db.execute("SELECT assignment_sha256 FROM lineage_ancestry").fetchone()
         identity = digest({"roots": roots, "ancestry": bound[0] if bound else None})
         with self.db:
@@ -100,7 +96,7 @@ class Lineage:
         with self.db:
             try:
                 self.db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?)", (
-                    task_id, parent["root"], parent_id, parent["partition"], parent["family"],
+                    task_id, parent["root"], parent_id, parent["partition"], parent["focus"],
                     parent["source_class"], canonical(specification), digest(specification)))
             except sqlite3.IntegrityError as exc:
                 raise CampaignFault("duplicate_task_identity") from exc

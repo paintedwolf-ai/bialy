@@ -3,8 +3,11 @@ import json
 import pytest
 
 from bialy import config
+from bialy.campaign.scenarios import load as load_scenarios
 
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+# The scenario catalog's focus IDs, which every lineage covers.
+FOCUSES = load_scenarios().focuses
 
 
 @pytest.fixture(scope="session")
@@ -99,10 +102,9 @@ def review_assignment():
     """One assignment for every task the review tests register: an id's prefix names
     its partition, and any other id is system_test."""
     from bialy.campaign import ancestry
-    from bialy.campaign.lineage import FAMILIES
 
     ids = ['held-out', 't1', 't2', 't3', 't4'] + ['train-' + name for name in ('a', 'b', 'c', 'spot', 'split', 'spot_check')]
-    ids += [partition + family for partition in ancestry.PARTITIONS for family in FAMILIES]
+    ids += [partition + family for partition in ancestry.PARTITIONS for family in FOCUSES]
     graph = ancestry.Graph()
     for task_id in ids:
         partition = next((p for p in ancestry.PARTITIONS if task_id.startswith(p)), 'system_test')
@@ -120,7 +122,7 @@ class ReviewCampaign:
         assignment = review_assignment()
         if assignment.partition(ancestry_node(task_id)) != partition:
             raise AssertionError('review task %s belongs in %s' % (task_id, assignment.partition(ancestry_node(task_id))))
-        self.lineage.roots([{'id': task_id, 'family': family, 'source_class': 'synthetic',
+        self.lineage.roots([{'id': task_id, 'focus': family, 'source_class': 'synthetic',
                              'prompt': 'Add a --json flag to the list command and verify it'}], assignment)
         return json.loads(self.journal.db.execute('SELECT spec FROM tasks WHERE id=?', (task_id,)).fetchone()[0])
 
@@ -161,7 +163,7 @@ def review_campaign(tmp_path):
     from bialy.campaign.journal import Journal
     from bialy.campaign.lineage import Lineage
     journal = Journal(tmp_path / 'campaign', {'schema': 'fixture', 'configuration': {'human_review': True}})
-    campaign = ReviewCampaign(journal, Review(journal.directory), Lineage(journal))
+    campaign = ReviewCampaign(journal, Review(journal.directory), Lineage(journal, FOCUSES))
     yield campaign
     journal.close()
 

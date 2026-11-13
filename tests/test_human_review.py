@@ -1,7 +1,7 @@
 import json
 
 import pytest
-from conftest import register_bank
+from conftest import FOCUSES, register_bank
 
 from bialy.campaign.dataset import Assembly
 from bialy.campaign.evaluation import Comparison
@@ -259,10 +259,10 @@ def recorded_episode(journal, passed_checks, reviewer_values):
     from bialy.campaign.ancestry import PARTITIONS
     from bialy.campaign.episodes import Episodes
     from bialy.campaign.journal import digest
-    from bialy.campaign.lineage import FAMILIES, Lineage
-    lineage = Lineage(journal)
-    tasks = [{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic',
-              'required_checks': ['outcome']} for partition in sorted(PARTITIONS) for family in FAMILIES]
+    from bialy.campaign.lineage import Lineage
+    lineage = Lineage(journal, FOCUSES)
+    tasks = [{'id': partition + family, 'partition': partition, 'focus': family, 'source_class': 'synthetic',
+              'required_checks': ['outcome']} for partition in sorted(PARTITIONS) for family in FOCUSES]
     register_bank(lineage, tasks)
     lineage.freeze()
     task = tasks[0]
@@ -300,10 +300,9 @@ def test_admission_uses_a_human_decision_only_when_the_checks_passed(tmp_path, p
 def test_collection_exports_and_offers_episodes_a_label_could_change(review_campaign, tmp_path):
     from bialy.campaign.ancestry import PARTITIONS
     from bialy.campaign.collection import Collection
-    from bialy.campaign.lineage import FAMILIES
     tasks = {}
     for partition in sorted(PARTITIONS):
-        for family in FAMILIES:
+        for family in FOCUSES:
             tasks[partition + family] = review_campaign.task(partition + family, family=family, partition=partition)
     review_campaign.lineage.freeze()
     outcomes = {('pass', 'fail'): 'split', ('fail', 'fail'): 'fail', ('pass', 'pass'): 'pass'}
@@ -324,7 +323,7 @@ def test_collection_exports_and_offers_episodes_a_label_could_change(review_camp
     stage = Collection(review_campaign.journal, review_campaign.lineage, Driver(), export, ['e4b'], True,
                        minimum={'train': 8, 'validation': 8, 'system_test': 8}, review=gate)
     inputs = {'host': {}, 'selector': {}, 'teachers': {'teachers': [{'id': 'teacher'}],
-              'families': {family: {'teacher_id': 'teacher'} for family in FAMILIES}}}
+              'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}}}
     output = stage.execute(inputs, 'attempt')
     kinds = [outcomes[plan[episode['repetition']]] for episode in output['episodes']]
     assert kinds == ['split', 'fail', 'pass'] * 24

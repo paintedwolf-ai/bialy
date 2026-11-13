@@ -36,7 +36,7 @@ def instruction(item):
 
 def heading(item):
     summary = item['summary']
-    parts = ['#' + str(item['id']), queue_title(item['queue']), KIND_TITLES[item['kind']], summary['family']]
+    parts = ['#' + str(item['id']), queue_title(item['queue']), KIND_TITLES[item['kind']], summary['focus']]
     if 'student' in summary:
         parts.append(summary['student'] + (' · ' + summary['arm'] if 'arm' in summary else ''))
     if summary.get('rows') is not None:

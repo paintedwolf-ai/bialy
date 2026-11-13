@@ -106,7 +106,7 @@ def test_rendered_decisions_and_instructions_say_what_each_item_decides(review_c
     spot = review_campaign.review.item(queued(review_campaign, 'spot_check', 'b'))
     assert render.instruction(spot) == 'Both reviewers passed this. Fail removes 7 rows; pass or skip keeps them.'
     review_campaign.task('held-out')
-    evaluation = {'kind': 'pair', 'queue': 'evaluation', 'summary': {'family': 'build_test_repair', 'student': 'e4b'}}
+    evaluation = {'kind': 'pair', 'queue': 'evaluation', 'summary': {'focus': 'build_test_repair', 'student': 'e4b'}}
     assert render.instruction(evaluation) == "Grade each side on its own. Don't pick a winner."
     assert render.instruction({**evaluation, 'kind': 'split'}) == "Grade this run. Your verdict replaces the reviewers'."
     assert render.heading({**evaluation, 'id': 4, 'summary': {**evaluation['summary'], 'arm': 'base'}}) == \

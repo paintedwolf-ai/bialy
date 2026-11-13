@@ -1,10 +1,10 @@
 import copy
 
 import pytest
+from conftest import FOCUSES
 
 from bialy.campaign.grading import DIMENSIONS, behavioral_result, episode, teacher_routes, wilson
 from bialy.campaign.journal import CampaignFault, digest
-from bialy.campaign.lineage import FAMILIES
 
 
 def evidence():
@@ -44,17 +44,17 @@ def test_changed_source_and_unqualified_judge_fail_closed():
 
 
 def test_teacher_floors_follow_measured_yield_without_arbitrary_success_gate():
-    measurements = [{"family": family, "teacher_id": "teacher", "qualified": 1, "attempts": 8, "capture_qualified": True}
-                    for family in FAMILIES]
-    routes = teacher_routes(measurements)
-    assert all(row["floor"] == wilson(1, 8)[0] for row in routes["families"].values())
+    measurements = [{"focus": family, "teacher_id": "teacher", "qualified": 1, "attempts": 8, "capture_qualified": True}
+                    for family in FOCUSES]
+    routes = teacher_routes(measurements, FOCUSES)
+    assert all(row["floor"] == wilson(1, 8)[0] for row in routes["focuses"].values())
     measurements[0]["qualified"] = 0
     with pytest.raises(CampaignFault, match="insufficient_qualified_data"):
-        teacher_routes(measurements)
+        teacher_routes(measurements, FOCUSES)
 
 
 def evaluation():
-    plan = {"tasks": [{"id": family + str(index), "family": family} for family in FAMILIES for index in range(3)], "attempts_per_task": 2,
+    plan = {"tasks": [{"id": family + str(index), "focus": family} for family in FOCUSES for index in range(3)], "focuses": list(FOCUSES), "attempts_per_task": 2,
             "bootstrap_seed": 7, "bootstrap_samples": 1000}
     attempts = [{"task_id": task["id"], "attempt": repetition, "arm": arm, "student": "e4b",
                  "plan_sha256": digest(plan), "effective_thinking": False, "success": arm == "trained",
@@ -93,10 +93,10 @@ def test_only_declared_students_can_be_graded():
 
 
 def test_teacher_repeated_measurement_cannot_select_a_lucky_attempt():
-    measurements = [{'family': family, 'teacher_id': 'teacher', 'qualified': 1, 'attempts': 8, 'capture_qualified': True}
-                    for family in FAMILIES]
+    measurements = [{'focus': family, 'teacher_id': 'teacher', 'qualified': 1, 'attempts': 8, 'capture_qualified': True}
+                    for family in FOCUSES]
     with pytest.raises(CampaignFault, match='duplicate_teacher_measurement'):
-        teacher_routes(measurements + [measurements[0]])
+        teacher_routes(measurements + [measurements[0]], FOCUSES)
 
 
 def test_single_qualified_same_family_review_can_admit_an_episode():

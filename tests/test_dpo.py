@@ -548,7 +548,7 @@ def test_security_survey_workflow_and_report_document_defects(factory, tmp_path)
     assert archs["security_survey"].timeout("security-auto") == "360m"
     assert archs["security"].workflows == {"implement-dispatch": 0.35}
     assert archs["security"].timeout("implement-dispatch") == "300m"
-    assert archs["question"].timeout(None) == "120m"
+    assert archs["repository_question"].timeout(None) == "120m"
     assert factory.fleet["shard_minutes"] == 720
     assert factory.run["engine_on"]["deadline_ms"] == 120000
     assert "security-auto" not in archs["security"].workflows

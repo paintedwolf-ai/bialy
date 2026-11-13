@@ -267,7 +267,7 @@ class CollectionGate(Gate):
         if kind is None or episode['exports'] is None:
             return None
         rows = min(exported['rows'] for exported in episode['exports'].values())
-        summary = {'task_id': task['id'], 'family': task['family'], 'partition': partition,
+        summary = {'task_id': task['id'], 'focus': task['focus'], 'partition': partition,
                    'repetition': episode['repetition'], 'rows': rows, 'prompt': task['prompt']}
         return self.review.offer(self.name, kind, [subject(episode['stage'], trial, None)], [], summary, rows)
 
@@ -289,7 +289,7 @@ class EvaluationGate(Gate):
 
     def summary(self, attempt):
         task = json.loads(self.journal.db.execute('SELECT spec FROM tasks WHERE id=?', (attempt['task_id'],)).fetchone()[0])
-        return {'task_id': task['id'], 'family': task['family'], 'student': attempt['student'],
+        return {'task_id': task['id'], 'focus': task['focus'], 'student': attempt['student'],
                 'repetition': attempt['attempt'], 'prompt': task['prompt']}
 
     def offer(self, inputs):

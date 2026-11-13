@@ -1,24 +1,24 @@
 import json
 
 import pytest
-from conftest import register_bank
+from conftest import FOCUSES, register_bank
 
 from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.dataset import assemble
 from bialy.campaign.episodes import Episodes
 from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal, digest
-from bialy.campaign.lineage import FAMILIES, Lineage
+from bialy.campaign.lineage import Lineage
 from bialy.provenance import file_sha256
 from bialy.student_host.specification import load, students
 
 
 def bank(tmp_path, monkeypatch):
     journal = Journal(tmp_path / 'campaign', {})
-    lineage = Lineage(journal)
-    specifications = [{'id': partition + family, 'partition': partition, 'family': family,
+    lineage = Lineage(journal, FOCUSES)
+    specifications = [{'id': partition + family, 'partition': partition, 'focus': family,
                        'source_class': 'synthetic', 'required_checks': ['outcome']}
-                      for partition in sorted(PARTITIONS) for family in FAMILIES]
+                      for partition in sorted(PARTITIONS) for family in FOCUSES]
     register_bank(lineage, specifications)
     lineage.freeze()
     rows = []

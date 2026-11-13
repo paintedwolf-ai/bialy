@@ -5,7 +5,6 @@ import time
 from .execution import Executor, atomic_json
 from .grading import behavioral_result, effective_attempts, reviewed
 from .journal import CampaignFault, digest
-from .lineage import FAMILIES
 
 
 class EvaluationPlan:
@@ -16,17 +15,17 @@ class EvaluationPlan:
 
     def build(self, inputs):
         tasks = [dict(row) for row in self.journal.db.execute(
-            "SELECT id,family,spec_hash FROM tasks WHERE partition='system_test' AND parent IS NULL ORDER BY id")]
+            "SELECT id,focus,spec_hash FROM tasks WHERE partition='system_test' AND parent IS NULL ORDER BY id")]
         if (type(self.repetitions) is not int or self.repetitions < 2
                 or type(self.bootstrap_samples) is not int or self.bootstrap_samples < 1000
-                or any(sum(task['family'] == family for task in tasks) < 3 for family in FAMILIES)):
+                or any(sum(task['focus'] == focus for task in tasks) < 3 for focus in self.lineage.focuses)):
             raise CampaignFault('insufficient_independent_evaluation_tasks')
         collection = self.collection_episodes or {row[0]: row[1] for row in self.journal.db.execute(
             "SELECT partition,COUNT(*) FROM tasks WHERE parent IS NULL AND partition!='development' GROUP BY partition")}
         if (set(collection) != {'train', 'validation', 'system_test'}
-                or any(type(count) is not int or count < len(FAMILIES) for count in collection.values())):
+                or any(type(count) is not int or count < len(self.lineage.focuses) for count in collection.values())):
             raise CampaignFault('collection_episode_requirements_invalid')
-        return {'collection_episodes': collection, 'tasks': tasks, 'attempts_per_task': self.repetitions, 'bootstrap_samples': self.bootstrap_samples,
+        return {'collection_episodes': collection, 'tasks': tasks, 'focuses': list(self.lineage.focuses), 'attempts_per_task': self.repetitions, 'bootstrap_samples': self.bootstrap_samples,
                 'bootstrap_seed': self.seed, 'lineage_sha256': self.lineage.freeze(),
                 'measurements_sha256': digest(inputs['measurements']),
                 'planned_attempts_per_arm': len(tasks) * self.repetitions}

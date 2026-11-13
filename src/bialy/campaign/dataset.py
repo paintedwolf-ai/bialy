@@ -11,7 +11,6 @@ from .episodes import Episodes
 from .execution import atomic_json
 from .grading import decided
 from .journal import CampaignFault, canonical, digest
-from .lineage import FAMILIES
 from .sources import seal_dataset, verified_exports
 
 FILES = {'train': 'train.jsonl', 'validation': 'val.jsonl', 'system_test': 'holdout.jsonl'}
@@ -36,7 +35,7 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
             raise CampaignFault('dataset_student_identity_mismatch')
         rows = {partition: [] for partition in FILES}
         independent = {partition: set() for partition in FILES}
-        families = {partition: set() for partition in FILES}
+        covered = {partition: set() for partition in FILES}
         exclusions = Counter()
         for candidate in candidates.values():
             task = lineage.session_task(binding['epoch'], candidate['session'])
@@ -57,14 +56,14 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
             row = {**candidate, 'meta': {'task_id': task['id']}, 'split_group': task['root']}
             rows[partition].append(row)
             independent[partition].add(task['root'])
-            families[partition].add(task['family'])
+            covered[partition].add(task['focus'])
             if not verdict['episode_sha256']:
                 raise CampaignFault('episode_identity_missing')
         counts = {partition: len(values) for partition, values in independent.items()}
         if (set(minimum_episodes) != set(FILES)
                 or any(type(value) is not int or value < 1 for value in minimum_episodes.values())):
             raise CampaignFault('dataset_episode_requirements_invalid')
-        if any(counts[key] < minimum_episodes[key] or families[key] != set(FAMILIES) for key in FILES):
+        if any(counts[key] < minimum_episodes[key] or covered[key] != set(lineage.focuses) for key in FILES):
             atomic_json(destination / (student + '-insufficient.json'), {'episodes': counts, 'exclusions': dict(exclusions)})
             raise CampaignFault('insufficient_qualified_data', details={'student': student, 'episodes': counts})
         output = destination / student
