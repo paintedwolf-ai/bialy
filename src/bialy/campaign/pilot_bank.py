@@ -103,5 +103,5 @@ def assignment(tasks, seed):
     graph = ancestry.Graph()
     for task in tasks:
         graph.add(ancestry.task_node(task['id']), 'task', source_class=task['source_class'], stratum=task['family'],
-                  hashes={'prompt': digest(task['prompt'])})
+                  hashes={'fixture': digest(task['oracle_files'])})
     return ancestry.allocate(graph, seed, {'train': 1.0}, {partition: 1 for partition in ancestry.PARTITIONS})

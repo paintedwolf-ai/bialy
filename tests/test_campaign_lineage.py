@@ -30,11 +30,10 @@ def test_descendants_cannot_change_family_partition_or_source(tmp_path):
 def test_a_root_takes_its_partition_from_the_assignment_and_may_not_declare_one(tmp_path):
     journal = Journal(tmp_path, {})
     lineage = Lineage(journal)
-    tasks = bank()
-    assignment = register_bank(Lineage(Journal(tmp_path / "other", {})), tasks)
+    assignment = register_bank(Lineage(Journal(tmp_path / "other", {})), bank())
     with pytest.raises(CampaignFault, match="task_declares_partition"):
-        lineage.roots(tasks, assignment)
-    stripped = [{k: v for k, v in task.items() if k != "partition"} for task in tasks]
+        lineage.roots(bank(), assignment)
+    stripped = [{k: v for k, v in task.items() if k != "partition"} for task in bank()]
     lineage.roots(stripped[:4], assignment)
     assert lineage.task(stripped[0]["id"])["partition"] == assignment.partition(ancestry.task_node(stripped[0]["id"]))
     with pytest.raises(CampaignFault, match="node_outside_ancestry"):
@@ -74,7 +73,7 @@ def test_a_private_source_never_enters_the_ancestry_or_the_bank(tmp_path):
     tasks[-1]["source_class"] = "private_dev"
     with pytest.raises(CampaignFault, match="source_not_permitted"):
         ancestry.Graph().add(ancestry.task_node(tasks[-1]["id"]), "task", source_class="private_dev")
-    assignment = register_bank(Lineage(Journal(tmp_path / "other", {})), [dict(t, source_class="synthetic") for t in tasks])
+    assignment = register_bank(Lineage(Journal(tmp_path / "other", {})), bank())
     with pytest.raises(CampaignFault, match="source_not_permitted"):
         lineage.roots([{k: v for k, v in t.items() if k != "partition"} for t in tasks], assignment)
     assert journal.db.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0

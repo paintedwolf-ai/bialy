@@ -66,8 +66,8 @@ class Collection:
         self.export, self.pilot, self.minimum, self.review = export, pilot, minimum, review
 
     def execute(self, inputs, attempt):
-        tasks = [json.loads(row[0]) for row in self.journal.db.execute(
-            "SELECT spec FROM tasks WHERE partition IN ('train','validation','system_test') AND parent IS NULL ORDER BY id")]
+        tasks = [(json.loads(row[0]), row[1]) for row in self.journal.db.execute(
+            "SELECT spec, partition FROM tasks WHERE partition IN ('train','validation','system_test') AND parent IS NULL ORDER BY id")]
         teachers = {teacher['id']: teacher for teacher in inputs['teachers']['teachers']}
         minimum = self.minimum or (
             {'train': 32, 'validation': 16, 'system_test': 24} if self.pilot
@@ -77,8 +77,7 @@ class Collection:
             raise CampaignFault('collection_episode_requirements_invalid')
         counts, families = Counter(), {partition: set() for partition in minimum}
         episodes, evidence = [], []
-        for task in tasks:
-            partition = task['partition']
+        for task, partition in tasks:
             if counts[partition] >= minimum[partition] and families[partition] == set(FAMILIES):
                 continue
             teacher = teachers[inputs['teachers']['families'][task['family']]['teacher_id']]

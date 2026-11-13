@@ -96,8 +96,8 @@ class ReviewCampaign:
         self.journal, self.review, self.lineage = journal, review, lineage
 
     def task(self, task_id, family='build_test_repair', partition='system_test'):
-        self.lineage.roots([{'id': task_id, 'partition': partition, 'family': family, 'source_class': 'synthetic',
-                             'prompt': 'Add a --json flag to the list command and verify it'}])
+        register_bank(self.lineage, [{'id': task_id, 'partition': partition, 'family': family, 'source_class': 'synthetic',
+                                      'prompt': 'Add a --json flag to the list command and verify it'}])
         return json.loads(self.journal.db.execute('SELECT spec FROM tasks WHERE id=?', (task_id,)).fetchone()[0])
 
     def trial(self, name, reviews=('pass', 'pass'), deterministic=True, exit_status=0, record=True):
@@ -143,13 +143,14 @@ def review_campaign(tmp_path):
 
 
 def register_bank(lineage, tasks):
-    """Register root tasks whose partitions a test fixes: each task is placed by an
-    explicit holdout in its own ancestry component."""
+    """Register root tasks whose partitions a test fixes: each task's `partition` key is
+    taken out of its specification and placed by an explicit holdout in its own ancestry
+    component. Returns the assignment."""
     from bialy.campaign import ancestry
 
     graph = ancestry.Graph()
     for task in tasks:
-        graph.add(ancestry.task_node(task["id"]), "task", source_class="synthetic", holdout=task["partition"])
+        graph.add(ancestry.task_node(task["id"]), "task", source_class="synthetic", holdout=task.pop("partition"))
     assignment = ancestry.allocate(graph, 7, {"train": 1.0})
-    lineage.roots([{k: v for k, v in task.items() if k != "partition"} for task in tasks], assignment)
+    lineage.roots(tasks, assignment)
     return assignment
