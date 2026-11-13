@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..dpo_qualification import capture_reasons, response_reasons
+from ..training_rows import is_eligible
 from .grading import DIMENSIONS
 from .journal import CampaignFault, canonical, digest
 
@@ -161,7 +161,7 @@ class Reviewers:
 
 
 def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
-    """Apply the action rubric to each host-accepted candidate with the factory's reviewer."""
+    """Apply the action rubric to each eligible training row with the factory's reviewer."""
     opener = gzip.open if str(transcripts_path).endswith('.gz') else open
     with opener(transcripts_path, 'rt', encoding='utf-8') as stream:
         sessions = {s['session_id']: s for s in map(json.loads, stream) if s}
@@ -169,13 +169,12 @@ def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
     counts, chats = Counter(), {}
     with Path(out).open('x', encoding='utf-8') as stream:
         for row in rows:
-            capture, report = row.get('request_capture', {}), row.get('validation', {})
-            if capture_reasons(row) or report.get('outcome') != 'accepted' or report.get('response_sha256') != digest(row.get('target')):
-                counts['not_accepted'] += 1
+            if not is_eligible(row):
+                counts['not_eligible'] += 1
                 continue
-            if response_reasons(row['target'], capture['tools']):
-                counts['invalid_response'] += 1
-                continue
+            capture = row['request_capture']
+            if row['response_sha256'] != digest(row['target']):
+                raise ValueError('training row response binding changed')
             session = sessions.get(row['session'])
             teacher_id = (row.get('meta') or {}).get('model')
             if session is None or not teacher_id:
@@ -184,8 +183,10 @@ def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
             teacher, judge = factory.model(teacher_id), factory.reviewer()
             if judge.id not in chats:
                 chats[judge.id] = factory.chats(judge)[0]
-            evidence = [report['receipt_id'], *report.get('operation_ids', [])]
-            payload = {'session': session, 'request': capture, 'response': row['target'], 'host_receipts': report, 'evidence_ids': evidence}
+            execution = row['execution']
+            evidence = [execution['receipt_id'], *(identifier for call in execution['calls'] for identifier in call.get('operation_ids', []))]
+            payload = {'session': session, 'request': capture, 'response': row['target'], 'execution': execution,
+                       'admission': row['admission'], 'evidence_ids': evidence}
             answer = chats[judge.id].turn([{'role': 'system', 'content': ACTION.system},
                                            {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
                                           seed=seed, max_tokens=4096, schema=ACTION.bound(evidence))

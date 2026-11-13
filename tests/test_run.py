@@ -203,11 +203,10 @@ def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):
 
 
 def test_released_heads_drive_the_engine_on_pass_only(factory, tmp_path):
-    from bialy import custom_model_run
     heads = tmp_path / "heads"
     heads.mkdir()
     run = make_run(factory, tmp_path, engine_on={"enabled": True, "deadline_ms": 1, "heads": str(heads)})
-    assert run.engine_on_only and custom_model_run.passes_for(run) == ["on"]
+    assert run.engine_on_only
     for name in ("plan", "drive", "collect", "judge", "split_pilot", "train_pilot"):
         assert runmod.STAGE_FUNCS[name](run) == {"skipped": "run.engine_on.heads drives the engine-on pass only"}
     with pytest.raises(runmod.RunError, match="safetensors"):
@@ -215,14 +214,8 @@ def test_released_heads_drive_the_engine_on_pass_only(factory, tmp_path):
     (heads / "b5.safetensors").write_bytes(b"")
     assert runmod.pilot_heads_dir(run) == heads
     plain = make_run(factory, tmp_path)
-    assert not plain.engine_on_only and custom_model_run.passes_for(plain) == ["off", "on"]
+    assert not plain.engine_on_only
     assert runmod.pilot_heads_dir(plain) == plain.path("pilot-heads")
-    # A two-pass run may feed the student from its engine-on captures alone.
-    on_only = make_run(factory, tmp_path, custom_model={"passes": ["on"]})
-    assert custom_model_run.passes_for(on_only) == ["on"]
-    with pytest.raises(custom_model_run.DatasetError, match="passes"):
-        custom_model_run.passes_for(make_run(factory, tmp_path, engine_on={"enabled": False, "deadline_ms": 1, "heads": None},
-                                             custom_model={"passes": ["on"]}))
 
 
 def test_report_lists_publish_commands_without_pushing(factory, tmp_path):

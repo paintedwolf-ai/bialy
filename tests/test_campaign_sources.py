@@ -25,10 +25,10 @@ def fixture(tmp_path):
     bundle = write_episode(tmp_path / 'bundle', sessions=[{'id': 'session'}], captures=[capture], store='a' * 64)
     candidate = {'session': 'session', 'source': {'bundle_sha256': file_sha256(bundle / 'manifest.json'), 'capture_sha256': digest(capture)},
                  'request_capture': {'host_revision': 'host'}, 'target': {'content': 'answer'}}
-    candidates = tmp_path / 'sft.receipts.jsonl'
+    candidates = tmp_path / 'rows.jsonl'
     candidates.write_text(json.dumps(candidate) + '\n')
     manifest = tmp_path / 'manifest.json'
-    manifest.write_text(json.dumps({'schema': 'pw-receipt-export/2', 'identity': {'host_commit': 'host', 'epoch': 'epoch'},
+    manifest.write_text(json.dumps({'schema': 'pw-training-rows/1', 'identity': {'host_commit': 'host', 'epoch': 'epoch'},
                                    'rows_sha256': file_sha256(candidates),
                                    'bundles': {str(bundle): file_sha256(bundle / 'manifest.json')}}))
     row = dict(candidate, meta={'task_id': 'train' + FOCUSES[0]}, split_group='train' + FOCUSES[0])
@@ -101,7 +101,7 @@ def test_a_row_naming_a_capture_its_bundle_lacks_cannot_receive_a_permit(tmp_pat
     journal, lineage, dataset, manifest, bundle = fixture(tmp_path)
     row = json.loads(dataset.read_text())
     row['source']['capture_sha256'] = 'f' * 64
-    candidates = manifest.parent / 'sft.receipts.jsonl'
+    candidates = manifest.parent / 'rows.jsonl'
     candidate = {key: value for key, value in row.items() if key not in ('meta', 'split_group')}
     candidates.write_text(json.dumps(candidate) + '\n')
     exported = json.loads(manifest.read_text())

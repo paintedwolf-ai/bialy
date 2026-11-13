@@ -202,7 +202,7 @@ def sqlite_store(path, roots=(), wal=False):
 class FakeDocker:
     """Answers the `docker exec <container> sqlite3 ...` commands the fleet uses to
     snapshot a container's store, with /cfg/store.db at `live` and /shard at `shard`.
-    `fail` names the step that exits nonzero: "backup" or "journal"."""
+    `fail` names the step that exits nonzero: "backup", "journal" or "retention"."""
 
     def __init__(self, live, shard, fail=None):
         self.live, self.shard, self.fail, self.calls = Path(live), Path(shard), fail, []
@@ -217,6 +217,8 @@ class FakeDocker:
         import subprocess as sp
 
         self.calls.append(args)
+        if args[:2] == ("docker", "exec") and args[3] == "/opt/bialy/retain-model-outputs.sh":
+            return sp.CompletedProcess(args, 1 if self.fail == "retention" else 0, "", "")
         if args[:2] != ("docker", "exec") or args[3] != "sqlite3":
             return sp.CompletedProcess(args, 0, "", "")
         source, command = self.host(args[4]), args[5]

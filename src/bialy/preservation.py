@@ -121,7 +121,7 @@ def adopt(shard, attempt):
 
 
 def container_backup(sh, container, shard, attempt):
-    """Back a running container's live store up into the shard and publish it.
+    """Back a running container's live store and its model-output bodies up into the shard and publish it.
 
     `sh` runs a command and returns a CompletedProcess. The backup goes through SQLite's
     backup API, so committed WAL contents are included, and is switched to rollback
@@ -130,7 +130,9 @@ def container_backup(sh, container, shard, attempt):
     part = "store.%s.part" % attempt
     target = "%s/%s" % (CONTAINER_SHARD, part)
     (shard / part).unlink(missing_ok=True)
-    for args in (("sqlite3", CONTAINER_STORE, ".backup '%s'" % target), ("sqlite3", target, "PRAGMA journal_mode=DELETE;")):
+    # Model-output bodies live beside the store; bundles need them with the snapshot.
+    for args in (("sqlite3", CONTAINER_STORE, ".backup '%s'" % target), ("sqlite3", target, "PRAGMA journal_mode=DELETE;"),
+                 ("/opt/bialy/retain-model-outputs.sh", CONTAINER_SHARD)):
         result = sh("docker", "exec", container, *args, check=False)
         if result.returncode != 0:
             fault = PreservationFault("store_backup_failed", "exit %d" % result.returncode)

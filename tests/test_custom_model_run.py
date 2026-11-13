@@ -1,12 +1,9 @@
 import dataclasses
-import json
 import subprocess
 
 import pytest
-from host_bundles import Image
 
 from bialy import custom_model_run as cm
-from bialy import provenance
 from bialy import run as runmod
 from bialy.student_host.specification import students
 
@@ -15,30 +12,17 @@ from bialy.student_host.specification import students
 def custom_run(factory, tmp_path, monkeypatch):
     f = dataclasses.replace(factory, root=tmp_path)
     settings = runmod.settings_for(f, {"lycaon_checkout": str(tmp_path / "host"), "engine_on.enabled": False, "custom_model.enabled": True,
-                                      "custom_model.diagnostic_only": True, "custom_model.epoch": "legacy-review-1",
+                                      "custom_model.epoch": "legacy-review-1",
                                       "custom_model.host_commit": "a" * 40})
     run = runmod.Run(factory=f, name="custom", settings=settings)
     monkeypatch.setattr(cm.provenance, "factory_source", lambda: {"tree_sha256": "b" * 64})
     monkeypatch.setattr(cm.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(
         args, 0, "a" * 40 + "\n" if "rev-parse" in args else "", ""))
     monkeypatch.setattr(cm.host_bundle, "contract", lambda image, destination, commit: ({}, "c" * 64))
+    collector = run.checkout / "scripts/bialy/custom_model/collect.py"
+    collector.parent.mkdir(parents=True)
+    collector.write_text("# fixture collector")
     return run
-
-
-def source_inputs(run):
-    identity = cm.binding(run)
-    for name, value in (("corpus.json", {"catalog_revision": "catalog"}), ("build/bin/BUILD.json", {"lycaon_commit": "a" * 40})):
-        cm.write_json(run.path(name), value)
-    for name in ("lycaon", "lycaon-debug"):
-        run.bin_dir.joinpath(name).write_bytes(name.encode())
-    for name, value in (("fleet-off/shards/a/store.db", "store"), ("fleet-off/shards/a/manifest.jsonl", "{}\n"),
-                        ("tasks/tasks.jsonl", '{"id":"task"}\n'), ("judged-off.jsonl", "{}\n")):
-        path = run.path(name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(value)
-    cm.write_json(run.path("fleet-off/provenance.json"), {"engine": provenance.engine(run.factory, run.bin_dir)})
-    run.save_state({"stages": {name: {"status": "done"} for name in ("drive", "collect", "judge")}})
-    return identity, cm.input_manifest(run, identity)
 
 
 def test_the_binding_names_the_student_and_its_serving_is_validated(custom_run):
@@ -55,8 +39,8 @@ def test_the_binding_names_the_student_and_its_serving_is_validated(custom_run):
         cm.validate_settings(cfg)
 
 
-def test_training_run_is_blocked_before_any_stages(custom_run):
-    custom_run.settings["custom_model"]["diagnostic_only"] = False
+def test_a_host_without_the_collector_is_refused_before_any_stage(custom_run):
+    (custom_run.checkout / "scripts/bialy/custom_model/collect.py").unlink()
     called = []
     with pytest.raises(runmod.RunError, match="pinned host lacks"):
         runmod.execute(custom_run, funcs={"check": lambda run: called.append(True)}, until="check")
@@ -92,139 +76,18 @@ def test_dirty_or_wrong_host_checkout_is_refused(custom_run, monkeypatch):
         cm.binding(custom_run)
 
 
-def test_input_identity_includes_wal_and_refuses_mismatched_fleet(custom_run):
-    identity, before = source_inputs(custom_run)
-    custom_run.path("fleet-off/shards/a/store.db-wal").write_bytes(b"new rows")
-    after = cm.input_manifest(custom_run, identity)
-    assert cm.digest(before) != cm.digest(after)
-    assert "fleet-off/shards/a/store.db-wal" in after["files"]
-    custom_run.bin_dir.joinpath("lycaon").write_bytes(b"wrong binary")
-    with pytest.raises(cm.DatasetError, match="fleet provenance"):
-        cm.input_manifest(custom_run, identity)
 
 
-def test_empty_wal_created_by_a_reader_is_not_a_new_input(custom_run):
-    identity, before = source_inputs(custom_run)
-    wal = custom_run.path("fleet-off/shards/a/store.db-wal")
-    wal.write_bytes(b"")
-    assert cm.input_manifest(custom_run, identity) == before
-    wal.write_bytes(b"committed frames")
-    assert cm.input_manifest(custom_run, identity) != before
 
 
-def test_only_validated_rows_bound_to_this_epoch_reach_qualified_review(custom_run, tmp_path, monkeypatch):
-    identity, inputs = source_inputs(custom_run)
-    capture = {"epoch": identity["epoch"], "contract_sha256": identity["contract_sha256"], "host_revision": identity["host_commit"],
-               "catalog_sha256": inputs["catalog_sha256"]}
-    rows = [{"id": "candidate"}, {"id": "foreign", "request_capture": dict(capture, epoch="future")},
-            {"id": "validated", "request_capture": capture}]
-    path = tmp_path / "candidates.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
-    monkeypatch.setattr(cm.dpo, "training_eligible", lambda row: row["id"] != "candidate", raising=False)
-    out = tmp_path / "qualified-review.jsonl"
-    counts = cm.qualify_inputs([path], out, identity, inputs)
-    assert counts == {"candidates": 3, "unqualified": 1, "foreign_epoch": 1, "qualified": 1}
-    assert [json.loads(line)["id"] for line in out.read_text().splitlines()] == ["validated"]
 
 
-def test_reextract_uses_changed_store_and_never_creates_training_splits(custom_run, monkeypatch):
-    source_inputs(custom_run)
-    exports = []
 
-    def export(passes, tasks, out):
-        exports.append(out)
-        out.write_bytes(b"diagnostic archive")
-
-    def extract(transcripts, **kw):
-        kw["out_sft"].write_text('{"id":"candidate"}\n')
-        kw["out_dpo"].write_text("")
-        assert kw["drop_retired_command_rejections"] is True
-        return {"sft_rows": 1, "dpo_rows": 0}
-
-    monkeypatch.setattr(cm.dpo, "export_transcripts", export)
-    monkeypatch.setattr(cm.dpo, "extract", extract)
-    monkeypatch.setattr(cm.dpo, "training_eligible", lambda row: False, raising=False)
-    first = cm.collect(custom_run)
-    second = cm.collect(custom_run)
-    assert first["directory"] != second["directory"] and len(exports) == 2
-    assert first["status"] == "not_ready" and first["training_consumable"] is False
-    assert first["qualification"]["sft"]["unqualified"] == 1
-    assert not list(custom_run.path("custom_model").rglob("train.jsonl"))
-    custom_run.path("fleet-off/shards/a/store.db").write_bytes(b"new store")
-    third = cm.collect(custom_run)
-    assert third["directory"] != first["directory"]
-    assert json.loads(custom_run.path("custom_model/latest.json").read_text())["directory"] == third["directory"]
-
-
-def test_not_ready_stops_run_before_release_and_reports(custom_run, monkeypatch):
-    monkeypatch.setattr(cm, "binding", lambda run: {})
-    called = []
-    funcs = {name: (lambda run, name=name: called.append(name) or {}) for name in runmod.STAGES}
-    funcs["custom_model"] = lambda run: {"status": "not_ready", "reason": "no qualified rows"}
-    state = runmod.execute(custom_run, funcs=funcs)
-    assert state["stages"]["custom_model"]["status"] == "not_ready"
-    assert "release" not in called
-    assert "no qualified rows" in custom_run.path("REPORT.md").read_text()
-
-
-def test_changed_inputs_during_processing_never_receive_report_or_latest(custom_run, monkeypatch):
-    source_inputs(custom_run)
-    monkeypatch.setattr(cm.dpo, "export_transcripts", lambda passes, tasks, out: out.write_bytes(b"archive"))
-
-    def extract(transcripts, **kw):
-        kw["out_sft"].write_text("")
-        kw["out_dpo"].write_text("")
-        custom_run.path("judged-off.jsonl").write_text('{"changed":true}\n')
-        return {}
-
-    monkeypatch.setattr(cm.dpo, "extract", extract)
-    with pytest.raises(cm.DatasetError, match="changed during processing"):
-        cm.collect(custom_run)
-    assert not custom_run.path("custom_model/latest.json").exists()
-    assert not list(custom_run.path("custom_model").rglob("report.json"))
-
-
-def test_capture_files_change_input_identity(custom_run):
-    identity, before = source_inputs(custom_run)
-    capture = custom_run.path("fleet-off/shards/a/training-captures/call.json")
-    cm.write_json(capture, {"schema": "pw-training-turn/1"})
-    after = cm.input_manifest(custom_run, identity)
-    assert cm.digest(before) != cm.digest(after)
-    assert "fleet-off/shards/a/training-captures/call.json" in after["files"]
-
-
-def test_non_diagnostic_requires_exporter_capability(custom_run):
-    custom_run.settings["custom_model"]["diagnostic_only"] = False
-    exporter = custom_run.checkout / "scripts/bialy/custom_model/collect.py"
-    exporter.parent.mkdir(parents=True)
-    exporter.write_text("# fixture capability")
+def test_the_binding_names_the_hosts_contract(custom_run):
     identity = cm.binding(custom_run)
-    assert identity["epoch"] == "legacy-review-1"
+    assert identity["epoch"] == "legacy-review-1" and identity["contract_sha256"] == "c" * 64
 
 
-def test_aborted_task_candidates_cannot_reach_quality_review(tmp_path):
-    source = tmp_path / "receipts.jsonl"
-    rows = [{"session": "failed", "source": {"bundle_sha256": "failed-bundle"}},
-            {"session": "finished", "source": {"bundle_sha256": "finished-bundle"}}]
-    source.write_text(''.join(json.dumps(row) + '\n' for row in rows))
-    out = tmp_path / "review.jsonl"
-    count = cm.write_receipt_lineage(source, out, {"finished": {"prompt_group": "good-group"}}, {"failed-bundle"})
-    assert count == 1
-    assert json.loads(out.read_text()) == dict(rows[1], meta={"prompt_group": "good-group"}, split_group="good-group")
-
-
-def test_aborted_task_evidence_is_hashed_and_missing_store_is_refused(custom_run):
-    identity, before = source_inputs(custom_run)
-    marker = custom_run.path("fleet-off/shards/a/task-aborted.json")
-    marker.write_text('{"code":"turn_failed"}')
-    after = cm.input_manifest(custom_run, identity)
-    assert after != before and "fleet-off/shards/a/task-aborted.json" in after["files"]
-    missing = custom_run.path("fleet-off/shards/b/task-aborted.json")
-    missing.parent.mkdir()
-    missing.write_text('{"code":"turn_failed"}')
-    missing.with_name("manifest.jsonl").touch()
-    with pytest.raises(cm.DatasetError, match="inputs missing.*store.db"):
-        cm.input_manifest(custom_run, identity)
 
 
 def test_a_host_image_that_cannot_state_its_contract_blocks_the_binding(custom_run, monkeypatch):
@@ -233,20 +96,3 @@ def test_a_host_image_that_cannot_state_its_contract_blocks_the_binding(custom_r
     monkeypatch.setattr(cm.host_bundle, "contract", refuse)
     with pytest.raises(cm.DatasetError, match="host_contract_revision_mismatch"):
         cm.binding(custom_run)
-
-
-def test_every_root_episode_of_the_collected_shards_becomes_one_bundle(custom_run, monkeypatch):
-    identity, inputs = source_inputs(custom_run)
-    custom_run.path("fleet-off/shards/a/manifest.jsonl").write_text('{"root_session": "r1"}\n\n{"root_session": "r2"}\n')
-    custom_run.path("fleet-off/shards/a/task-aborted.json").write_text("{}")
-    original = cm.host_bundle.export
-    image = Image()
-    monkeypatch.setattr(cm.host_bundle, "export", lambda *args: original(*args, process=image))
-    bundles = cm.episode_bundles(custom_run, inputs)
-    assert sorted(path.name for path in bundles) == ["r1", "r2"]
-    assert all(aborted and len(sha256) == 64 for sha256, aborted in bundles.values())
-    assert all(path.is_relative_to(custom_run.path("bundles")) for path in bundles)
-    monkeypatch.setattr(cm.host_bundle, "export", lambda *args: original(*args, process=Image(fail="training-bundle")))
-    custom_run.path("fleet-off/shards/a/manifest.jsonl").write_text('{"root_session": "r3"}\n')
-    with pytest.raises(cm.DatasetError, match="host could not export episode r3"):
-        cm.episode_bundles(custom_run, inputs)

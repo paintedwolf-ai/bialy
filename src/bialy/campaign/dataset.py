@@ -4,9 +4,9 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from ..dpo import training_eligible
 from ..provenance import file_sha256
 from ..student_host.specification import identity
+from ..training_rows import training_ready
 from .episodes import Episodes
 from .execution import atomic_json
 from .grading import decided
@@ -51,10 +51,10 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
                     raise
                 exclusions[exc.code] += 1
                 continue
-            if not training_eligible(candidate):
+            if not training_ready(candidate):
                 exclusions['response_not_qualified'] += 1
                 continue
-            row = {**candidate, 'meta': {'task_id': task['id']}, 'split_group': task['root']}
+            row = {**candidate, 'meta': {**candidate.get('meta', {}), 'task_id': task['id']}, 'split_group': task['root']}
             rows[partition].append(row)
             independent[partition].add(task['root'])
             covered[partition].add(task['focus'])
