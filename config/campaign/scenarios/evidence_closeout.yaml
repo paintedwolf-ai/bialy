@@ -1,0 +1,115 @@
+# evidence_closeout: Make an exact change, verify it, and report only what was changed and checked.
+
+groups:
+  - id: exact-manifest
+    workspace: python-cli
+    prompt: >-
+      Create manifest.json with name "$token", version 1, and an empty files list. Check its exact
+      contents, then finish with a short account of what changed and the check you actually ran.
+    grader: |
+      assert json.loads(Path('manifest.json').read_text()) == {'name': '$token', 'version': 1, 'files': []}
+    verification: false
+    solution:
+      manifest.json: |
+        {"name": "$token", "version": 1, "files": []}
+    superficial:
+      manifest.json: |
+        {"name": "$token", "version": "1", "files": []}
+    variants: [{token: batch-14}, {token: batch-32}]
+
+  - id: changelog-entry
+    workspace: python-cli
+    prompt: >-
+      Add "- $entry" as the first item under "## Unreleased" in CHANGELOG.md, leave everything else
+      untouched, check it, and say exactly what you changed.
+    fixtures:
+      CHANGELOG.md: |
+        # Changelog
+
+        ## Unreleased
+        - Existing note
+
+        ## 1.0.0
+        - First release
+    grader: |
+      assert Path('CHANGELOG.md').read_text() == '# Changelog\n\n## Unreleased\n- $entry\n- Existing note\n\n## 1.0.0\n- First release\n'
+    verification: false
+    solution:
+      CHANGELOG.md: |
+        # Changelog
+
+        ## Unreleased
+        - $entry
+        - Existing note
+
+        ## 1.0.0
+        - First release
+    superficial:
+      CHANGELOG.md: |
+        # Changelog
+
+        ## Unreleased
+        - Existing note
+        - $entry
+
+        ## 1.0.0
+        - First release
+    variants: [{entry: Faster startup}, {entry: Clearer errors}]
+
+  - id: consistent-version
+    workspace: python-cli
+    prompt: Set the package version to $version in both pyproject.toml and package/__init__.py, check they agree, and report what you changed.
+    fixtures:
+      pyproject.toml: |
+        [project]
+        name = "package"
+        version = "0.9.0"
+      package/__init__.py: |
+        __version__ = "0.9.0"
+    grader: |
+      import tomllib
+      assert tomllib.loads(Path('pyproject.toml').read_text())['project']['version'] == '$version'
+      assert Path('package/__init__.py').read_text().strip() == '__version__ = "$version"'
+    verification: false
+    solution:
+      pyproject.toml: |
+        [project]
+        name = "package"
+        version = "$version"
+      package/__init__.py: |
+        __version__ = "$version"
+    superficial:
+      pyproject.toml: |
+        [project]
+        name = "package"
+        version = "$version"
+    variants: [{version: 1.2.0}, {version: 2.0.1}]
+
+  - id: license-headers
+    workspace: python-cli
+    prompt: >-
+      Every Python file under src/ must start with the line "# SPDX-License-Identifier: $license". Add it where missing, check every file, and report which files changed.
+    fixtures:
+      src/one.py: |
+        print(1)
+      src/two.py: |
+        # SPDX-License-Identifier: $license
+        print(2)
+    grader: |
+      for path in Path('src').glob('*.py'):
+          assert path.read_text().splitlines()[0] == '# SPDX-License-Identifier: $license', path
+      assert Path('src/two.py').read_text().count('SPDX') == 1
+    verification: false
+    solution:
+      src/one.py: |
+        # SPDX-License-Identifier: $license
+        print(1)
+    superficial:
+      src/one.py: |
+        # SPDX-License-Identifier: $license
+        print(1)
+      src/two.py: |
+        # SPDX-License-Identifier: $license
+        # SPDX-License-Identifier: $license
+        print(2)
+    variants: [{license: MIT}, {license: Apache-2.0}]

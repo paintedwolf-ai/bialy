@@ -1,0 +1,114 @@
+# interactive_work: Drive a program that needs a live terminal, answering its prompts.
+
+groups:
+  - id: confirmation-dialog
+    workspace: python-cli
+    prompt: >-
+      Run dialog.py and answer its prompt with $token. Wait for it to finish and check confirmation.txt.
+      Don't change the program or write the confirmation file yourself.
+    fixtures:
+      dialog.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        answer = input('Confirmation code: ')
+        Path('confirmation.txt').write_text(answer + '\n')
+    grader: |
+      assert Path('confirmation.txt').read_text() == '$token\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      confirmation.txt: |
+        $token
+    superficial:
+      confirmation.txt: |
+        $token
+      dialog.py: |
+        from pathlib import Path
+        Path('confirmation.txt').write_text('$token\n')
+    variants: [{token: batch-11}, {token: batch-29}]
+
+  - id: overwrite-prompt
+    workspace: python-cli
+    prompt: >-
+      Run setup.py to regenerate the settings and accept its overwrite question, keeping the profile
+      $profile when it asks. It only works in a terminal.
+    fixtures:
+      setup.py: |
+        import json, sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        if input('Overwrite settings.json? [y/N] ').strip().lower() != 'y':
+            raise SystemExit('kept existing settings')
+        profile = input('Profile: ').strip()
+        Path('settings.json').write_text(json.dumps({'profile': profile, 'generated': True}) + '\n')
+    grader: |
+      assert json.loads(Path('settings.json').read_text()) == {'profile': '$profile', 'generated': True}
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      settings.json: |
+        {"profile": "$profile", "generated": true}
+    superficial:
+      settings.json: |
+        {"profile": "$profile", "generated": true}
+      setup.py: |
+        print('skipped')
+    variants: [{profile: staging}, {profile: nightly}]
+
+  - id: passphrase-unlock
+    workspace: python-cli
+    prompt: >-
+      unlock.py asks for a passphrase without echoing it. Run it and give it $phrase so it writes
+      unlock.txt, then confirm the file exists.
+    fixtures:
+      unlock.py: |
+        import getpass, hashlib, sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        phrase = getpass.getpass('Passphrase: ')
+        Path('unlock.txt').write_text(hashlib.sha256(phrase.encode()).hexdigest() + '\n')
+    grader: |
+      import hashlib
+      assert Path('unlock.txt').read_text() == hashlib.sha256(b'$phrase').hexdigest() + '\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      unlock.txt: |
+        ${phrase_sha256}
+    superficial:
+      unlock.txt: |
+        ${phrase_sha256}
+      unlock.py: |
+        print('skipped')
+    variants:
+      - {phrase: amber-otter, phrase_sha256: cc3a29b6c1a471d39e21690d2852c0428347ea861bb402ff278d303228c561a4}
+      - {phrase: quiet-heron, phrase_sha256: eb2fabd02261702fc00aed326d98f3046b813851545b97c49163de481de49103}
+
+  - id: numbered-menu
+    workspace: python-cli
+    prompt: >-
+      menu.py lists the available exports and reads a number. Run it and pick the "$choice" export;
+      it records the selection in selection.txt.
+    fixtures:
+      menu.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        options = ['csv', 'json', 'parquet', 'xml']
+        for number, name in enumerate(options, 1):
+            print(number, name)
+        Path('selection.txt').write_text(options[int(input('Export: ')) - 1] + '\n')
+    grader: |
+      assert Path('selection.txt').read_text() == '$choice\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      selection.txt: |
+        $choice
+    superficial:
+      selection.txt: |
+        $choice
+      menu.py: |
+        print('skipped')
+    variants: [{choice: json}, {choice: parquet}]

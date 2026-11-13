@@ -1,0 +1,94 @@
+# capability_recovery: The task needs a capability the turn does not start with; find it and use it.
+
+groups:
+  - id: payload-summary
+    workspace: python-cli
+    prompt: >-
+      Inspect payload.json and create summary.json with exactly two fields: count for its item count
+      and sum for its sum. Find the capabilities you need, then check the generated JSON against the input.
+    fixtures:
+      payload.json: |
+        {"items": [$first, 2, 3]}
+    grader: |
+      assert json.loads(Path('summary.json').read_text()) == {'count': 3, 'sum': $first + 5}
+    verification: false
+    solution:
+      summary.json: |
+        {"count": 3, "sum": ${sum}}
+    superficial:
+      summary.json: |
+        {"count": 3, "sum": ${sum}, "items": [$first, 2, 3]}
+    variants: [{first: 11, sum: 16}, {first: 40, sum: 45}]
+
+  - id: log-error-counts
+    workspace: python-cli
+    prompt: >-
+      Count the ERROR lines in each file under logs/ and write counts.json mapping file name to its
+      count. Use whatever you need to read every log, then check the totals.
+    fixtures:
+      logs/api.log: |
+        INFO start
+        ERROR $first
+        ERROR timeout
+      logs/worker.log: |
+        ERROR disk
+        INFO done
+    grader: |
+      assert json.loads(Path('counts.json').read_text()) == {'api.log': 2, 'worker.log': 1}
+    verification: false
+    solution:
+      counts.json: |
+        {"api.log": 2, "worker.log": 1}
+    superficial:
+      counts.json: |
+        {"api.log": 2}
+    variants: [{first: refused}, {first: denied}]
+
+  - id: csv-to-markdown
+    workspace: python-cli
+    prompt: Turn table.csv into a Markdown table in table.md with a header separator row, keeping the column order.
+    fixtures:
+      table.csv: |
+        name,qty
+        $item,3
+        bolt,12
+    grader: |
+      assert Path('table.md').read_text().strip().splitlines() == ['| name | qty |', '| --- | --- |', '| $item | 3 |', '| bolt | 12 |']
+    verification: false
+    solution:
+      table.md: |
+        | name | qty |
+        | --- | --- |
+        | $item | 3 |
+        | bolt | 12 |
+    superficial:
+      table.md: |
+        | name | qty |
+        | $item | 3 |
+        | bolt | 12 |
+    variants: [{item: nut}, {item: washer}]
+
+  - id: asset-checksums
+    workspace: python-cli
+    prompt: Write checksums.txt with the SHA-256 of every file in assets/, one "<digest>  <name>" line per file, sorted by name.
+    fixtures:
+      assets/a.txt: |
+        $seed
+      assets/b.txt: |
+        second
+    grader: |
+      import hashlib
+      lines = [hashlib.sha256(Path('assets', name).read_bytes()).hexdigest() + '  ' + name for name in ('a.txt', 'b.txt')]
+      assert Path('checksums.txt').read_text().splitlines() == lines
+    verification: false
+    solution:
+      checksums.txt: |
+        ${a_sha256}  a.txt
+        ${b_sha256}  b.txt
+    superficial:
+      checksums.txt: |
+        ${b_sha256}  b.txt
+        ${a_sha256}  a.txt
+    variants:
+      - {seed: first, a_sha256: b640e840b19d378660b32fb51ae18d67dccb4a8596a29e7bd72c1b2ae5928f41, b_sha256: 480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4}
+      - {seed: other, a_sha256: 7e4fa2eb8c7ac089739d5defc4489fad68a100d92082ca35c6b40a4524821f87, b_sha256: 480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4}

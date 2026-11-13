@@ -19,9 +19,9 @@ from .journal import CampaignFault, digest
 
 CATALOG = Path(__file__).resolve().parents[3] / 'config/campaign/scenarios.yaml'
 SUPPORT = Path(__file__).resolve().with_name('grader_support.py')
-GROUP_KEYS = {'id', 'focus', 'workspace', 'prompt', 'fixtures', 'grader', 'verification', 'solution', 'superficial',
+GROUP_KEYS = {'id', 'workspace', 'prompt', 'fixtures', 'grader', 'verification', 'solution', 'superficial',
               'tampered', 'follow_ups', 'diagnostic', 'variants', 'source_class'}
-REQUIRED = {'id', 'focus', 'workspace', 'prompt', 'grader', 'solution', 'variants'}
+REQUIRED = {'id', 'workspace', 'prompt', 'grader', 'solution', 'variants'}
 # Expectations a group may register; BF06 admits the expected failing turn only with the witness check.
 DIAGNOSTICS = {'reproduced_failure'}
 DIAGNOSTIC_PROGRAM = '''import sys
@@ -64,6 +64,7 @@ class Catalog:
     focuses: tuple
     groups: tuple
     quotas: dict
+    sha256: str
 
     def by_focus(self):
         out = {focus: [] for focus in self.focuses}
@@ -72,32 +73,51 @@ class Catalog:
         return out
 
 
+def group_files(path):
+    """The catalog's groups directory: one file per focus, named for it."""
+    return Path(path).with_suffix('')
+
+
 def load(path=CATALOG):
-    value = yaml.safe_load(Path(path).read_text())
+    """The catalog file's quotas and focuses, with each focus's groups from its own file."""
+    path = Path(path)
+    raw = path.read_bytes()
+    value = yaml.safe_load(raw)
     focuses = tuple(item['id'] for item in value['focuses'])
     quotas = value['quotas']
     if len(set(focuses)) != len(focuses):
         raise CampaignFault('scenario_focus_duplicate')
-    groups, seen = [], set()
-    for raw in value.get('groups') or []:
-        missing, unknown = REQUIRED - set(raw), set(raw) - GROUP_KEYS
-        if missing or unknown:
-            raise CampaignFault('scenario_group_invalid', details={'group': raw.get('id'), 'missing': sorted(missing), 'unknown': sorted(unknown)})
-        if (raw['id'] in seen or raw['focus'] not in focuses
-                or raw.get('diagnostic') is not None and raw['diagnostic'].get('expectation') not in DIAGNOSTICS):
-            raise CampaignFault('scenario_group_invalid', details={'group': raw['id']})
-        seen.add(raw['id'])
-        variants = tuple(raw['variants'])
-        if not variants or len(variants) > quotas['variants_per_group'] or len({digest(v) for v in variants}) != len(variants):
-            raise CampaignFault('scenario_variant_quota', details={'group': raw['id'], 'variants': len(variants),
-                                                                   'maximum': quotas['variants_per_group']})
-        groups.append(Group(id=raw['id'], focus=raw['focus'], workspace=raw['workspace'], prompt=raw['prompt'],
-                            grader=raw['grader'], solution=raw['solution'], variants=variants,
-                            fixtures=raw.get('fixtures') or {}, verification=raw.get('verification', True),
-                            superficial=raw.get('superficial'), tampered=raw.get('tampered'),
-                            follow_ups=tuple(raw.get('follow_ups') or ()), diagnostic=raw.get('diagnostic'),
-                            source_class=raw.get('source_class', 'synthetic')))
-    return Catalog(focuses=focuses, groups=tuple(groups), quotas=quotas)
+    directory = group_files(path)
+    files = {item.stem: item for item in sorted(directory.glob('*.yaml'))}
+    if set(files) != set(focuses):
+        raise CampaignFault('scenario_focus_files', details={'missing': sorted(set(focuses) - set(files)),
+                                                             'unknown': sorted(set(files) - set(focuses))})
+    groups, seen, contents = [], set(), {path.name: digest(raw.decode())}
+    for focus in focuses:
+        text = files[focus].read_text()
+        contents[focus] = digest(text)
+        for raw_group in (yaml.safe_load(text) or {}).get('groups') or []:
+            groups.append(parse_group(raw_group, focus, quotas, seen))
+    return Catalog(focuses=focuses, groups=tuple(groups), quotas=quotas, sha256=digest(contents))
+
+
+def parse_group(raw, focus, quotas, seen):
+    missing, unknown = REQUIRED - set(raw), set(raw) - GROUP_KEYS
+    if missing or unknown:
+        raise CampaignFault('scenario_group_invalid', details={'group': raw.get('id'), 'missing': sorted(missing), 'unknown': sorted(unknown)})
+    if raw['id'] in seen or raw.get('diagnostic') is not None and raw['diagnostic'].get('expectation') not in DIAGNOSTICS:
+        raise CampaignFault('scenario_group_invalid', details={'group': raw['id']})
+    seen.add(raw['id'])
+    variants = tuple(raw['variants'])
+    if not variants or len(variants) > quotas['variants_per_group'] or len({digest(v) for v in variants}) != len(variants):
+        raise CampaignFault('scenario_variant_quota', details={'group': raw['id'], 'variants': len(variants),
+                                                               'maximum': quotas['variants_per_group']})
+    return Group(id=raw['id'], focus=focus, workspace=raw['workspace'], prompt=raw['prompt'],
+                 grader=raw['grader'], solution=raw['solution'], variants=variants,
+                 fixtures=raw.get('fixtures') or {}, verification=raw.get('verification', True),
+                 superficial=raw.get('superficial'), tampered=raw.get('tampered'),
+                 follow_ups=tuple(raw.get('follow_ups') or ()), diagnostic=raw.get('diagnostic'),
+                 source_class=raw.get('source_class', 'synthetic'))
 
 
 def grader_program(group, parameters):

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -96,26 +97,38 @@ def test_the_pilot_allocation_gives_each_focus_one_group_per_partition_and_keeps
     assert short.value.details['deficits'] == scenarios.deficits(CATALOG, 'full')
 
 
-def write(tmp_path, groups, quotas=None):
+def write(tmp_path, groups, quotas=None, focus='implementation_investigation', extra=None):
+    """A catalog whose `focus` file holds `groups` and whose other focus files are empty."""
     value = yaml.safe_load(scenarios.CATALOG.read_text())
-    value['groups'] = groups
     if quotas:
         value['quotas'].update(quotas)
     path = tmp_path / 'catalog.yaml'
     path.write_text(yaml.safe_dump(value))
+    directory = scenarios.group_files(path)
+    shutil.rmtree(directory, ignore_errors=True)
+    directory.mkdir()
+    for item in value['focuses']:
+        (directory / (item['id'] + '.yaml')).write_text(yaml.safe_dump({'groups': groups if item['id'] == focus else []}))
+    for name in extra or ():
+        (directory / (name + '.yaml')).write_text('groups: []\n')
     return path
 
 
+def first_group():
+    path = scenarios.group_files(scenarios.CATALOG) / 'implementation_investigation.yaml'
+    return yaml.safe_load(path.read_text())['groups'][0]
+
+
 def test_the_catalog_refuses_malformed_groups(tmp_path):
-    raw = yaml.safe_load(scenarios.CATALOG.read_text())['groups'][0]
+    raw = first_group()
     with pytest.raises(CampaignFault, match='scenario_variant_quota'):
         scenarios.load(write(tmp_path, [dict(raw, variants=[{'threshold': n} for n in range(5)])]))
     with pytest.raises(CampaignFault, match='scenario_variant_quota'):
         scenarios.load(write(tmp_path, [dict(raw, variants=[{'threshold': 3}, {'threshold': 3}])]))
     with pytest.raises(CampaignFault, match='scenario_group_invalid'):
         scenarios.load(write(tmp_path, [dict(raw, tool='edit')]))
-    with pytest.raises(CampaignFault, match='scenario_group_invalid'):
-        scenarios.load(write(tmp_path, [dict(raw, focus='unknown')]))
+    with pytest.raises(CampaignFault, match='scenario_focus_files'):
+        scenarios.load(write(tmp_path, [raw], extra=['unknown']))
     with pytest.raises(CampaignFault, match='scenario_group_invalid'):
         scenarios.load(write(tmp_path, [raw, raw]))
     catalog = scenarios.load(write(tmp_path, [dict(raw, variants=[{'other': 1}])]))
@@ -124,7 +137,7 @@ def test_the_catalog_refuses_malformed_groups(tmp_path):
 
 
 def test_two_groups_with_one_prompt_cannot_cross_a_split(tmp_path):
-    raw = yaml.safe_load(scenarios.CATALOG.read_text())['groups'][0]
+    raw = first_group()
     catalog = scenarios.load(write(tmp_path, [raw, dict(raw, id='copy', solution={'other.py': 'x'})]))
     task_list = scenarios.tasks(catalog, tmp_path / 'bank', lambda name: '/work/' + name)
     with pytest.raises(CampaignFault, match='duplicate_across_components'):
@@ -144,6 +157,6 @@ def test_diagnostic_groups_register_a_required_witness(tmp_path):
     diagnostic = [task for task in task_list if 'diagnostic' in task]
     assert diagnostic and all(task['diagnostic'] == {'expectation': 'reproduced_failure', 'witness': 'diagnostic'}
                               and 'diagnostic' in task['required_checks'] for task in diagnostic)
-    raw = yaml.safe_load(scenarios.CATALOG.read_text())['groups'][0]
+    raw = first_group()
     with pytest.raises(CampaignFault, match='scenario_group_invalid'):
         scenarios.load(write(tmp_path, [dict(raw, diagnostic={'expectation': 'guessed'})]))

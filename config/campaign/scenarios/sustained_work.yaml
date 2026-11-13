@@ -1,0 +1,161 @@
+# sustained_work: A task extended over several requests whose earlier requirements must all survive.
+
+groups:
+  - id: settings-requirements
+    workspace: python-cli
+    prompt: Inspect requirements.txt. Implement settings.json with those requirements and verify it; later requests will extend it.
+    fixtures:
+      requirements.txt: |
+        Keep code '$token' and enabled=true in settings.json.
+    follow_ups:
+      - Add retries=3 while keeping every existing requirement, and verify the file.
+      - Add mode="strict", keep the original code and every earlier requirement, and verify the result.
+    grader: |
+      assert json.loads(Path('settings.json').read_text()) == {'code': '$token', 'enabled': True, 'retries': 3, 'mode': 'strict'}
+    verification: false
+    solution:
+      settings.json: |
+        {"code": "$token", "enabled": true, "retries": 3, "mode": "strict"}
+    superficial:
+      settings.json: |
+        {"retries": 3, "mode": "strict"}
+    variants: [{token: batch-13}, {token: batch-31}]
+
+  - id: todo-commands
+    workspace: python-cli
+    prompt: Add an add(text) function to todo.py that appends an item to todo.json (a JSON list), and check it works.
+    fixtures:
+      todo.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('todo.json')
+        def items():
+            return json.loads(STORE.read_text()) if STORE.exists() else []
+    follow_ups:
+      - Now add done(index) that removes that item, keeping add working.
+      - Finally add count() returning how many items remain, and run all three together.
+    grader: |
+      import todo
+      Path('todo.json').unlink(missing_ok=True)
+      todo.add('$first'); todo.add('b'); todo.add('c')
+      todo.done(1)
+      assert todo.items() == ['$first', 'c'] and todo.count() == 2
+    verification: false
+    solution:
+      todo.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('todo.json')
+        def items():
+            return json.loads(STORE.read_text()) if STORE.exists() else []
+        def add(text):
+            STORE.write_text(json.dumps(items() + [text]))
+        def done(index):
+            values = items()
+            del values[index]
+            STORE.write_text(json.dumps(values))
+        def count():
+            return len(items())
+    superficial:
+      todo.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('todo.json')
+        def items():
+            return json.loads(STORE.read_text()) if STORE.exists() else []
+        def done(index):
+            values = items()
+            del values[index]
+            STORE.write_text(json.dumps(values))
+        def count():
+            return len(items())
+    variants: [{first: milk}, {first: post}]
+
+  - id: inventory-report
+    workspace: python-cli
+    prompt: inventory.py tracks stock in stock.json. Add restock(name, n) and check it.
+    fixtures:
+      inventory.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('stock.json')
+        def stock():
+            return json.loads(STORE.read_text()) if STORE.exists() else {}
+    follow_ups:
+      - Add sell(name, n) that refuses to go below zero by raising ValueError, keeping restock.
+      - 'Add report() returning the items sorted by name as "name: n" lines, and check everything still works.'
+    grader: |
+      import inventory
+      Path('stock.json').unlink(missing_ok=True)
+      inventory.restock('$item', 5); inventory.restock('apple', 2)
+      inventory.sell('$item', 3)
+      try:
+          inventory.sell('apple', 3)
+          raise AssertionError('oversold')
+      except ValueError:
+          pass
+      assert inventory.report() == sorted(['$item: 2', 'apple: 2'])
+    verification: false
+    solution:
+      inventory.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('stock.json')
+        def stock():
+            return json.loads(STORE.read_text()) if STORE.exists() else {}
+        def _save(values):
+            STORE.write_text(json.dumps(values))
+        def restock(name, n):
+            values = stock()
+            values[name] = values.get(name, 0) + n
+            _save(values)
+        def sell(name, n):
+            values = stock()
+            if values.get(name, 0) < n:
+                raise ValueError(name)
+            values[name] -= n
+            _save(values)
+        def report():
+            return ['%s: %d' % item for item in sorted(stock().items())]
+    superficial:
+      inventory.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('stock.json')
+        def stock():
+            return json.loads(STORE.read_text()) if STORE.exists() else {}
+        def restock(name, n):
+            values = stock()
+            values[name] = values.get(name, 0) + n
+            STORE.write_text(json.dumps(values))
+        def sell(name, n):
+            values = stock()
+            values[name] = values.get(name, 0) - n
+            STORE.write_text(json.dumps(values))
+        def report():
+            return ['%s: %d' % item for item in sorted(stock().items())]
+    variants: [{item: pear}, {item: plum}]
+
+  - id: greeting-options
+    workspace: python-cli
+    prompt: Write greet(name) in greet.py returning "Hello, <name>!" and check it.
+    follow_ups:
+      - Let greet take formal=True which returns "Good day, <name>." instead, keeping the default.
+      - Add a language parameter where "es" gives "Hola, <name>!" for the default form, keeping everything else.
+    grader: |
+      from greet import greet
+      assert greet('$name') == 'Hello, $name!'
+      assert greet('$name', formal=True) == 'Good day, $name.'
+      assert greet('$name', language='es') == 'Hola, $name!'
+    verification: false
+    solution:
+      greet.py: |
+        def greet(name, formal=False, language='en'):
+            if formal:
+                return 'Good day, %s.' % name
+            return ('Hola, %s!' if language == 'es' else 'Hello, %s!') % name
+    superficial:
+      greet.py: |
+        def greet(name, formal=False, language='en'):
+            return 'Hola, %s!' % name if language == 'es' else 'Good day, %s.' % name
+    variants: [{name: Ada}, {name: Lin}]

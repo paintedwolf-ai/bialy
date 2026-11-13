@@ -1,0 +1,118 @@
+# implementation_investigation: Read the code and its callers, find the cause, fix it with boundary tests.
+
+groups:
+  - id: pricing-threshold
+    workspace: python-cli
+    prompt: >-
+      Inspect pricing.py and its callers. Orders at or above the documented threshold should get the
+      discount but some don't. Fix it, add boundary tests, run them, and explain the cause.
+    fixtures:
+      pricing.py: |
+        # Orders of THRESHOLD units or more are charged the discounted rate of 2.
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * (2 if n > THRESHOLD else 3)
+      app.py: |
+        from pricing import charge
+        print(charge(4))
+    grader: |
+      from pricing import charge
+      assert charge($threshold - 1) == ($threshold - 1) * 3
+      assert charge($threshold) == $threshold * 2
+      assert charge($threshold + 1) == ($threshold + 1) * 2
+    solution:
+      pricing.py: |
+        # Orders of THRESHOLD units or more are charged the discounted rate of 2.
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * (2 if n >= THRESHOLD else 3)
+    superficial:
+      pricing.py: |
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * 2
+    variants: [{threshold: 5}, {threshold: 8}]
+
+  - id: shipping-weight-rounding
+    workspace: python-cli
+    prompt: >-
+      Customers say a 2.1 kg parcel is being charged like a 2 kg one. Our policy is that any started
+      kilogram is charged in full. Find where shipping is priced, fix it and cover the edges with tests.
+    fixtures:
+      shipping.py: |
+        RATE = $rate
+        def cost(weight):
+            return int(weight) * RATE
+    grader: |
+      from shipping import cost
+      assert cost(0) == 0
+      assert cost(2.0) == 2 * $rate
+      assert cost(2.1) == 3 * $rate
+      assert cost(0.4) == $rate
+    solution:
+      shipping.py: |
+        import math
+        RATE = $rate
+        def cost(weight):
+            return math.ceil(weight) * RATE
+    superficial:
+      shipping.py: |
+        RATE = $rate
+        def cost(weight):
+            return (int(weight) + 1) * RATE
+    variants: [{rate: 4}, {rate: 7}]
+
+  - id: slug-separators
+    workspace: python-cli
+    prompt: >-
+      URLs generated for titles like "$word  draft__v2" come out with odd characters. Look at how slugs
+      are built, make every run of punctuation or whitespace a single dash with none at the ends, and
+      add tests.
+    fixtures:
+      slugs.py: |
+        def slugify(title):
+            return title.lower().replace(' ', '-')
+    grader: |
+      from slugs import slugify
+      assert slugify("$word  draft__v2") == "$word-draft-v2".lower()
+      assert slugify("--$word--") == "$word".lower()
+      assert slugify("a.b c") == "a-b-c"
+    solution:
+      slugs.py: |
+        import re
+        def slugify(title):
+            return re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    superficial:
+      slugs.py: |
+        def slugify(title):
+            return '-'.join(title.lower().split())
+    variants: [{word: Report}, {word: Ledger}]
+
+  - id: retry-backoff-cap
+    workspace: python-cli
+    prompt: >-
+      Our client sometimes waits minutes between retries. The retry delays are supposed to double
+      from the base but never exceed the configured cap of $cap seconds. Track down why and fix it with tests.
+    fixtures:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            return [base * 2 ** n for n in range(attempts)]
+    grader: |
+      from retry import delays
+      expected = [min(2 ** n, $cap) for n in range(8)]
+      assert delays(8) == expected
+      assert delays(3, base=2) == [min(2 * 2 ** n, $cap) for n in range(3)]
+      assert delays(0) == []
+    solution:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            return [min(base * 2 ** n, CAP) for n in range(attempts)]
+    superficial:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            values = [base * 2 ** n for n in range(attempts)]
+            return values[:-1] + [CAP] if values else values
+    variants: [{cap: 10}, {cap: 30}]

@@ -1,0 +1,149 @@
+# failure_diagnosis: A documented command or path fails; find what is actually wrong before changing code.
+
+groups:
+  - id: documented-verify-missing
+    workspace: python-cli
+    prompt: >-
+      The documented verification command is python3 verify.py. Try it, investigate any failure, find
+      the checks that actually exist, and fix compute(n) to return n + $offset. Report the verification
+      command that worked.
+    fixtures:
+      value.py: |
+        def compute(n):
+            return n
+      checks/check.py: |
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from value import compute
+        assert compute(3) == 3 + $offset
+    grader: |
+      from value import compute
+      assert compute(3) == 3 + $offset
+      assert compute(0) == $offset
+      assert compute(-2) == $offset - 2
+    solution:
+      value.py: |
+        def compute(n):
+            return n + $offset
+    superficial:
+      value.py: |
+        def compute(n):
+            return 3 + $offset
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{offset: 6}, {offset: 10}]
+
+  - id: renamed-formatter-import
+    workspace: python-cli
+    prompt: >-
+      python3 report.py crashes on startup since the formatting module was tidied up. Work out what
+      broke and get the report working again without changing what fmt.py offers.
+    fixtures:
+      fmt.py: |
+        def format_amount(value):
+            return '$currency' + format(value, ',.2f')
+      report.py: |
+        from fmt import format_total
+        def render(values):
+            return ', '.join(format_total(value) for value in values)
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    grader: |
+      import fmt
+      from report import render
+      assert hasattr(fmt, 'format_amount')
+      assert render([1, 2.5]) == '$currency' + '1.00, ' + '$currency' + '2.50'
+      assert render([1234]) == '$currency' + '1,234.00'
+    verification: false
+    solution:
+      report.py: |
+        from fmt import format_amount
+        def render(values):
+            return ', '.join(format_amount(value) for value in values)
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    superficial:
+      report.py: |
+        def render(values):
+            return '$currency' + '1.00, ' + '$currency' + '2.50'
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    variants: [{currency: "EUR "}, {currency: "GBP "}]
+
+  - id: settings-file-path
+    workspace: python-cli
+    prompt: >-
+      Running python3 app.py fails because it can't find its settings, but settings.ini is right there
+      in the project. Figure out why and make the app read the file it ships with.
+    fixtures:
+      settings.ini: |
+        [app]
+        name = $name
+        workers = 2
+      app.py: |
+        import configparser
+        from pathlib import Path
+        def load():
+            parser = configparser.ConfigParser()
+            with open(Path('config') / 'settings.ini') as stream:
+                parser.read_file(stream)
+            return dict(parser['app'])
+        if __name__ == '__main__':
+            print(load())
+    grader: |
+      import os, tempfile
+      Path('settings.ini').write_text('[app]\nname = changed\nworkers = 5\n')
+      os.chdir(tempfile.gettempdir())
+      from app import load
+      assert load() == {'name': 'changed', 'workers': '5'}
+    verification: false
+    solution:
+      app.py: |
+        import configparser
+        from pathlib import Path
+        def load():
+            parser = configparser.ConfigParser()
+            with open(Path(__file__).resolve().parent / 'settings.ini') as stream:
+                parser.read_file(stream)
+            return dict(parser['app'])
+        if __name__ == '__main__':
+            print(load())
+    superficial:
+      app.py: |
+        def load():
+            return {'name': '$name', 'workers': '2'}
+        if __name__ == '__main__':
+            print(load())
+    variants: [{name: billing}, {name: ledger}]
+
+  - id: port-variable-name
+    workspace: python-cli
+    prompt: >-
+      The service exits with KeyError: 'APP_PORT'. The README says it reads PORT and falls back to 8000.
+      Find out what's going on and make it behave as documented.
+    fixtures:
+      README.md: |
+        The service listens on the port in the PORT environment variable, or 8000 when it is unset.
+      service.py: |
+        import os
+        def port():
+            return int(os.environ['APP_PORT'])
+    grader: |
+      import os
+      from service import port
+      os.environ.pop('PORT', None)
+      os.environ.pop('APP_PORT', None)
+      assert port() == 8000
+      os.environ['PORT'] = '$port'
+      assert port() == $port
+    verification: false
+    solution:
+      service.py: |
+        import os
+        def port():
+            return int(os.environ.get('PORT', '8000'))
+    superficial:
+      service.py: |
+        def port():
+            return 8000
+    variants: [{port: 9090}, {port: 7311}]
