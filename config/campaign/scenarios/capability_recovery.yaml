@@ -92,3 +92,280 @@ groups:
     variants:
       - {seed: first, a_sha256: b640e840b19d378660b32fb51ae18d67dccb4a8596a29e7bd72c1b2ae5928f41, b_sha256: 480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4}
       - {seed: other, a_sha256: 7e4fa2eb8c7ac089739d5defc4489fad68a100d92082ca35c6b40a4524821f87, b_sha256: 480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4}
+
+  - id: sql-dump-count
+    workspace: python-cli
+    prompt: >-
+      orders.sql is a SQLite dump. Load it and write the number of orders with status "$status" to answer.txt. Find what you need to run SQL, and check the count against the data.
+    fixtures:
+      orders.sql: |
+        CREATE TABLE orders(id INTEGER, status TEXT);
+        INSERT INTO orders VALUES (1, 'shipped'), (2, 'pending'), (3, 'shipped'), (4, 'cancelled'), (5, 'pending'), (6, 'shipped'), (7, '$status');
+    grader: |
+      import sqlite3
+      db = sqlite3.connect(':memory:')
+      db.executescript(Path('orders.sql').read_text())
+      expected = db.execute("SELECT COUNT(*) FROM orders WHERE status = '$status'").fetchone()[0]
+      assert Path('answer.txt').read_text().strip() == str(expected)
+    verification: false
+    solution:
+      answer.txt: |
+        $answer
+    superficial:
+      answer.txt: |
+        7
+    variants:
+      - {"status": "shipped", "answer": 4}
+      - {"status": "pending", "answer": 3}
+
+  - id: toml-to-json
+    workspace: python-cli
+    prompt: >-
+      Convert settings.toml into settings.json with the same structure and values. Find a way to read TOML, then check the JSON matches the source exactly.
+    fixtures:
+      settings.toml: |
+        name = "$name"
+        retries = $retries
+        [server]
+        host = "localhost"
+        port = 8080
+    grader: |
+      import tomllib
+      assert json.loads(Path('settings.json').read_text()) == tomllib.loads(Path('settings.toml').read_text())
+    verification: false
+    solution:
+      settings.json: |
+        $answer
+    superficial:
+      settings.json: |
+        {"name": "$name", "retries": "$retries", "server": {"host": "localhost", "port": "8080"}}
+    variants:
+      - {"name": "worker", "retries": 3, "answer": "{\"name\": \"worker\", \"retries\": 3, \"server\": {\"host\": \"localhost\", \"port\": 8080}}"}
+      - {"name": "indexer", "retries": 5, "answer": "{\"name\": \"indexer\", \"retries\": 5, \"server\": {\"host\": \"localhost\", \"port\": 8080}}"}
+
+  - id: top-words
+    workspace: python-cli
+    prompt: >-
+      Find the three most frequent words in essay.txt, ignoring case and punctuation, and write them to top.txt one per line, most frequent first, breaking ties alphabetically. Check the counts before you finish.
+    fixtures:
+      essay.txt: |
+        The $word is near. The $word stays quiet, and the $word grows old.
+        A river runs by the road; a river runs far. Near the road, $word.
+    grader: |
+      import re
+      from collections import Counter
+      counts = Counter(re.findall(r'[a-z]+', Path('essay.txt').read_text().lower()))
+      expected = [word for word, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:3]]
+      assert Path('top.txt').read_text().split() == expected
+    verification: false
+    solution:
+      top.txt: |
+        $first
+        $second
+        $third
+    superficial:
+      top.txt: |
+        The
+        $word
+        near
+    variants:
+      - {"word": "forest", "first": "the", "second": "forest", "third": "a"}
+      - {"word": "castle", "first": "the", "second": "castle", "third": "a"}
+
+  - id: file-digest
+    workspace: python-cli
+    prompt: >-
+      Write the SHA-256 digest of release.tar.txt to release.sha256 in the usual "digest  filename" form. Find a way to compute it, and confirm the digest you wrote matches the file.
+    fixtures:
+      release.tar.txt: |
+        payload for release $version
+    grader: |
+      import hashlib
+      digest = hashlib.sha256(Path('release.tar.txt').read_bytes()).hexdigest()
+      assert Path('release.sha256').read_text().strip() == digest + '  release.tar.txt'
+    verification: false
+    solution:
+      release.sha256: |
+        $digest  release.tar.txt
+    superficial:
+      release.sha256: |
+        $digest
+    variants:
+      - {"version": "1.4.0", "digest": "1b99443008cfdd548d60b85bc99b6503f8bc5fffbdcaf0454f0b97936fdcb044"}
+      - {"version": "2.0.1", "digest": "ef11a37b9cf9e6fd2d4e539a20cff485b8ba8f0e13358b39bb2e72dcb3507101"}
+
+  - id: decode-encoded-note
+    workspace: python-cli
+    prompt: >-
+      note.b64 holds a base64-encoded message. Decode it into note.txt exactly, then check the decoded text re-encodes to the original.
+    fixtures:
+      note.b64: |
+        $encoded
+    grader: |
+      import base64
+      assert Path('note.txt').read_bytes() == base64.b64decode(Path('note.b64').read_text().strip())
+    verification: false
+    solution:
+      note.txt: |
+        $plain
+    superficial:
+      note.txt: |
+        $encoded
+    variants:
+      - {"message": "meet at the north gate", "plain": "meet at the north gate", "encoded": "bWVldCBhdCB0aGUgbm9ydGggZ2F0ZQo="}
+      - {"message": "rotate the staging keys", "plain": "rotate the staging keys", "encoded": "cm90YXRlIHRoZSBzdGFnaW5nIGtleXMK"}
+
+  - id: gaps-between-events
+    workspace: python-cli
+    prompt: >-
+      events.txt lists dated events in order. Write the number of days between each consecutive pair to gaps.txt, one per line. Find a reliable way to do the date arithmetic and check the result.
+    fixtures:
+      events.txt: |
+        $first launch
+        2026-03-01 review
+        $third release
+    grader: |
+      from datetime import date
+      days = [date.fromisoformat(line.split()[0]) for line in Path('events.txt').read_text().splitlines()]
+      assert Path('gaps.txt').read_text().split() == [str((b - a).days) for a, b in zip(days, days[1:])]
+    verification: false
+    solution:
+      gaps.txt: |
+        $gap_one
+        $gap_two
+    superficial:
+      gaps.txt: |
+        $gap_one
+    variants:
+      - {"first": "2026-02-10", "third": "2026-04-15", "gap_one": 19, "gap_two": 45}
+      - {"first": "2025-12-24", "third": "2026-03-31", "gap_one": 67, "gap_two": 30}
+
+  - id: feed-item-count
+    workspace: python-cli
+    prompt: >-
+      feed.xml is an RSS feed. Write the number of items whose category is "$category" to count.txt. Parse the XML rather than searching the text, and check the count.
+    fixtures:
+      feed.xml: |
+        <rss><channel>
+        <item><title>a</title><category>news</category></item>
+        <item><title>b</title><category>$category</category></item>
+        <item><title>c <!-- <category>$category</category> --></title><category>news</category></item>
+        <item><title>d</title><category>$category</category></item>
+        </channel></rss>
+    grader: |
+      import xml.etree.ElementTree as ElementTree
+      root = ElementTree.fromstring(Path('feed.xml').read_text())
+      expected = sum(item.findtext('category') == '$category' for item in root.iter('item'))
+      assert Path('count.txt').read_text().strip() == str(expected)
+    verification: false
+    solution:
+      count.txt: |
+        $answer
+    superficial:
+      count.txt: |
+        $wrong
+    variants:
+      - {"category": "sport", "answer": 2, "wrong": 3}
+      - {"category": "science", "answer": 2, "wrong": 3}
+
+  - id: tsv-column-total
+    workspace: python-cli
+    prompt: >-
+      sales.tsv is tab-separated with a header row. Write the total of the "$column" column to total.txt as an integer, and check it against the rows.
+    fixtures:
+      sales.tsv: |
+        region	units	revenue
+        north	$units	1200
+        south	7	860
+        west	12	1475
+    grader: |
+      import csv
+      rows = list(csv.DictReader(Path('sales.tsv').open(), delimiter='\t'))
+      assert Path('total.txt').read_text().strip() == str(sum(int(row['$column']) for row in rows))
+    verification: false
+    solution:
+      total.txt: |
+        $answer
+    superficial:
+      total.txt: |
+        $wrong
+    variants:
+      - {"column": "units", "units": 5, "answer": 24, "wrong": 19}
+      - {"column": "revenue", "units": 9, "answer": 3535, "wrong": 2335}
+
+  - id: contact-addresses
+    workspace: python-cli
+    prompt: >-
+      Extract every distinct email address from inbox.txt and write them to addresses.txt, lowercased and sorted, one per line. Check nothing was missed or duplicated.
+    fixtures:
+      inbox.txt: |
+        From: $user@example.org
+        Cc: Team <team@example.org>, $USER@Example.org
+        Reply to billing@shop.test about invoice 4.
+    grader: |
+      import re
+      found = {item.lower() for item in re.findall(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+', Path('inbox.txt').read_text())}
+      assert Path('addresses.txt').read_text().split() == sorted(found)
+    verification: false
+    solution:
+      addresses.txt: |
+        $one
+        $two
+        $three
+    superficial:
+      addresses.txt: |
+        $user@example.org
+        $USER@Example.org
+        team@example.org
+    variants:
+      - {"user": "ines", "USER": "INES", "one": "billing@shop.test", "two": "ines@example.org", "three": "team@example.org"}
+      - {"user": "omar", "USER": "Omar", "one": "billing@shop.test", "two": "omar@example.org", "three": "team@example.org"}
+
+  - id: nested-setting
+    workspace: python-cli
+    prompt: >-
+      deploy.json nests its settings several levels deep. Write the database pool size for the "$environment" environment to pool.txt, then check you read the right branch.
+    fixtures:
+      deploy.json: |
+        {"environments": {"staging": {"database": {"pool": 4}}, "production": {"database": {"pool": 32}}, "$environment": {"database": {"pool": $pool}}}}
+    grader: |
+      value = json.loads(Path('deploy.json').read_text())['environments']['$environment']['database']['pool']
+      assert Path('pool.txt').read_text().strip() == str(value)
+    verification: false
+    solution:
+      pool.txt: |
+        $pool
+    superficial:
+      pool.txt: |
+        32
+    variants:
+      - {"environment": "canary", "pool": 6}
+      - {"environment": "eu-west", "pool": 18}
+
+  - id: ini-section-value
+    workspace: python-cli
+    prompt: >-
+      service.ini has several sections. Write the timeout from the [$section] section to timeout.json as {"timeout": N} with N a number, and check you took it from that section.
+    fixtures:
+      service.ini: |
+        [default]
+        timeout = 30
+
+        [$section]
+        timeout = $timeout
+        retries = 2
+    grader: |
+      from configparser import ConfigParser
+      parser = ConfigParser()
+      parser.read_string(Path('service.ini').read_text())
+      assert json.loads(Path('timeout.json').read_text()) == {'timeout': int(parser['$section']['timeout'])}
+    verification: false
+    solution:
+      timeout.json: |
+        {"timeout": $timeout}
+    superficial:
+      timeout.json: |
+        {"timeout": "$timeout"}
+    variants:
+      - {"section": "uploads", "timeout": 120}
+      - {"section": "search", "timeout": 15}
