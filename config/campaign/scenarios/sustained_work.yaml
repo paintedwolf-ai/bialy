@@ -159,3 +159,313 @@ groups:
         def greet(name, formal=False, language='en'):
             return 'Hola, %s!' % name if language == 'es' else 'Good day, %s.' % name
     variants: [{name: Ada}, {name: Lin}]
+
+  - id: price-formatter-growth
+    workspace: python-cli
+    prompt: Write price(cents) in money.py that returns the amount as "$symbol" followed by the value with two decimals, and check it.
+    follow_ups:
+      - Add thousands separators, so 123456 cents becomes "${symbol}1,234.56", keeping everything else.
+      - Show negative amounts as "-${symbol}5.00" for -500, keeping the earlier rules, and check all of them.
+    grader: |
+      from money import price
+      assert price(500) == '${symbol}5.00'
+      assert price(123456) == '${symbol}1,234.56'
+      assert price(-500) == '-${symbol}5.00'
+      assert price(0) == '${symbol}0.00'
+    verification: false
+    solution:
+      money.py: |
+        def price(cents):
+            sign = '-' if cents < 0 else ''
+            return '%s$symbol%s' % (sign, format(abs(cents) / 100, ',.2f'))
+    superficial:
+      money.py: |
+        def price(cents):
+            return '-$symbol%s' % format(abs(cents) / 100, ',.2f') if cents < 0 else '$symbol%.2f' % (cents / 100)
+    variants: [{symbol: "€"}, {symbol: "£"}]
+
+  - id: ignore-file-rules
+    workspace: python-cli
+    prompt: Create .ignore listing $first as the only entry and check it; more entries will follow.
+    follow_ups:
+      - Add *.log, keeping the existing entry, and check the file.
+      - Add build/ at the end, keep every earlier entry in order, and check the final file.
+    grader: |
+      assert Path('.ignore').read_text().split() == ['$first', '*.log', 'build/']
+    verification: false
+    solution:
+      .ignore: |
+        $first
+        *.log
+        build/
+    superficial:
+      .ignore: |
+        *.log
+        build/
+    variants: [{first: .env}, {first: secrets.json}]
+
+  - id: queue-class-features
+    workspace: python-cli
+    prompt: Write a Queue class in queue_box.py with push(item) and pop() in first-in, first-out order, and check it.
+    follow_ups:
+      - Add __len__ so len() gives the number of items, keeping push and pop.
+      - Make pop() on an empty queue return $empty instead of raising, keeping everything else, and check all behaviour.
+    grader: |
+      from queue_box import Queue
+      queue = Queue()
+      assert queue.pop() == $empty
+      queue.push(1)
+      queue.push(2)
+      assert len(queue) == 2
+      assert queue.pop() == 1 and queue.pop() == 2
+      assert len(queue) == 0 and queue.pop() == $empty
+    verification: false
+    solution:
+      queue_box.py: |
+        from collections import deque
+        class Queue:
+            def __init__(self):
+                self.items = deque()
+            def push(self, item):
+                self.items.append(item)
+            def pop(self):
+                return self.items.popleft() if self.items else $empty
+            def __len__(self):
+                return len(self.items)
+    superficial:
+      queue_box.py: |
+        class Queue:
+            def __init__(self):
+                self.items = []
+            def push(self, item):
+                self.items.append(item)
+            def pop(self):
+                return self.items.pop() if self.items else $empty
+            def __len__(self):
+                return len(self.items)
+    variants: [{empty: None}, {empty: "''"}]
+
+  - id: report-columns
+    workspace: python-cli
+    prompt: Write report.csv from people.json with a name column for every person, and check it.
+    follow_ups:
+      - Add an age column after name, keeping the rows in the same order.
+      - Sort the rows by age, oldest first, keeping both columns, and check the final file.
+    fixtures:
+      people.json: |
+        [{"name": "$a", "age": 31}, {"name": "$b", "age": 45}, {"name": "$c", "age": 27}]
+    grader: |
+      assert Path('report.csv').read_text().split() == ['name,age', '$b,45', '$a,31', '$c,27']
+    verification: false
+    solution:
+      report.csv: |
+        name,age
+        $b,45
+        $a,31
+        $c,27
+    superficial:
+      report.csv: |
+        age
+        45
+        31
+        27
+    variants: [{a: Ivo, b: Mae, c: Rui}, {a: Kit, b: Lev, c: Pia}]
+
+  - id: cli-flags-accumulate
+    workspace: python-cli
+    prompt: Write count.py that prints the number of lines in the file it is given, and check it on words.txt.
+    follow_ups:
+      - Add a --words flag that prints the number of words instead, keeping the default.
+      - Add a --chars flag for the character count, keeping both earlier behaviours, and check all three on words.txt.
+    fixtures:
+      words.txt: |
+        $line
+        second line here
+    grader: |
+      import subprocess, sys as system
+      def run(*args):
+          return subprocess.run([system.executable, 'count.py', *args, 'words.txt'], capture_output=True, text=True).stdout.strip()
+      text = Path('words.txt').read_text()
+      assert run() == str(len(text.splitlines()))
+      assert run('--words') == str(len(text.split()))
+      assert run('--chars') == str(len(text))
+    verification: false
+    solution:
+      count.py: |
+        import sys
+        args = sys.argv[1:]
+        text = open(args[-1]).read()
+        if '--words' in args:
+            print(len(text.split()))
+        elif '--chars' in args:
+            print(len(text))
+        else:
+            print(len(text.splitlines()))
+    superficial:
+      count.py: |
+        import sys
+        args = sys.argv[1:]
+        text = open(args[-1]).read()
+        print(len(text) if '--chars' in args else len(text.split()))
+    variants: [{line: alpha beta}, {line: one two three}]
+
+  - id: validation-rules-grow
+    workspace: python-cli
+    prompt: Write valid(password) in rules.py that requires at least $length characters, and check it.
+    follow_ups:
+      - Also require at least one digit, keeping the length rule.
+      - Also reject passwords containing the word "password" in any case, keeping both earlier rules, and check all of them.
+    grader: |
+      from rules import valid
+      assert valid('abcdefgh1234'[:$length - 1] + '9')
+      assert not valid('abc1')
+      assert not valid('abcdefghijklmnop')
+      assert not valid('myPassWord2024')
+    verification: false
+    solution:
+      rules.py: |
+        def valid(password):
+            return (len(password) >= $length and any(char.isdigit() for char in password)
+                    and 'password' not in password.lower())
+    superficial:
+      rules.py: |
+        def valid(password):
+            return 'password' not in password.lower() and any(char.isdigit() for char in password)
+    variants: [{length: 8}, {length: 10}]
+
+  - id: changelog-sections
+    workspace: python-cli
+    prompt: Create CHANGES.md with a "# $project" heading and an "## Added" section containing "- initial import", and check it.
+    follow_ups:
+      - Add a "## Fixed" section after Added with "- crash on empty input", keeping everything else.
+      - Add "- config loader" as the second item under Added, keeping all earlier content in place, and check the file.
+    grader: |
+      assert Path('CHANGES.md').read_text().strip().split('\n') == ['# $project', '', '## Added', '- initial import', '- config loader', '', '## Fixed', '- crash on empty input']
+    verification: false
+    solution:
+      CHANGES.md: |
+        # $project
+
+        ## Added
+        - initial import
+        - config loader
+
+        ## Fixed
+        - crash on empty input
+    superficial:
+      CHANGES.md: |
+        # $project
+
+        ## Added
+        - config loader
+
+        ## Fixed
+        - crash on empty input
+    variants: [{project: Lantern}, {project: Quill}]
+
+  - id: temperature-api-evolution
+    workspace: python-cli
+    prompt: Write convert(value, unit) in temps.py where unit "C" converts Celsius to Fahrenheit, and check it.
+    follow_ups:
+      - Support unit "F" for Fahrenheit to Celsius, keeping "C".
+      - Round results to $places decimal places and raise ValueError for any other unit, keeping both conversions, and check them.
+    grader: |
+      from temps import convert
+      assert convert(100, 'C') == 212
+      assert convert(212, 'F') == 100
+      assert convert(37, 'C') == round(37 * 9 / 5 + 32, $places)
+      assert convert(50, 'F') == round((50 - 32) * 5 / 9, $places)
+      try:
+          convert(1, 'K')
+      except ValueError:
+          pass
+      else:
+          raise AssertionError('unknown unit accepted')
+    verification: false
+    solution:
+      temps.py: |
+        def convert(value, unit):
+            if unit == 'C':
+                return round(value * 9 / 5 + 32, $places)
+            if unit == 'F':
+                return round((value - 32) * 5 / 9, $places)
+            raise ValueError(unit)
+    superficial:
+      temps.py: |
+        def convert(value, unit):
+            if unit == 'F':
+                return round((value - 32) * 5 / 9, $places)
+            raise ValueError(unit)
+    variants: [{places: 1}, {places: 2}]
+
+  - id: contacts-store
+    workspace: python-cli
+    prompt: Create contacts.json holding one contact named "$name" with phone "555-0100", and check it.
+    follow_ups:
+      - Add an email field for that contact, $name@example.com, keeping the phone.
+      - Add a second contact "Sam" with phone "555-0199" and no email, keeping the first contact unchanged, and check the file.
+    grader: |
+      assert json.loads(Path('contacts.json').read_text()) == [
+          {'name': '$name', 'phone': '555-0100', 'email': '$name@example.com'}, {'name': 'Sam', 'phone': '555-0199'}]
+    verification: false
+    solution:
+      contacts.json: |
+        [{"name": "$name", "phone": "555-0100", "email": "$name@example.com"}, {"name": "Sam", "phone": "555-0199"}]
+    superficial:
+      contacts.json: |
+        [{"name": "$name", "email": "$name@example.com"}, {"name": "Sam", "phone": "555-0199"}]
+    variants: [{name: Noor}, {name: Ravi}]
+
+  - id: slug-options
+    workspace: python-cli
+    prompt: Write slug(text) in slugs.py that lowercases the text and joins its words with dashes, and check it.
+    follow_ups:
+      - Drop any character that is not a letter, digit or space before joining, keeping the rest.
+      - Add max_length=$limit that cuts the slug without leaving a trailing dash, keeping everything else, and check it.
+    grader: |
+      from slugs import slug
+      assert slug('Hello World') == 'hello-world'
+      assert slug('Rock & Roll!') == 'rock-roll'
+      long = slug('alpha beta gamma delta epsilon zeta')
+      assert len(long) <= $limit and not long.endswith('-') and 'alpha-beta'.startswith(long[:10])
+    verification: false
+    solution:
+      slugs.py: |
+        import re
+        def slug(text, max_length=$limit):
+            words = re.sub(r'[^a-z0-9 ]', '', text.lower()).split()
+            return '-'.join(words)[:max_length].rstrip('-')
+    superficial:
+      slugs.py: |
+        def slug(text, max_length=$limit):
+            return '-'.join(text.lower().split())[:max_length]
+    variants: [{limit: 14}, {limit: 20}]
+
+  - id: matrix-helpers
+    workspace: python-cli
+    prompt: Write transpose(rows) in grid.py for a list of equal-length rows, and check it.
+    follow_ups:
+      - Add total(rows) returning the sum of every cell, keeping transpose.
+      - Make transpose return [] for an empty grid and add diagonal(rows) for square grids, keeping everything, and check all three.
+    grader: |
+      from grid import transpose, total, diagonal
+      assert transpose([[1, 2], [3, 4]]) == [[1, 3], [2, 4]]
+      assert transpose([]) == []
+      assert total([[1, 2], [3, $cell]]) == 6 + $cell
+      assert diagonal([[1, 2], [3, $cell]]) == [1, $cell]
+    verification: false
+    solution:
+      grid.py: |
+        def transpose(rows):
+            return [list(column) for column in zip(*rows)]
+        def total(rows):
+            return sum(sum(row) for row in rows)
+        def diagonal(rows):
+            return [rows[index][index] for index in range(len(rows))]
+    superficial:
+      grid.py: |
+        def transpose(rows):
+            return [list(column) for column in zip(*rows)]
+        def diagonal(rows):
+            return [rows[index][index] for index in range(len(rows))]
+    variants: [{cell: 9}, {cell: 13}]
