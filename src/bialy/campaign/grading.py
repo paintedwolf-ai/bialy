@@ -83,25 +83,6 @@ def wilson(successes, attempts, z=1.6448536269514722):
     return [max(0, center - radius), min(1, center + radius)]
 
 
-def teacher_routes(measurements, focuses):
-    keys = [(row['teacher_id'], row['focus']) for row in measurements]
-    if len(keys) != len(set(keys)):
-        raise CampaignFault('duplicate_teacher_measurement')
-    for row in measurements:
-        if (row['focus'] not in focuses or type(row['qualified']) is not int
-                or type(row['attempts']) is not int or type(row['capture_qualified']) is not bool):
-            raise CampaignFault('invalid_teacher_measurement')
-        wilson(row['qualified'], row['attempts'])
-    routes = {}
-    for focus in focuses:
-        candidates = [row for row in measurements if row["focus"] == focus and row["qualified"] > 0 and row["capture_qualified"]]
-        if not candidates:
-            raise CampaignFault("insufficient_qualified_data", details={"focus": focus})
-        chosen = max(candidates, key=lambda row: (wilson(row["qualified"], row["attempts"])[0], row["teacher_id"]))
-        routes[focus] = dict(chosen, floor=wilson(chosen["qualified"], chosen["attempts"])[0])
-    return {"schema": "pw-teacher-routing/2", "measurements_sha256": digest(measurements), "focuses": routes}
-
-
 def behavioral_result(plan, attempts, student):
     if student not in students():
         raise CampaignFault("unknown_student")

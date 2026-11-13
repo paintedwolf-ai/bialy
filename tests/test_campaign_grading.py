@@ -3,7 +3,7 @@ import copy
 import pytest
 from conftest import FOCUSES
 
-from bialy.campaign.grading import DIMENSIONS, behavioral_result, episode, teacher_routes, wilson
+from bialy.campaign.grading import DIMENSIONS, behavioral_result, episode
 from bialy.campaign.journal import CampaignFault, digest
 
 
@@ -43,16 +43,6 @@ def test_changed_source_and_unqualified_judge_fail_closed():
         episode(task, receipt, reviews, "trusted")
 
 
-def test_teacher_floors_follow_measured_yield_without_arbitrary_success_gate():
-    measurements = [{"focus": family, "teacher_id": "teacher", "qualified": 1, "attempts": 8, "capture_qualified": True}
-                    for family in FOCUSES]
-    routes = teacher_routes(measurements, FOCUSES)
-    assert all(row["floor"] == wilson(1, 8)[0] for row in routes["focuses"].values())
-    measurements[0]["qualified"] = 0
-    with pytest.raises(CampaignFault, match="insufficient_qualified_data"):
-        teacher_routes(measurements, FOCUSES)
-
-
 def evaluation():
     plan = {"tasks": [{"id": family + str(index), "focus": family} for family in FOCUSES for index in range(3)], "focuses": list(FOCUSES), "attempts_per_task": 2,
             "bootstrap_seed": 7, "bootstrap_samples": 1000}
@@ -90,13 +80,6 @@ def test_only_declared_students_can_be_graded():
     plan, attempts = evaluation()
     with pytest.raises(CampaignFault, match='unknown_student'):
         behavioral_result(plan, attempts, 'undeclared')
-
-
-def test_teacher_repeated_measurement_cannot_select_a_lucky_attempt():
-    measurements = [{'focus': family, 'teacher_id': 'teacher', 'qualified': 1, 'attempts': 8, 'capture_qualified': True}
-                    for family in FOCUSES]
-    with pytest.raises(CampaignFault, match='duplicate_teacher_measurement'):
-        teacher_routes(measurements + [measurements[0]], FOCUSES)
 
 
 def test_single_qualified_same_family_review_can_admit_an_episode():
