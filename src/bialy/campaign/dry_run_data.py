@@ -13,7 +13,7 @@ from .journal import CampaignFault
 from .lineage import Lineage
 from .sources import seal_dataset
 
-TABLES = ('tasks', 'lineage_freeze', 'task_sessions', 'episodes', 'episode_sessions', 'judge_controls')
+TABLES = ('tasks', 'lineage_freeze', 'lineage_ancestry', 'task_sessions', 'episodes', 'episode_sessions', 'judge_controls')
 MAX_TOKENS = 10240
 
 

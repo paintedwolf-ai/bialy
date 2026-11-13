@@ -24,7 +24,14 @@ from pathlib import Path
 from . import anchor, judge
 from .hub import check
 
-SPLITS = (("train", "train.jsonl"), ("validation", "val.jsonl"), ("test", "holdout.jsonl"))
+SPLITS = (("train", "train.jsonl"), ("validation", "val.jsonl"), ("development", "development.jsonl"), ("test", "holdout.jsonl"))
+# Releases cut before ancestry-wide splits ship no development split.
+OPTIONAL_SPLITS = {"development"}
+
+
+def release_splits(release):
+    """The splits a release ships, in SPLITS order."""
+    return [(split, name) for split, name in SPLITS if split not in OPTIONAL_SPLITS or (Path(release) / name).exists()]
 
 
 class AuditError(ValueError):
@@ -107,6 +114,25 @@ def check_leakage(rows_by_split, holdout):
             raise AuditError("%s split has rows from held-out workspaces: %s" % (split, ", ".join(sorted(workspaces & holdout))))
 
 
+PARTITION_OF_SPLIT = {"train": "train", "validation": "validation", "development": "development", "test": "system_test"}
+
+
+def check_ancestry(release, rows_by_split):
+    """Every row sits in the partition its task holds in the release's ancestry."""
+    from .campaign import ancestry
+
+    path = Path(release) / "ancestry.json"
+    if not path.exists():
+        return None
+    assignment = ancestry.load(path)
+    for split, rows in rows_by_split.items():
+        for n, row in enumerate(rows, 1):
+            held = assignment.partition(ancestry.task_node(row["meta"]["task_id"]))
+            if held != PARTITION_OF_SPLIT[split]:
+                raise AuditError("%s row %d comes from a task the ancestry puts in %s" % (split, n, held))
+    return assignment.sha256
+
+
 def dataset(release, anchored=True):
     """Every check a consumer can run offline; raises AuditError on the first failure.
 
@@ -119,17 +145,19 @@ def dataset(release, anchored=True):
     holdout = set(anchor.match("dataset", release)["holdout"]) if anchored else stated
     if stated != holdout:
         raise AuditError("PROVENANCE.json holds out %s; the release's anchor holds out %s" % (sorted(stated), sorted(holdout)))
-    rows_by_split = {split: load_rows(release / name) for split, name in SPLITS}
+    rows_by_split = {split: load_rows(release / name) for split, name in release_splits(release)}
     validate_schema(release, rows_by_split)
     check_task_meta(rows_by_split)
     stats = {split: split_stats(rows) for split, rows in rows_by_split.items()}
     if provenance.get("stats") != stats:
         raise AuditError("PROVENANCE.json statistics differ from the rows: claimed %s, counted %s" % (provenance.get("stats"), stats))
     card = (release / "README.md").read_text(encoding="utf-8")
-    for split, name in SPLITS:
+    for split, name in release_splits(release):
         if ("`%s`: %d rows" % (name, stats[split]["rows"])) not in card:
             raise AuditError("the card's row count for %s differs from the rows" % name)
     check_leakage(rows_by_split, holdout)
+    if check_ancestry(release, rows_by_split) != provenance.get("ancestry_sha256"):
+        raise AuditError("PROVENANCE.json names a different ancestry than the release ships")
     tasks = check_tasks(release, rows_by_split)
     if provenance.get("tasks") != tasks:
         raise AuditError("PROVENANCE.json task outcomes differ from tasks.jsonl: claimed %s, counted %s" % (provenance.get("tasks"), tasks))
@@ -149,7 +177,7 @@ def rejudge(release, base_url, model, sample=50, seed=7, units=("skills",)):
     release = Path(release)
     corpus = json.loads((release / "corpus.json").read_text(encoding="utf-8"))
     cards = {s["name"]: s["card"] for s in corpus["skills"]}
-    rows = [r for _, name in SPLITS for r in load_rows(release / name)
+    rows = [r for _, name in release_splits(release) for r in load_rows(release / name)
             if not r["partial"] and r["labels"].get("skill_scores") and (r.get("judge") or {}).get("model") == model]
     if not rows:
         raise AuditError("no released rows were judged by %s" % model)

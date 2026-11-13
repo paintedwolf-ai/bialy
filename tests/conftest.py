@@ -28,14 +28,30 @@ def row(repo, group, n, host="coordinator", judge_model="glm-5.3-flash", **label
     }
 
 
+# Each split file's rows as (workspace, prompt group, task number, partition).
+SPLIT_LAYOUT = {"train.jsonl": [("flask", "flask:a", 1, "train"), ("flask", "flask:a", 2, "train"), ("gin", "gin:b", 3, "train")],
+                "val.jsonl": [("gin", "gin:c", 4, "validation")],
+                "development.jsonl": [("httpx", "httpx:e", 6, "development")],
+                "holdout.jsonl": [("zod", "zod:d", 5, "system_test")]}
+
+
+def layout_ancestry(path):
+    """The assignment the split fixture was made by, each task placed explicitly."""
+    from bialy.campaign import ancestry
+
+    graph = ancestry.Graph()
+    for rows in SPLIT_LAYOUT.values():
+        for _, _, n, partition in rows:
+            graph.add(ancestry.task_node("t%d" % n), "task", source_class="synthetic", holdout=partition)
+    return ancestry.allocate(graph, 7, {"train": 1.0}).save(path)
+
+
 @pytest.fixture
 def split_dir(tmp_path):
-    """train/val/holdout files that split correctly: zod is held out."""
+    """Split files that match SPLIT_LAYOUT: zod is held out."""
     out = tmp_path / "split"
     out.mkdir()
-    layout = {"train.jsonl": [("flask", "flask:a", 1), ("flask", "flask:a", 2), ("gin", "gin:b", 3)],
-              "val.jsonl": [("gin", "gin:c", 4)],
-              "holdout.jsonl": [("zod", "zod:d", 5)]}
+    layout = {name: [(workspace, group, n) for workspace, group, n, _ in rows] for name, rows in SPLIT_LAYOUT.items()}
     for name, rows in layout.items():
         (out / name).write_text("".join(json.dumps(row(*r)) + "\n" for r in rows))
     return out
@@ -43,10 +59,10 @@ def split_dir(tmp_path):
 
 @pytest.fixture
 def driven_file(tmp_path):
-    """tasks-driven.jsonl for the split fixture's five rows."""
+    """tasks-driven.jsonl for the split fixture's six rows."""
     path = tmp_path / "tasks-driven.jsonl"
     path.write_text("".join(json.dumps({"id": "t%d" % n, "prompt": "request %d" % n, "outcome": {"status": "settled", "run": "r"}}) + "\n"
-                            for n in range(1, 6)))
+                            for n in range(1, 7)))
     return path
 
 
@@ -75,14 +91,38 @@ def license_texts(monkeypatch):
     monkeypatch.setattr(repos, "license_text", lambda factory, repo, name: ("%s %s\n" % (repo.name, name)).encode())
 
 
+def ancestry_node(task_id):
+    from bialy.campaign import ancestry
+    return ancestry.task_node(task_id)
+
+
+def review_assignment():
+    """One assignment for every task the review tests register: an id's prefix names
+    its partition, and any other id is system_test."""
+    from bialy.campaign import ancestry
+    from bialy.campaign.lineage import FAMILIES
+
+    ids = ['held-out', 't1', 't2', 't3', 't4'] + ['train-' + name for name in ('a', 'b', 'c', 'spot', 'split', 'spot_check')]
+    ids += [partition + family for partition in ancestry.PARTITIONS for family in FAMILIES]
+    graph = ancestry.Graph()
+    for task_id in ids:
+        partition = next((p for p in ancestry.PARTITIONS if task_id.startswith(p)), 'system_test')
+        graph.add(ancestry.task_node(task_id), 'task', source_class='synthetic', holdout=partition)
+    return ancestry.allocate(graph, 7, {'train': 1.0})
+
+
 class ReviewCampaign:
     """A campaign journal with recorded trials, as the review gates and command read them."""
     def __init__(self, journal, review, lineage):
         self.journal, self.review, self.lineage = journal, review, lineage
 
     def task(self, task_id, family='build_test_repair', partition='system_test'):
-        self.lineage.roots([{'id': task_id, 'partition': partition, 'family': family, 'source_class': 'synthetic',
-                             'prompt': 'Add a --json flag to the list command and verify it'}])
+        """Register one task from the review bank's single assignment (review_assignment)."""
+        assignment = review_assignment()
+        if assignment.partition(ancestry_node(task_id)) != partition:
+            raise AssertionError('review task %s belongs in %s' % (task_id, assignment.partition(ancestry_node(task_id))))
+        self.lineage.roots([{'id': task_id, 'family': family, 'source_class': 'synthetic',
+                             'prompt': 'Add a --json flag to the list command and verify it'}], assignment)
         return json.loads(self.journal.db.execute('SELECT spec FROM tasks WHERE id=?', (task_id,)).fetchone()[0])
 
     def trial(self, name, reviews=('pass', 'pass'), deterministic=True, exit_status=0, record=True):
@@ -125,6 +165,20 @@ def review_campaign(tmp_path):
     campaign = ReviewCampaign(journal, Review(journal.directory), Lineage(journal))
     yield campaign
     journal.close()
+
+
+def register_bank(lineage, tasks):
+    """Register root tasks whose partitions a test fixes: each task's `partition` key is
+    taken out of its specification and placed by an explicit holdout in its own ancestry
+    component. Returns the assignment."""
+    from bialy.campaign import ancestry
+
+    graph = ancestry.Graph()
+    for task in tasks:
+        graph.add(ancestry.task_node(task["id"]), "task", source_class="synthetic", holdout=task.pop("partition"))
+    assignment = ancestry.allocate(graph, 7, {"train": 1.0})
+    lineage.roots(tasks, assignment)
+    return assignment
 
 
 def sqlite_store(path, roots=(), wal=False):

@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 
 from ..provenance import file_sha256
+from . import ancestry
 from .execution import atomic_json
-from .journal import CampaignFault
+from .journal import CampaignFault, digest
 from .lineage import FAMILIES
 
 
@@ -70,9 +71,9 @@ def write_exact(path, body):
 def build(directory):
     directory = Path(directory)
     tasks = []
-    for index, partition in enumerate(('train', 'validation', 'development', 'system_test')):
+    for index in range(4):
         for family_index, family in enumerate(FAMILIES):
-            identifier = partition + '-' + family
+            identifier = '%s-%d' % (family, index)
             prompt, fixtures, assertions = examples(11 + index * 17 + family_index)[family]
             if family == 'partial_effect_recovery':
                 prompt += ' Write the journal entry without its newline to result.txt as the final result.'
@@ -82,7 +83,7 @@ def build(directory):
             script = "import json,sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nfacts=json.loads(Path('/evidence/host-evidence.json').read_text())\n" + assertions
             write_exact(root / 'check.py', script)
             files = {str(path.relative_to(root)): file_sha256(path) for path in root.rglob('*') if path.is_file()}
-            task = {'id': identifier, 'partition': partition, 'family': family, 'source_class': 'synthetic',
+            task = {'id': identifier, 'family': family, 'source_class': 'synthetic',
                     'workspace': 'python-cli', 'project_path': '/work/python-cli', 'prompt': prompt,
                     'oracle_directory': identifier, 'oracle_files': files,
                     'fixture_files': {name: 'fixtures/' + name for name in fixtures},
@@ -95,3 +96,12 @@ def build(directory):
             tasks.append(task)
     atomic_json(directory / 'tasks.json', tasks)
     return tasks
+
+
+def assignment(tasks, seed):
+    """Each pilot task is its own scenario group; every family gets one in each partition."""
+    graph = ancestry.Graph()
+    for task in tasks:
+        graph.add(ancestry.task_node(task['id']), 'task', source_class=task['source_class'], stratum=task['family'],
+                  hashes={'fixture': digest(task['oracle_files'])})
+    return ancestry.allocate(graph, seed, {'train': 1.0}, {partition: 1 for partition in ancestry.PARTITIONS})

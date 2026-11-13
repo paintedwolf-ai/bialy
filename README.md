@@ -77,10 +77,14 @@ The native runtime in Painted Wolf Code derives from
    repository with the engine's own parsers, pairs each with requests (the
    unit's leading comment, and requests the generator models write), and
    builds the candidate sets the code-rank trainer reads.
-7. **Split and release.** `bialy split` holds out whole workspaces, both
-   repositories and stacks, and splits the rest by prompt group; `bialy release` writes the splits, the
-   code-rank pairs, the retention rows split the same way, a dataset card,
-   provenance, and checksums. Nothing uploads.
+7. **Split and release.** Before anything is driven, the run joins every task
+   to its prompt group, its scenario and the repository it works in, and every
+   skill-request family to its repository, and allocates each connected
+   component to train, validation, development or system_test
+   (`ancestry.json`); a held-out workspace is system_test. `bialy split` places
+   every row by its task's partition; `bialy release` writes the splits, the
+   ancestry, the code-rank pairs, the retention rows split the same way, a
+   dataset card, provenance, and checksums. Nothing uploads.
 
 A release lists every task its sessions were driven with (`tasks.jsonl`,
 with each task's outcome), so a pass stopped early, restarted, or salvaged
@@ -240,7 +244,7 @@ bialy fleet plan --run pass1 --tasks tasks
 bialy fleet run --run pass1
 bialy collect --run pass1 --pass engine-off --tasks tasks
 bialy judge --corpus corpus.json --rows runs/pass1/rows.jsonl --out pass1.judged.jsonl
-bialy split --out split/ pass1.judged.jsonl
+bialy split --ancestry runs/pass1/ancestry.json --out split/ pass1.judged.jsonl
 bialy coderank harvest --decide-rerank bin/decide-rerank --out coderank/units
 bialy coderank pairs --units coderank/units --out coderank/pairs
 bialy coderank dumps --decide-rerank bin/decide-rerank --units coderank/units --pairs coderank/pairs --out coderank/dumps

@@ -3,10 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from conftest import register_bank
 
+from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.driver import EpisodeDriver
 from bialy.campaign.journal import CampaignFault, Journal
-from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
+from bialy.campaign.lineage import FAMILIES, Lineage
 
 
 def test_episode_request_uses_wire_identity_and_the_configured_execution_deadline(tmp_path, monkeypatch):
@@ -15,7 +17,7 @@ def test_episode_request_uses_wire_identity_and_the_configured_execution_deadlin
     tasks = [{'id': partition + family, 'family': family, 'partition': partition, 'source_class': 'synthetic',
               'workspace': 'python', 'project_path': '/work/python', 'oracle_directory': '.', 'prompt': 'Implement the task.'}
              for partition in PARTITIONS for family in FAMILIES]
-    lineage.roots(tasks)
+    register_bank(lineage, tasks)
     lineage.freeze()
     factory = SimpleNamespace(workspace=lambda name: SimpleNamespace(name=name, kind='stack'), fleet={'prompt_timeout': '45m'})
     run = SimpleNamespace(factory=factory, checkout=tmp_path, setting=lambda key: {'epoch': 'epoch', 'students': {}, 'host_commit': 'commit', 'tool_surface': 'command-v1'})

@@ -2,11 +2,13 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import register_bank
 
+from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.collection import Collection, TeacherBaseline
 from bialy.campaign.dataset import Assembly
 from bialy.campaign.journal import CampaignFault, Journal
-from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
+from bialy.campaign.lineage import FAMILIES, Lineage
 from bialy.provenance import file_sha256
 from bialy.student_host.specification import students
 
@@ -25,7 +27,7 @@ class Driver:
 def test_collection_records_every_episode_and_reuses_pilot_attempts(tmp_path):
     journal = Journal(tmp_path / 'campaign', {})
     lineage = Lineage(journal)
-    lineage.roots([{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic'}
+    register_bank(lineage, [{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic'}
                    for partition in PARTITIONS for family in FAMILIES])
     lineage.freeze()
     driver = Driver()
@@ -94,7 +96,7 @@ def test_assembly_uses_the_first_admitted_attempt_of_each_task(tmp_path):
 def test_teacher_floors_come_from_development_attempts(tmp_path):
     journal = Journal(tmp_path, {})
     lineage = Lineage(journal)
-    lineage.roots([{'id': f'{partition}-{family}-{index}', 'partition': partition, 'family': family, 'source_class': 'synthetic'}
+    register_bank(lineage, [{'id': f'{partition}-{family}-{index}', 'partition': partition, 'family': family, 'source_class': 'synthetic'}
                    for partition in PARTITIONS for family in FAMILIES for index in range(4)])
     lineage.freeze()
     driver = Driver()
@@ -115,7 +117,7 @@ def test_teacher_floors_come_from_development_attempts(tmp_path):
 def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_path, kind):
     journal = Journal(tmp_path, {})
     lineage = Lineage(journal)
-    lineage.roots([{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic'}
+    register_bank(lineage, [{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic'}
                    for partition in PARTITIONS for family in FAMILIES])
     lineage.freeze()
     driver = Driver()

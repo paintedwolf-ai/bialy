@@ -14,8 +14,9 @@ fleet:
   prompt_timeout: 60m              # per prompt; a turn that finishes slowly under load is still a label
   image: bialy-runner
 split:
-  val_fraction: 0.15
   seed: 7
+  # Components outside the held-out workspaces; held-out workspaces are system_test.
+  fractions: {train: 0.7, validation: 0.15, development: 0.15}
 judge:
   second_judge_fraction: 0.10      # rows another reviewer slot judges for agreement
 

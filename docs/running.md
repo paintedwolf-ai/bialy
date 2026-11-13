@@ -221,8 +221,9 @@ specificity, few typos. Scenarios (`config/scenarios.yaml`) carry requests
 checked in ahead of a pass, so phrasing can vary while the situation stays
 fixed: each scenario is one situation, and its variants are ways of typing it.
 Each variant is driven and judged as its own task, since phrasing can change
-what a request needs. The variants share a prompt group, so a split never
-trains on one and validates on its neighbour. A task set takes exactly
+what a request needs. The variants share a prompt group and a scenario node in
+the run's ancestry, so a split never trains on one and validates on its
+neighbour. A task set takes exactly
 `variants` (10) of every scenario, and a scenario with fewer is refused, so
 each situation weighs the same and a pass costs a known number of tasks. The
 seed decides which variants a pass draws from a larger pool. Ten keeps
