@@ -25,7 +25,6 @@ run:
   custom_model:
     enabled: true
     epoch: command-1
-    tool_surface: command-v1
     host_commit: <host commit>
     quality_judge: true
     passes: [on]                   # the student learns from engine-on trajectories only
