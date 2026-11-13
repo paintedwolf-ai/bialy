@@ -80,4 +80,6 @@ lectures. Measurements and the history behind a default belong in
   of prose.
 - Labels come from structured row facts and schema-constrained judge verdicts,
   never from matching prose.
-- Reviewer slots use explicit model assignments from the approved pool.
+- Reviewer slots use explicit model assignments from the approved pool. Each slot
+  is independent and qualified on the versioned controls alone: no model-family
+  pairing, and no prompt that compares candidates.

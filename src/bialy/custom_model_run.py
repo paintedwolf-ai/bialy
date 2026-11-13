@@ -12,7 +12,8 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
-from . import custom_quality, dpo, host_bundle, provenance
+from . import dpo, host_bundle, provenance
+from .campaign.review_contract import judge_rows
 
 
 class DatasetError(ValueError):
@@ -300,7 +301,7 @@ def export_student(run, base, identity, serving, inputs, transcripts, stats, jud
     stats["excluded_aborted_task_candidates"] = write_receipt_lineage(destination / "sft.receipts.jsonl", accepted, lineage, aborted)
     if cfg.get("quality_judge"):
         quality_path = base / "quality.jsonl"
-        stats["quality"] = custom_quality.judge_rows(judge_factory or run.factory, accepted, transcripts, quality_path,
+        stats["quality"] = judge_rows(judge_factory or run.factory, accepted, transcripts, quality_path,
                                                     seed=int(run.setting("seed", 7)))
         reviewed_destination = base / "reviewed-receipts"
         subprocess.run([*cmd[:cmd.index('--out') + 1], str(reviewed_destination),

@@ -34,7 +34,7 @@ def test_paired_export_resumes_review_receipts_and_rejects_changed_source(tmp_pa
         assert json.loads(transcript.read_text())['session_id'] == 'session'
         reviews.append(row)
         destination.write_text(json.dumps({'verdict': 'pass'}) + '\n')
-    monkeypatch.setattr('bialy.campaign.exports.custom_quality.judge_rows', judge)
+    monkeypatch.setattr('bialy.campaign.exports.judge_rows', judge)
     monkeypatch.setattr('bialy.campaign.exports.training_eligible', lambda row: row['reviewed'])
     factory = SimpleNamespace(reviewer=lambda: SimpleNamespace(id='reviewer', revision='pinned'))
     exporter = Exports(factory, tmp_path, identity, 'catalog', process)
