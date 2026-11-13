@@ -22,7 +22,7 @@ DECISIONS = {'version': 3, 'turn': {'tools': {'load_at': 0.55}}, 'request': {'ma
 def settings(**changes):
     value = {'profile': 'dry-run', 'epoch': 'rehearsal', 'checkout': '/host', 'host_commit': 'a' * 40,
              'host_image': 'bialy-runner:rehearsal-off', 'factory_root': '/factory', 'corpus': '/corpus.json', 'models': '/models',
-             'teachers': ['teacher'], 'reviewers': ['first', 'second'], 'server_image': 'sha256:' + 'c' * 64, 'gateway': '10.0.0.1',
+             'teachers': ['teacher'], 'reviewers': ['first', 'second'], 'server_image': 'sha256:' + 'c' * 64, 'gateway': '192.0.2.1',
              'llama': '/llama', 'llama_revision': 'b' * 40, 'full_training': 'local', 'device': 'cpu', 'mirror': '/mirror'}
     value.update(changes)
     return {key: item for key, item in value.items() if item is not None}
