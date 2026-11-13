@@ -43,8 +43,8 @@ tags: [coding-agents, tool-selection]
 
 Tuned heads built on [Laya](https://github.com/NandhaKishorM/laya) by Convai Innovations,
 over its frozen multilingual encoder that Painted Wolf Code
-asks as it works: which loadable tool schemas a turn will need, which
-instruction units it can leave out, and what kind of work it is (`turn-load`);
+asks as it works: which loadable tool schemas a turn will need and what kind
+of work it is (`turn-load`);
 how relevant each skill and tool card is to a request (`unit-rank`); and which
 code units best answer a request, blended into the text-match order of code
 summaries, repository maps, and project search (`code-rank`). The engine

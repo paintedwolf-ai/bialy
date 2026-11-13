@@ -30,9 +30,9 @@ configs:
 # Painted Wolf Code decision-head dataset {version}
 
 Training rows for the local decision heads of Painted Wolf Code: at each turn
-of a coding-agent session, which loadable tool schemas the turn needed, which
-instruction units it needed, what kind of work it was, and, from an LLM
-judge, how relevant each skill and tool card was to the request.
+of a coding-agent session, which loadable tool schemas the turn needed, what
+kind of work it was, and, from an LLM judge, how relevant each skill and tool
+card was to the request.
 
 ## How the rows were made
 
