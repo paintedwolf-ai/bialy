@@ -90,14 +90,38 @@ def license_texts(monkeypatch):
     monkeypatch.setattr(repos, "license_text", lambda factory, repo, name: ("%s %s\n" % (repo.name, name)).encode())
 
 
+def ancestry_node(task_id):
+    from bialy.campaign import ancestry
+    return ancestry.task_node(task_id)
+
+
+def review_assignment():
+    """One assignment for every task the review tests register: an id's prefix names
+    its partition, and any other id is system_test."""
+    from bialy.campaign import ancestry
+    from bialy.campaign.lineage import FAMILIES
+
+    ids = ['held-out', 't1'] + ['train-' + name for name in ('a', 'b', 'c', 'spot', 'split', 'spot_check')]
+    ids += [partition + family for partition in ancestry.PARTITIONS for family in FAMILIES]
+    graph = ancestry.Graph()
+    for task_id in ids:
+        partition = next((p for p in ancestry.PARTITIONS if task_id.startswith(p)), 'system_test')
+        graph.add(ancestry.task_node(task_id), 'task', source_class='synthetic', holdout=partition)
+    return ancestry.allocate(graph, 7, {'train': 1.0})
+
+
 class ReviewCampaign:
     """A campaign journal with recorded trials, as the review gates and command read them."""
     def __init__(self, journal, review, lineage):
         self.journal, self.review, self.lineage = journal, review, lineage
 
     def task(self, task_id, family='build_test_repair', partition='system_test'):
-        register_bank(self.lineage, [{'id': task_id, 'partition': partition, 'family': family, 'source_class': 'synthetic',
-                                      'prompt': 'Add a --json flag to the list command and verify it'}])
+        """Register one task from the review bank's single assignment (review_assignment)."""
+        assignment = review_assignment()
+        if assignment.partition(ancestry_node(task_id)) != partition:
+            raise AssertionError('review task %s belongs in %s' % (task_id, assignment.partition(ancestry_node(task_id))))
+        self.lineage.roots([{'id': task_id, 'family': family, 'source_class': 'synthetic',
+                             'prompt': 'Add a --json flag to the list command and verify it'}], assignment)
         return json.loads(self.journal.db.execute('SELECT spec FROM tasks WHERE id=?', (task_id,)).fetchone()[0])
 
     def trial(self, name, reviews=('pass', 'pass'), deterministic=True, exit_status=0, record=True):
