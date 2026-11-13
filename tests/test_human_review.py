@@ -195,13 +195,13 @@ def test_comparison_grades_with_frozen_evaluation_decisions(monkeypatch):
 def collected(task, repetition, admitted, rows=3):
     exports = {'e4b': {'manifest': f'{task}-{repetition}', 'manifest_sha256': '', 'rows': rows}}
     return {'stage': f'{task}-{repetition}', 'task_id': task, 'repetition': repetition, 'admitted': admitted,
-            'episode_sha256': f'{task}-{repetition}', 'exports': exports}
+            'episode_sha256': f'{task}-{repetition}', 'exports': exports, 'stratum': 'conservative'}
 
 
 def test_assembly_applies_human_decisions_before_choosing_each_task(tmp_path):
     journal = Journal(tmp_path, {})
     seen = {}
-    def assemble(manifests, decisions, directory, minimum):
+    def assemble(manifests, decisions, directory, minimum, selector, strata):
         seen.update(manifests=manifests, decisions=decisions)
         return {'students': {'e4b': {'directory': str(directory), 'files': {}}}}
     episodes = [collected('a', 0, False), collected('a', 1, True), collected('b', 0, True), collected('c', 0, False, rows=0),
@@ -210,7 +210,7 @@ def test_assembly_applies_human_decisions_before_choosing_each_task(tmp_path):
     review = {'decisions': {'a-0': {'dimensions': passed}, 'b-0': {'dimensions': failed},
                             'c-0': {'dimensions': passed}, 'd-0': {'dimensions': passed}}}
     stage = Assembly(journal, ['e4b'], assemble)
-    inputs = {'collection': {'episodes': episodes, 'minimum': {}}, 'review': review}
+    inputs = {'collection': {'episodes': episodes, 'minimum': {}}, 'review': review, 'selector': {}}
     output = stage.execute(inputs, 'attempt')
     stage.validate(inputs, output)
     assert output['episodes'] == ['a-0'] and seen['manifests'] == {'e4b': ['a-0']}
