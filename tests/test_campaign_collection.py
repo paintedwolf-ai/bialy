@@ -2,13 +2,13 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import register_bank
+from conftest import FOCUSES, register_bank
 
 from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.collection import Collection, TeacherBaseline
 from bialy.campaign.dataset import Assembly
 from bialy.campaign.journal import CampaignFault, Journal
-from bialy.campaign.lineage import FAMILIES, Lineage
+from bialy.campaign.lineage import Lineage
 from bialy.provenance import file_sha256
 from bialy.student_host.specification import students
 
@@ -26,9 +26,9 @@ class Driver:
 
 def test_collection_records_every_episode_and_reuses_pilot_attempts(tmp_path):
     journal = Journal(tmp_path / 'campaign', {})
-    lineage = Lineage(journal)
-    register_bank(lineage, [{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic'}
-                   for partition in PARTITIONS for family in FAMILIES])
+    lineage = Lineage(journal, FOCUSES)
+    register_bank(lineage, [{'id': partition + family, 'partition': partition, 'focus': family, 'source_class': 'synthetic'}
+                   for partition in PARTITIONS for family in FOCUSES])
     lineage.freeze()
     driver = Driver()
     exported = []
@@ -40,7 +40,7 @@ def test_collection_records_every_episode_and_reuses_pilot_attempts(tmp_path):
         return {student: {'manifest': str(manifest), 'rows': 2} for student in students()}
     minimum = dict.fromkeys(('train', 'validation', 'system_test'), 8)
     inputs = {'host': {}, 'selector': {}, 'teachers': {
-        'teachers': [{'id': 'teacher'}], 'families': {family: {'teacher_id': 'teacher'} for family in FAMILIES}},
+        'teachers': [{'id': 'teacher'}], 'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}},
         'plan': {'collection_episodes': minimum}}
     pilot = Collection(journal, lineage, driver, export, students(), True, minimum=minimum)
     result = pilot.execute(inputs, 'pilot')
@@ -95,9 +95,9 @@ def test_assembly_uses_the_first_admitted_attempt_of_each_task(tmp_path):
 
 def test_teacher_floors_come_from_development_attempts(tmp_path):
     journal = Journal(tmp_path, {})
-    lineage = Lineage(journal)
-    register_bank(lineage, [{'id': f'{partition}-{family}-{index}', 'partition': partition, 'family': family, 'source_class': 'synthetic'}
-                   for partition in PARTITIONS for family in FAMILIES for index in range(4)])
+    lineage = Lineage(journal, FOCUSES)
+    register_bank(lineage, [{'id': f'{partition}-{family}-{index}', 'partition': partition, 'focus': family, 'source_class': 'synthetic'}
+                   for partition in PARTITIONS for family in FOCUSES for index in range(4)])
     lineage.freeze()
     driver = Driver()
     baseline = TeacherBaseline(journal, lineage, driver, [{'id': 'teacher'}])
@@ -105,7 +105,7 @@ def test_teacher_floors_come_from_development_attempts(tmp_path):
     result = baseline.execute(inputs, 'baseline')
     baseline.validate(inputs, result)
     assert len(driver.calls) == 64
-    for route in result['families'].values():
+    for route in result['focuses'].values():
         assert route['qualified'] == 4 and route['attempts'] == 8
         assert 0 < route['floor'] < 0.5
     assert baseline.reconcile(inputs, 'baseline') == result
@@ -116,9 +116,9 @@ def test_teacher_floors_come_from_development_attempts(tmp_path):
 @pytest.mark.parametrize('kind', ['teacher', 'collection'])
 def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_path, kind):
     journal = Journal(tmp_path, {})
-    lineage = Lineage(journal)
-    register_bank(lineage, [{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic'}
-                   for partition in PARTITIONS for family in FAMILIES])
+    lineage = Lineage(journal, FOCUSES)
+    register_bank(lineage, [{'id': partition + family, 'partition': partition, 'focus': family, 'source_class': 'synthetic'}
+                   for partition in PARTITIONS for family in FOCUSES])
     lineage.freeze()
     driver = Driver()
     def broken(name, inputs, attempt):
@@ -127,7 +127,7 @@ def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_
     driver.execute = broken
     inputs = {'host': {'conservative_reference': {}, 'teacher_capture_qualified': {'teacher': True}},
               'selector': {}, 'teachers': {'teachers': [{'id': 'teacher'}],
-                                          'families': {family: {'teacher_id': 'teacher'} for family in FAMILIES}}}
+                                          'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}}}
     if kind == 'teacher':
         stage = TeacherBaseline(journal, lineage, driver, [{'id': 'teacher'}], minimum_tasks=1, repetitions=1)
     else:

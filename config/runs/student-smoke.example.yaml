@@ -14,7 +14,7 @@ run:
   preflight: {enabled: true, timeout_seconds: 300}
   fail_fast: {enabled: true, summary_length_limit: 2, capture_turn_limit: 3}
   workspaces: [flask, vue-vite]
-  archetypes: [question, explain_code, small_change, bugfix, ui_mockup, new_project]
+  archetypes: [repository_question, explain_code, small_change, bugfix, ui_mockup, new_project]
   scanner: pinned
   engine_on:
     enabled: true

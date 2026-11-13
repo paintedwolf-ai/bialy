@@ -125,7 +125,7 @@ calls or fabricated multi-root failures may establish training eligibility.
 
 Command adoption requires a fresh collection epoch using the integrated host,
 prompt/catalog/exporter versions and executed child-operation facts. Preserve
-stable task families and split assignments for comparison, but never reuse old
+stable scenario focuses and split assignments for comparison, but never reuse old
 answers as command-surface labels. The existing Bialy training/release pipeline
 produces matching decision heads; custom-model SFT/DPO training is a separate
 consumer with additional qualification requirements.

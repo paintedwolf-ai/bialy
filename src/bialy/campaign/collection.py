@@ -7,7 +7,6 @@ from ..provenance import file_sha256
 from .execution import Executor
 from .grading import reviewed, teacher_routes
 from .journal import CampaignFault, digest
-from .lineage import FAMILIES
 
 
 class TeacherBaseline:
@@ -21,7 +20,7 @@ class TeacherBaseline:
     def execute(self, inputs, attempt):
         tasks = [json.loads(row[0]) for row in self.journal.db.execute(
             "SELECT spec FROM tasks WHERE partition='development' AND parent IS NULL ORDER BY id")]
-        if any(sum(task['family'] == family for task in tasks) < self.minimum_tasks for family in FAMILIES):
+        if any(sum(task['focus'] == focus for task in tasks) < self.minimum_tasks for focus in self.lineage.focuses):
             raise CampaignFault('teacher_development_bank_incomplete')
         measurements, evidence = [], []
         for teacher in self.teachers:
@@ -34,22 +33,22 @@ class TeacherBaseline:
                     result = self.executor.run(name, trial)
                     if result['status'] != 'passed':
                         raise CampaignFault('teacher_episode_incomplete', details={'stage': name, 'fault': result['fault']})
-                    counts[task['family']] += 1
-                    successes[task['family']] += result['output']['success'] is True
+                    counts[task['focus']] += 1
+                    successes[task['focus']] += result['output']['success'] is True
                     evidence.append({'stage': name, 'sha256': digest(result)})
-            for family in FAMILIES:
-                measurements.append({'teacher_id': teacher['id'], 'family': family, 'attempts': counts[family],
-                                     'qualified': successes[family],
+            for focus in self.lineage.focuses:
+                measurements.append({'teacher_id': teacher['id'], 'focus': focus, 'attempts': counts[focus],
+                                     'qualified': successes[focus],
                                      'capture_qualified': inputs['host']['teacher_capture_qualified'].get(teacher['id']) is True})
-        return {**teacher_routes(measurements), 'measurements': measurements, 'evidence': evidence,
+        return {**teacher_routes(measurements, self.lineage.focuses), 'measurements': measurements, 'evidence': evidence,
                 'teachers': self.teachers, 'lineage_sha256': self.lineage.freeze()}
 
     def reconcile(self, inputs, attempt):
         return self.execute(inputs, attempt)
 
     def validate(self, inputs, output):
-        routes = teacher_routes(output['measurements'])
-        if (output['families'] != routes['families'] or output['lineage_sha256'] != self.lineage.freeze()
+        routes = teacher_routes(output['measurements'], self.lineage.focuses)
+        if (output['focuses'] != routes['focuses'] or output['lineage_sha256'] != self.lineage.freeze()
                 or any(digest(self.journal.stage(item['stage'])) != item['sha256'] for item in output['evidence'])):
             raise CampaignFault('teacher_baseline_changed')
 
@@ -73,14 +72,14 @@ class Collection:
             {'train': 32, 'validation': 16, 'system_test': 24} if self.pilot
             else inputs['plan']['collection_episodes'])
         if (set(minimum) != {'train', 'validation', 'system_test'}
-                or any(type(count) is not int or count < len(FAMILIES) for count in minimum.values())):
+                or any(type(count) is not int or count < len(self.lineage.focuses) for count in minimum.values())):
             raise CampaignFault('collection_episode_requirements_invalid')
-        counts, families = Counter(), {partition: set() for partition in minimum}
+        counts, covered = Counter(), {partition: set() for partition in minimum}
         episodes, evidence = [], []
         for task, partition in tasks:
-            if counts[partition] >= minimum[partition] and families[partition] == set(FAMILIES):
+            if counts[partition] >= minimum[partition] and covered[partition] == set(self.lineage.focuses):
                 continue
-            teacher = teachers[inputs['teachers']['families'][task['family']]['teacher_id']]
+            teacher = teachers[inputs['teachers']['focuses'][task['focus']]['teacher_id']]
             for repetition in range(3):
                 trial = {'host': inputs['host'], 'selector': inputs['selector'], 'task': task,
                          'repetition': repetition, 'actor': teacher}
@@ -91,7 +90,7 @@ class Collection:
                 evidence.append({'stage': name, 'sha256': digest(result)})
                 if result['status'] != 'passed':
                     raise CampaignFault('collection_episode_incomplete', details={'stage': name, 'fault': result['fault']})
-                episode = {'stage': name, 'task_id': task['id'], 'partition': partition, 'family': task['family'],
+                episode = {'stage': name, 'task_id': task['id'], 'partition': partition, 'focus': task['focus'],
                            'repetition': repetition, 'episode_sha256': result['output']['verdict']['episode_sha256'],
                            'admitted': False, 'exports': None}
                 episodes.append(episode)
@@ -110,7 +109,7 @@ class Collection:
                     continue
                 episode['admitted'] = True
                 counts[partition] += 1
-                families[partition].add(task['family'])
+                covered[partition].add(task['focus'])
                 break
         return {'episodes': episodes, 'minimum': minimum, 'evidence': evidence, 'lineage_sha256': self.lineage.freeze()}
 

@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from ..provenance import file_sha256
 from ..student_host.specification import identity, load
+from . import scenarios
 from .episodes import Episodes
 from .journal import CampaignFault
 from .lineage import Lineage
@@ -32,7 +33,7 @@ def qualified(source, name):
 
 
 def import_evidence(journal, directory):
-    lineage = Lineage(journal)
+    lineage = Lineage(journal, scenarios.load().focuses)
     Episodes(journal, lineage)
     with read_source(directory) as source:
         qualified(source, 'dataset_pilot')

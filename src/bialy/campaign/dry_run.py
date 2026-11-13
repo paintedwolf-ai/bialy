@@ -55,7 +55,7 @@ def run(source, directory):
         handlers, full_plan = compose(journal, {**cfg, 'directory': str(directory)})
         lineage = import_evidence(journal, source)
         plan = {**full_plan, 'scope': 'automation_dry_run',
-                'tasks': [task for task in full_plan['tasks'] if task['id'] == 'system_test-structured_closeout']}
+                'tasks': [task for task in full_plan['tasks'] if task['focus'] == 'evidence_closeout'][:1]}
         if len(plan['tasks']) != 1:
             raise CampaignFault('dry_run_evaluation_task_missing')
         training_cfg = {**cfg, 'specification': str(Path(__file__).resolve().parents[3] / 'config/students.json'),

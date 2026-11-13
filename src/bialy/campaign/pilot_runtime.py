@@ -9,7 +9,7 @@ from .. import config, custom_model_run, faults, preflight
 from ..provenance import file_sha256
 from ..run import Run, roster
 from ..student_host.specification import load, serving
-from . import dataset, pilot_bank
+from . import dataset, scenarios
 from .baseline import Baseline
 from .collection import Collection, TeacherBaseline
 from .dataset import Assembly
@@ -144,10 +144,11 @@ def compose(journal, cfg):
     if expected_image != cfg['host_image']:
         raise CampaignFault('pilot_runner_image_name_mismatch')
     identity = custom_model_run.binding(run)
-    tasks = pilot_bank.build(journal.directory / 'bank')
-    assignment = pilot_bank.assignment(tasks, cfg['epoch'])
+    catalog = scenarios.load()
+    tasks = scenarios.tasks(catalog, journal.directory / 'bank', lambda name: '/work/' + name)
+    assignment = scenarios.assignment(catalog, tasks, cfg['epoch'], 'pilot')
     assignment.save(journal.directory / 'ancestry.json')
-    lineage = Lineage(journal)
+    lineage = Lineage(journal, catalog.focuses)
     if not journal.db.execute('SELECT 1 FROM lineage_freeze').fetchone():
         lineage.roots(tasks, assignment)
     partition = {task['id']: lineage.task(task['id'])['partition'] for task in tasks}
@@ -170,8 +171,8 @@ def compose(journal, cfg):
                 'collection_pilot': Collection(journal, lineage, driver, exports, tuple(specification['models']), True,
                                                minimum={'train': 8, 'validation': 8, 'system_test': 8}, review=collection_review),
                 'dataset_pilot': Assembly(journal, tuple(specification['models']), assemble)}
-    plan = {'tasks': [{'id': task['id'], 'family': task['family'], 'spec_hash': digest(task)}
-                      for task in tasks if partition[task['id']] == 'system_test'], 'attempts_per_task': 1,
+    plan = {'tasks': [{'id': task['id'], 'focus': task['focus'], 'spec_hash': digest(task)}
+                      for task in tasks if partition[task['id']] == 'system_test'], 'focuses': list(catalog.focuses), 'attempts_per_task': 1,
             'lineage_sha256': frozen, 'scope': 'mechanical_pilot', 'promotion_qualified': False}
     atomic_json(journal.directory / 'evaluation-plan.json', plan)
     training = {**cfg, 'specification': str(Path(__file__).resolve().parents[3] / 'config/students.json'), 'full_training': 'local'}

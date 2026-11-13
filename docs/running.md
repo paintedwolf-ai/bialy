@@ -44,7 +44,7 @@ the application sandbox. Package-manager caches remain under `/cache`.
 Container qualification compares representative operations with the same application
 build running directly as an ordinary user. Compare effects, typed outcomes,
 rejections, and model-visible feedback; paths and generated identifiers may differ.
-This comparison must cover the task families admitted to collection. A passing
+This comparison must cover the scenario focuses admitted to collection. A passing
 scanner probe alone does not establish behavioral fidelity. Unattended approval
 settings and fixed question answers are explicit collection assumptions, and the
 mechanical pilot does not establish equivalence to every human configuration.
@@ -74,8 +74,15 @@ models, llama.cpp revision, serving image, reviewer slots, and storage locations
 The selected `tool_surface` is part of the immutable run input. The runner image
 must carry its source commit in the `pw.host_commit` label.
 
-The pilot creates eight tasks per partition: training, validation, development,
-and held-out evaluation. It measures two fixed teacher attempts per development
+The pilot takes its tasks from the scenario bank in `config/campaign/scenarios.yaml`:
+eight behavior focuses, each a set of groups whose variants differ only in
+parameters. Ancestry allocation gives every focus one group in each of training,
+validation, development and held-out evaluation, and a group's variants never
+leave its partition. Graders run outside the agent's workspace against the
+delivered source and the episode's host bundle; mutation tests hold every grader
+to refusing unchanged code, manufactured passes and missing verification. A full
+campaign needs more groups per focus than the pilot, and planning reports each
+focus's exact deficit. The pilot measures two fixed teacher attempts per development
 task, retains every outcome, collects whole qualified episodes, exports an
 unchanged baseline, trains, exports the
 adapter result, and drives paired host evaluations with thinking off. Its result

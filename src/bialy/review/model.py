@@ -282,7 +282,7 @@ class Reviewer:
             parts.append(render.queue_title(self.queue['name']))
         if self.item and self.screen == 'item':
             summary = self.item['summary']
-            parts.append(f"#{self.item['id']} · {render.KIND_TITLES[self.item['kind']]} · {summary['family']}"
+            parts.append(f"#{self.item['id']} · {render.KIND_TITLES[self.item['kind']]} · {summary['focus']}"
                          + (f" · {summary['rows']} rows" if summary.get('rows') is not None else ''))
         if self.form:
             parts.append('Verdict')
@@ -322,13 +322,13 @@ class Reviewer:
         return json.loads(path.read_text())['queue'] if path.exists() else None
 
     def item_rows(self):
-        rows = [(f"  {'#':<4} {'kind':<13} {'rows':>5}  {'family':<26} state", 'hint')]
+        rows = [(f"  {'#':<4} {'kind':<13} {'rows':>5}  {'focus':<26} state", 'hint')]
         if not self.items:
             rows.append(('  No items match.' if self.filter else '  No items yet.', 'hint'))
         for index, item in enumerate(self.items):
             rows_text = str(item['summary']['rows']) if item['summary'].get('rows') is not None else ''
             line = (f"{'▸' if index == self.item_cursor else ' '} {item['id']:<4} {render.KIND_TITLES[item['kind']]:<13} "
-                    f"{rows_text:>5}  {item['summary']['family'][:26]:<26} {self.state_text(item)}")
+                    f"{rows_text:>5}  {item['summary']['focus'][:26]:<26} {self.state_text(item)}")
             rows.append((line, 'cursor' if index == self.item_cursor else 'body'))
         return rows
 
