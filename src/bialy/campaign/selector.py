@@ -167,8 +167,9 @@ class Workbench:
     def calibrate(self, launcher, rows):
         return yaml.safe_load(self.host('calibrate.py', self.catalog(), ['--examples', str(rows), '--engine', str(launcher)])) or {}
 
-    def replay(self, launcher, corpus, rows, out):
-        self.host('replay_eval.py', corpus, ['--examples', str(rows), '--engine', str(launcher), '--json', str(out)])
+    def replay(self, launcher, corpus, rows, out, truth='consensus'):
+        self.host('replay_eval.py', corpus, ['--examples', str(rows), '--engine', str(launcher), '--tool-truth', truth,
+                                             '--json', str(out)])
         return json.loads(Path(out).read_text())
 
     def pilot(self, heads_dir, values, out):
@@ -291,3 +292,49 @@ class SelectorQualification:
     def validate(self, inputs, output):
         if output != self.judge(inputs['selector']):
             raise CampaignFault('selector_qualification_changed')
+
+
+def fallback_measures(rows):
+    """The engine-off fallback on the same rows: it offers every loadable tool, so it reaches every
+    called one and its precision is the share of offered tools that were called."""
+    offered = called = 0
+    for row in rows:
+        loadable = set(row['offered']['loadable'])
+        offered += len(loadable)
+        called += len(loadable & set(row['labels']['tools']))
+    return {'recall': 1.0 if called else None, 'precision': round(called / offered, 3) if offered else None,
+            'bytes_saved_per_turn': 0}
+
+
+class SelectorHoldout:
+    """One held-out comparison of P0 against the engine-off fallback. It is read once and
+    decides nothing: P0 qualified on development before it runs."""
+
+    def __init__(self, journal, run, workbench=None):
+        self.journal, self.run = journal, run
+        self.workbench = workbench or Workbench(run)
+
+    def path(self):
+        return self.journal.directory / 'selector' / 'holdout.json'
+
+    def execute(self, inputs, attempt):
+        trained, rows = inputs['selector'], self.run.path('split', 'holdout.jsonl')
+        if self.path().exists():
+            return json.loads(self.path().read_text())
+        report = self.workbench.replay(trained['launcher'], trained['corpus'], rows,
+                                       self.journal.directory / 'selector' / 'holdout-replay.json', truth='called')
+        tools = report['overall']['tools']['_all']
+        comparison = {'schema': 'pw-selector-holdout/1', 'policy': trained['policy']['identity'], 'truth': 'called',
+                      'p0': {'recall': tools.get('recall'), 'precision': tools.get('precision'),
+                             'bytes_saved_per_turn': report['overall'].get('savings', {}).get('bytes_saved_per_turn')},
+                      'fallback': fallback_measures(json.loads(line) for line in rows.read_text().splitlines() if line.strip()),
+                      'turns': report['overall'].get('turns')}
+        atomic_json(self.path(), comparison)
+        return comparison
+
+    def reconcile(self, inputs, attempt):
+        return self.execute(inputs, attempt)
+
+    def validate(self, inputs, output):
+        if json.loads(self.path().read_text()) != output:
+            raise CampaignFault('selector_holdout_changed')

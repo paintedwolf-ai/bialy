@@ -338,6 +338,42 @@ Recovery:
 - **A changed plan.** Planned files are read-only, and a run refuses a plan whose
   files changed. Plan a new directory instead of editing one.
 
+## After a full campaign
+
+After `P0` qualifies, the selector segment writes one held-out comparison
+(`selector/holdout.json`). It sets `P0`'s tool recall, precision and saved bytes
+on the held-out split beside the engine-off fallback measured on the same rows.
+It is read once and decides nothing.
+
+When the student segment finishes, each tier is decided on its own:
+
+```bash
+bialy campaign decide --run /path/to/plan/run --probes load-probes.json --by NAME
+```
+
+A tier is published only when three conditions hold:
+- its `export_receipt.json` still binds every exported file;
+- its MLX and Vulkan bundles each have a passed `pw-load-probe/1` receipt for
+  that export from the host's native runtime;
+- its outcome under the frozen evaluation policy is a pass.
+
+`decision.json` records each tier's decision, the conditions it missed, and who
+decided. A second decision must be the same one.
+
+Prepare and sign each published tier's bundles with `model-bundle prepare` and
+`model-bundle sign` against `release-keys.json`. The signing key stays with the
+operator and never goes on a campaign host. Upload with the host's
+`scripts/generation/publish_bundle.py`, then download each manifest again and
+verify its signature, sizes and digests. Record the publications:
+
+```bash
+bialy campaign record --run /path/to/plan/run --campaign NAME --publications published.json
+```
+
+`releases/students-NAME.json` lists each published tier's bundle revisions and
+manifest digests, and each unpublished tier with the conditions it missed. A
+tier the decision did not publish cannot be recorded as published.
+
 ## Workspaces
 
 Every task runs in a workspace: a pinned repository, or a stack
