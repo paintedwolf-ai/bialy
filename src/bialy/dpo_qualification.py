@@ -10,7 +10,7 @@ import re
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 
-CAPTURE_SCHEMA = "pw-model-request-capture/1"
+CAPTURE_SCHEMA = "pw-model-request-capture/3"
 VALIDATION_SCHEMA = "pw-training-validation/1"
 HOST_VALIDATOR = "paintedwolf-host-training-validation/1"
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -27,16 +27,16 @@ def capture_reasons(row):
     if not isinstance(capture, dict):
         return ["missing_exact_request_capture"]
     reasons = []
-    if capture.get("schema") not in (CAPTURE_SCHEMA, "pw-model-request-capture/2"):
+    if capture.get("schema") != CAPTURE_SCHEMA:
         reasons.append("unsupported_request_capture")
     supported_fields = {
-        "schema", "request_id", "session_id", "message_id", "host_revision", "epoch", "tool_surface",
+        "schema", "request_id", "session_id", "message_id", "host_revision", "epoch", "contract_sha256",
         "catalog_sha256", "state_sha256", "messages", "tools", "sha256", "controls",
         "student_provider", "student_kind", "student_model", "dispatch_sha256",
     }
     if set(capture) - supported_fields:
         reasons.append("unsupported_request_capture_fields")
-    for key in ("request_id", "session_id", "message_id", "host_revision", "epoch", "tool_surface"):
+    for key in ("request_id", "session_id", "message_id", "host_revision", "epoch", "contract_sha256"):
         if not isinstance(capture.get(key), str) or not capture[key].strip():
             reasons.append("missing_capture_%s" % key)
     for key in ("catalog_sha256", "state_sha256"):
@@ -120,7 +120,7 @@ def qualification(row):
             reasons.append("unsupported_host_validator")
         if not isinstance(report.get("receipt_id"), str) or not report["receipt_id"].strip():
             reasons.append("missing_validation_receipt")
-        for key in ("state_sha256", "host_revision", "epoch", "tool_surface", "catalog_sha256"):
+        for key in ("state_sha256", "host_revision", "epoch", "contract_sha256", "catalog_sha256"):
             if not capture.get(key) or report.get(key) != capture[key]:
                 reasons.append("validation_%s_mismatch" % key)
         if report.get("request_sha256") != capture.get("sha256"):

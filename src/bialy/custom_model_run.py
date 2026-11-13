@@ -12,7 +12,8 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
-from . import custom_quality, dpo, provenance
+from . import dpo, host_bundle, provenance
+from .campaign.review_contract import judge_rows
 
 
 class DatasetError(ValueError):
@@ -38,8 +39,6 @@ def validate_settings(cfg):
         return
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}", str(cfg.get("epoch") or "")):
         raise DatasetError("run.custom_model.epoch must name this collection; use a new run and epoch after command rework")
-    if cfg.get("tool_surface") not in ("legacy", "command-v1"):
-        raise DatasetError("run.custom_model.tool_surface must be legacy or command-v1")
     if not re.fullmatch(r"[0-9a-f]{40}", str(cfg.get("host_commit") or "")):
         raise DatasetError("run.custom_model.host_commit must pin the full Painted Wolf Code commit")
     if cfg.get("preload_from_judge"):
@@ -84,8 +83,12 @@ def binding(run):
         raise DatasetError("custom-model collection requires a clean pinned Painted Wolf Code checkout")
     if not (run.checkout / "scripts/bialy/custom_model/collect.py").is_file() and not cfg.get("diagnostic_only"):
         raise DatasetError("pinned host lacks the exact capture and receipt exporter")
+    try:
+        _, contract_sha256 = host_bundle.contract(run.image("off"), run.path("host-contract"), cfg["host_commit"])
+    except host_bundle.HostEvidenceError as exc:
+        raise DatasetError("pinned host image cannot state its training contract: " + exc.code) from exc
     identity = {
-        "schema": "pw-custom-run/1", "epoch": cfg["epoch"], "tool_surface": cfg["tool_surface"],
+        "schema": "pw-custom-run/2", "epoch": cfg["epoch"], "contract_sha256": contract_sha256,
         "host_commit": cfg["host_commit"], "settings_sha256": digest(run.settings),
         "students": cfg["students"],
         "factory": provenance.factory_source(),
@@ -176,7 +179,7 @@ def qualify_inputs(paths, out, identity, inputs):
                     counts["unqualified"] += 1
                     continue
                 capture = row.get("request_capture") or {}
-                expected = {"epoch": identity["epoch"], "tool_surface": identity["tool_surface"],
+                expected = {"epoch": identity["epoch"], "contract_sha256": identity["contract_sha256"],
                             "host_revision": identity["host_commit"], "catalog_sha256": inputs["catalog_sha256"]}
                 if any(capture.get(k) != v for k, v in expected.items()):
                     counts["foreign_epoch"] += 1
@@ -186,13 +189,13 @@ def qualify_inputs(paths, out, identity, inputs):
     return dict(counts)
 
 
-def write_receipt_lineage(source, out, lineage, excluded_stores):
+def write_receipt_lineage(source, out, lineage, excluded_bundles):
     """Bind task lineage while excluding every candidate from aborted tasks."""
     excluded = 0
     with Path(out).open("w") as output:
         for line in Path(source).read_text().splitlines():
             row = json.loads(line)
-            if row["source"]["store_sha256"] in excluded_stores:
+            if row["source"]["bundle_sha256"] in excluded_bundles:
                 excluded += 1
                 continue
             row["meta"] = lineage.get(row["session"], {})
@@ -219,7 +222,7 @@ def collect(run, judge_factory=None):
     stats = dpo.extract(transcripts, rows_paths=[run.path("judged-" + name + ".jsonl") for name in inputs["passes"]],
                         out_sft=sft_raw, out_dpo=dpo_raw, min_score=int(cfg.get("min_score", 3)), preload_from_judge=False,
                         max_routine_reads_per_session=cfg.get("max_routine_reads_per_session", 6),
-                        drop_retired_command_rejections=identity["tool_surface"] == "command-v1")
+                        drop_retired_command_rejections=True)
     sources = {"sft": [sft_raw], "dpo": [dpo_raw]}
     exporter = run.checkout / "scripts/bialy/custom_model/collect.py"
     if exporter.is_file():
@@ -235,7 +238,7 @@ def collect(run, judge_factory=None):
         out = base / "dpo.shadow-candidates.jsonl"
         stats["shadow"] = dpo.shadow(run.factory, sft_raw, out, student_id=cfg["student"], workers=workers, seed=seed)
         sources["dpo"].append(out)
-    stats.update(epoch=identity["epoch"], tool_surface=identity["tool_surface"], directory=str(base), qualification={})
+    stats.update(epoch=identity["epoch"], contract_sha256=identity["contract_sha256"], directory=str(base), qualification={})
     for kind, paths in sources.items():
         eligible = base / (kind + ".qualified-review.jsonl")
         stats["qualification"][kind] = qualify_inputs(paths, eligible, identity, inputs)
@@ -252,6 +255,25 @@ def collect(run, judge_factory=None):
     return stats
 
 
+def episode_bundles(run, inputs):
+    """Every root episode of the collected shards as a bundle: its directory, its
+    manifest digest and whether its task aborted."""
+    out = {}
+    for name in inputs["passes"]:
+        for store in sorted(run.path("fleet-" + name).glob("shards/*/store.db")):
+            shard = store.parent
+            for line in (shard / "manifest.jsonl").read_text().splitlines():
+                if not line.strip():
+                    continue
+                root = json.loads(line)["root_session"]
+                try:
+                    episode = host_bundle.export(run.image(name), shard, root, run.path("bundles", name, shard.name, root))
+                except host_bundle.HostEvidenceError as exc:
+                    raise DatasetError("host could not export episode %s: %s" % (root, exc.code)) from exc
+                out[episode.directory] = (episode.manifest_sha256, (shard / "task-aborted.json").exists())
+    return out
+
+
 def export_student(run, base, identity, serving, inputs, transcripts, stats, judge_factory):
     base.mkdir(parents=True, exist_ok=True)
     cfg = run.setting("custom_model")
@@ -261,8 +283,9 @@ def export_student(run, base, identity, serving, inputs, transcripts, stats, jud
     destination = base / "host-receipts"
     cmd = [sys.executable, str(exporter), "--binding", str(binding_path),
            "--catalog-sha256", inputs["catalog_sha256"], "--out", str(destination)]
-    for name in inputs["passes"]:
-        cmd += ["--fleet", str(run.path("fleet-" + name))]
+    bundles = episode_bundles(run, inputs)
+    for directory in bundles:
+        cmd += ["--bundle", str(directory)]
     if cfg.get("quality_reports"):
         cmd += ["--quality", str(Path(cfg["quality_reports"]).resolve())]
     subprocess.run(cmd, check=True)
@@ -274,16 +297,15 @@ def export_student(run, base, identity, serving, inputs, transcripts, stats, jud
             lineage[session["session_id"]] = {k: session.get(k) for k in
                 ("workspace", "prompt_group", "task_id", "archetype", "model")}
     accepted = base / "sft.host-receipts.jsonl"
-    aborted_stores = {inputs["files"][str(marker.parent.relative_to(run.dir) / "store.db")]
-                      for name in inputs["passes"] for marker in run.path("fleet-" + name).glob("shards/*/task-aborted.json")}
-    stats["excluded_aborted_task_candidates"] = write_receipt_lineage(destination / "sft.receipts.jsonl", accepted, lineage, aborted_stores)
+    aborted = {sha256 for sha256, from_aborted_task in bundles.values() if from_aborted_task}
+    stats["excluded_aborted_task_candidates"] = write_receipt_lineage(destination / "sft.receipts.jsonl", accepted, lineage, aborted)
     if cfg.get("quality_judge"):
         quality_path = base / "quality.jsonl"
-        stats["quality"] = custom_quality.judge_rows(judge_factory or run.factory, accepted, transcripts, quality_path,
+        stats["quality"] = judge_rows(judge_factory or run.factory, accepted, transcripts, quality_path,
                                                     seed=int(run.setting("seed", 7)))
         reviewed_destination = base / "reviewed-receipts"
         subprocess.run([*cmd[:cmd.index('--out') + 1], str(reviewed_destination),
                         *cmd[cmd.index('--out') + 2:], '--quality', str(quality_path)], check=True)
         accepted = base / 'sft.reviewed.jsonl'
-        write_receipt_lineage(reviewed_destination / 'sft.receipts.jsonl', accepted, lineage, aborted_stores)
+        write_receipt_lineage(reviewed_destination / 'sft.receipts.jsonl', accepted, lineage, aborted)
     return accepted

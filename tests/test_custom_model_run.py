@@ -3,6 +3,7 @@ import json
 import subprocess
 
 import pytest
+from host_bundles import Image
 
 from bialy import custom_model_run as cm
 from bialy import provenance
@@ -20,6 +21,7 @@ def custom_run(factory, tmp_path, monkeypatch):
     monkeypatch.setattr(cm.provenance, "factory_source", lambda: {"tree_sha256": "b" * 64})
     monkeypatch.setattr(cm.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(
         args, 0, "a" * 40 + "\n" if "rev-parse" in args else "", ""))
+    monkeypatch.setattr(cm.host_bundle, "contract", lambda image, destination, commit: ({}, "c" * 64))
     return run
 
 
@@ -61,7 +63,7 @@ def test_training_run_is_blocked_before_any_stages(custom_run):
     assert not called and not custom_run.state_path.exists()
 
 
-def test_collection_epoch_is_explicit_and_cannot_change_on_resume(custom_run):
+def test_collection_epoch_is_explicit_and_cannot_change_on_resume(custom_run, monkeypatch):
     cfg = custom_run.settings["custom_model"]
     cfg["epoch"] = None
     with pytest.raises(cm.DatasetError, match="epoch must name"):
@@ -69,7 +71,7 @@ def test_collection_epoch_is_explicit_and_cannot_change_on_resume(custom_run):
     cfg["epoch"] = "legacy-review-1"
     first = cm.binding(custom_run)
     assert cm.binding(custom_run) == first
-    cfg["tool_surface"] = "command-v1"
+    monkeypatch.setattr(cm.host_bundle, "contract", lambda image, destination, commit: ({}, "d" * 64))
     with pytest.raises(cm.DatasetError, match="new run name and epoch"):
         cm.binding(custom_run)
 
@@ -112,7 +114,7 @@ def test_empty_wal_created_by_a_reader_is_not_a_new_input(custom_run):
 
 def test_only_validated_rows_bound_to_this_epoch_reach_qualified_review(custom_run, tmp_path, monkeypatch):
     identity, inputs = source_inputs(custom_run)
-    capture = {"epoch": identity["epoch"], "tool_surface": identity["tool_surface"], "host_revision": identity["host_commit"],
+    capture = {"epoch": identity["epoch"], "contract_sha256": identity["contract_sha256"], "host_revision": identity["host_commit"],
                "catalog_sha256": inputs["catalog_sha256"]}
     rows = [{"id": "candidate"}, {"id": "foreign", "request_capture": dict(capture, epoch="future")},
             {"id": "validated", "request_capture": capture}]
@@ -136,7 +138,7 @@ def test_reextract_uses_changed_store_and_never_creates_training_splits(custom_r
     def extract(transcripts, **kw):
         kw["out_sft"].write_text('{"id":"candidate"}\n')
         kw["out_dpo"].write_text("")
-        assert kw["drop_retired_command_rejections"] is False
+        assert kw["drop_retired_command_rejections"] is True
         return {"sft_rows": 1, "dpo_rows": 0}
 
     monkeypatch.setattr(cm.dpo, "export_transcripts", export)
@@ -202,11 +204,11 @@ def test_non_diagnostic_requires_exporter_capability(custom_run):
 
 def test_aborted_task_candidates_cannot_reach_quality_review(tmp_path):
     source = tmp_path / "receipts.jsonl"
-    rows = [{"session": "failed", "source": {"store_sha256": "failed-store"}},
-            {"session": "finished", "source": {"store_sha256": "finished-store"}}]
+    rows = [{"session": "failed", "source": {"bundle_sha256": "failed-bundle"}},
+            {"session": "finished", "source": {"bundle_sha256": "finished-bundle"}}]
     source.write_text(''.join(json.dumps(row) + '\n' for row in rows))
     out = tmp_path / "review.jsonl"
-    count = cm.write_receipt_lineage(source, out, {"finished": {"prompt_group": "good-group"}}, {"failed-store"})
+    count = cm.write_receipt_lineage(source, out, {"finished": {"prompt_group": "good-group"}}, {"failed-bundle"})
     assert count == 1
     assert json.loads(out.read_text()) == dict(rows[1], meta={"prompt_group": "good-group"}, split_group="good-group")
 
@@ -223,3 +225,28 @@ def test_aborted_task_evidence_is_hashed_and_missing_store_is_refused(custom_run
     missing.with_name("manifest.jsonl").touch()
     with pytest.raises(cm.DatasetError, match="inputs missing.*store.db"):
         cm.input_manifest(custom_run, identity)
+
+
+def test_a_host_image_that_cannot_state_its_contract_blocks_the_binding(custom_run, monkeypatch):
+    def refuse(image, destination, commit):
+        raise cm.host_bundle.HostEvidenceError("host_contract_revision_mismatch")
+    monkeypatch.setattr(cm.host_bundle, "contract", refuse)
+    with pytest.raises(cm.DatasetError, match="host_contract_revision_mismatch"):
+        cm.binding(custom_run)
+
+
+def test_every_root_episode_of_the_collected_shards_becomes_one_bundle(custom_run, monkeypatch):
+    identity, inputs = source_inputs(custom_run)
+    custom_run.path("fleet-off/shards/a/manifest.jsonl").write_text('{"root_session": "r1"}\n\n{"root_session": "r2"}\n')
+    custom_run.path("fleet-off/shards/a/task-aborted.json").write_text("{}")
+    original = cm.host_bundle.export
+    image = Image()
+    monkeypatch.setattr(cm.host_bundle, "export", lambda *args: original(*args, process=image))
+    bundles = cm.episode_bundles(custom_run, inputs)
+    assert sorted(path.name for path in bundles) == ["r1", "r2"]
+    assert all(aborted and len(sha256) == 64 for sha256, aborted in bundles.values())
+    assert all(path.is_relative_to(custom_run.path("bundles")) for path in bundles)
+    monkeypatch.setattr(cm.host_bundle, "export", lambda *args: original(*args, process=Image(fail="training-bundle")))
+    custom_run.path("fleet-off/shards/a/manifest.jsonl").write_text('{"root_session": "r3"}\n')
+    with pytest.raises(cm.DatasetError, match="host could not export episode r3"):
+        cm.episode_bundles(custom_run, inputs)
