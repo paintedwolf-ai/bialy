@@ -26,9 +26,9 @@ def test_trials_classify_into_pass_split_and_fail(review_campaign):
 
 def test_each_episode_belongs_to_one_item_and_labels_are_validated(review_campaign):
     review = review_campaign.review
-    review.open('collection_pilot', 'collection')
-    item = review.offer('collection_pilot', 'split', [subject('a')], [], {'rows': 4}, 4)
-    assert review.offer('collection_pilot', 'spot_check', [subject('a')], [], {'rows': 4}, 4) is None
+    review.open('collection', 'collection')
+    item = review.offer('collection', 'split', [subject('a')], [], {'rows': 4}, 4)
+    assert review.offer('collection', 'spot_check', [subject('a')], [], {'rows': 4}, 4) is None
     dimensions, citations = review_campaign.verdict()
     for bad in ({**dimensions, 'task_outcome': 'maybe'}, {key: dimensions[key] for key in DIMENSIONS[1:]}):
         with pytest.raises(CampaignFault, match='dimensions_invalid'):
@@ -55,7 +55,7 @@ def test_each_episode_belongs_to_one_item_and_labels_are_validated(review_campai
     review.skip(item)
     assert review.item(item)['state'] == 'skipped'
     with pytest.raises(CampaignFault, match='kind_invalid'):
-        review.offer('collection_pilot', 'other', [subject('z')], [], {}, 0)
+        review.offer('collection', 'other', [subject('z')], [], {}, 0)
     with pytest.raises(CampaignFault, match='queue_missing'):
         review.offer('absent', 'split', [subject('z')], [], {}, 0)
     with pytest.raises(CampaignFault, match='item_missing'):
@@ -64,49 +64,49 @@ def test_each_episode_belongs_to_one_item_and_labels_are_validated(review_campai
 
 def test_finished_queues_are_final_and_freeze_only_human_decisions(review_campaign):
     review = review_campaign.review
-    review.open('collection_pilot', 'collection')
-    labelled = review.offer('collection_pilot', 'split', [subject('a')], [], {'rows': 2}, 2)
-    skipped = review.offer('collection_pilot', 'spot_check', [subject('b')], [], {'rows': 9}, 9)
-    left = review.offer('collection_pilot', 'spot_check', [subject('c')], [], {'rows': 1}, 1)
-    assert [item['id'] for item in review.items('collection_pilot')] == [labelled, skipped, left]
+    review.open('collection', 'collection')
+    labelled = review.offer('collection', 'split', [subject('a')], [], {'rows': 2}, 2)
+    skipped = review.offer('collection', 'spot_check', [subject('b')], [], {'rows': 9}, 9)
+    left = review.offer('collection', 'spot_check', [subject('c')], [], {'rows': 1}, 1)
+    assert [item['id'] for item in review.items('collection')] == [labelled, skipped, left]
     review.label(labelled, 'episode-a', *review_campaign.verdict(), 'recovered')
     review.skip(skipped)
     with pytest.raises(CampaignFault, match='unfinished'):
-        review.frozen('collection_pilot', ['episode-a'])
-    review.finish('collection_pilot')
-    review.finish('collection_pilot')
-    assert review.counts('collection_pilot') == {'open': 0, 'labelled': 1, 'skipped': 1, 'automatic': 1}
+        review.frozen('collection', ['episode-a'])
+    review.finish('collection')
+    review.finish('collection')
+    assert review.counts('collection') == {'open': 0, 'labelled': 1, 'skipped': 1, 'automatic': 1}
     with pytest.raises(CampaignFault, match='finished'):
         review.skip(left)
-    frozen = review.frozen('collection_pilot', ['episode-a', 'episode-b', 'episode-c', 'episode-unknown'])
+    frozen = review.frozen('collection', ['episode-a', 'episode-b', 'episode-c', 'episode-unknown'])
     assert set(frozen['decisions']) == {'episode-a'} and frozen['decisions']['episode-a']['reason'] == 'recovered'
     with pytest.raises(CampaignFault, match='queue_missing'):
         review.finish('absent')
     with pytest.raises(CampaignFault, match='kind_changed'):
-        review.open('collection_pilot', 'evaluation')
+        review.open('collection', 'evaluation')
     with pytest.raises(CampaignFault, match='kind_invalid'):
         review.open('other', 'other')
 
 
 def test_later_queues_reuse_decisions_from_earlier_finished_queues(review_campaign):
     review = review_campaign.review
-    review.open('collection_pilot', 'collection')
-    item = review.offer('collection_pilot', 'split', [subject('a')], [], {'rows': 2}, 2)
+    review.open('collection', 'collection')
+    item = review.offer('collection', 'split', [subject('a')], [], {'rows': 2}, 2)
     review.label(item, 'episode-a', *review_campaign.verdict(), '')
-    review.open('collection_full', 'collection')
-    review.offer('collection_full', 'split', [subject('b')], [], {'rows': 2}, 2)
+    review.open('collection_repeat', 'collection')
+    review.offer('collection_repeat', 'split', [subject('b')], [], {'rows': 2}, 2)
     with pytest.raises(CampaignFault, match='unfinished'):
-        review.frozen('collection_full', ['episode-a'])
-    review.finish('collection_full')
+        review.frozen('collection_repeat', ['episode-a'])
+    review.finish('collection_repeat')
     with pytest.raises(CampaignFault, match='unfinished'):
-        review.frozen('collection_full', ['episode-a'])
-    review.finish('collection_pilot')
-    assert set(review.frozen('collection_full', ['episode-a', 'episode-b'])['decisions']) == {'episode-a'}
+        review.frozen('collection_repeat', ['episode-a'])
+    review.finish('collection')
+    assert set(review.frozen('collection_repeat', ['episode-a', 'episode-b'])['decisions']) == {'episode-a'}
 
 
 def test_collection_gate_waits_then_passes_frozen_decisions(review_campaign):
     review = review_campaign.review
-    gate = CollectionGate(review, 'collection_pilot', 'bialy review --run campaign')
+    gate = CollectionGate(review, 'collection', 'bialy review --run campaign')
     task = review_campaign.task('train-a', partition='train')
     exports = {'e4b': {'manifest': 'm', 'manifest_sha256': '', 'rows': 3}, '12b': {'manifest': 'm', 'manifest_sha256': '', 'rows': 5}}
     episode = {'stage': 'a', 'episode_sha256': 'episode-a', 'repetition': 0, 'exports': exports}
@@ -119,12 +119,12 @@ def test_collection_gate_waits_then_passes_frozen_decisions(review_campaign):
     inputs = {'collection': {'episodes': [episode]}}
     with pytest.raises(StageWaiting) as waiting:
         gate.execute(inputs, 'attempt')
-    assert waiting.value.record() == {'reason': 'human_review', 'queue': 'collection_pilot', 'left': 1,
+    assert waiting.value.record() == {'reason': 'human_review', 'queue': 'collection', 'left': 1,
                                       'command': 'bialy review --run campaign'}
     review.label(item, 'episode-a', *review_campaign.verdict(), '')
     with pytest.raises(StageWaiting):
         gate.execute(inputs, 'attempt')
-    review.finish('collection_pilot')
+    review.finish('collection')
     output = gate.execute(inputs, 'attempt')
     gate.validate(inputs, output)
     assert set(output['decisions']) == {'episode-a'}
@@ -134,9 +134,9 @@ def test_collection_gate_waits_then_passes_frozen_decisions(review_campaign):
 
 
 def test_an_empty_queue_never_waits(review_campaign):
-    gate = CollectionGate(review_campaign.review, 'collection_pilot', 'command')
+    gate = CollectionGate(review_campaign.review, 'collection', 'command')
     output = gate.execute({'collection': {'episodes': []}}, 'attempt')
-    assert output['decisions'] == {} and review_campaign.review.queue('collection_pilot')['finished_at']
+    assert output['decisions'] == {} and review_campaign.review.queue('collection')['finished_at']
 
 
 def attempt(campaign, student, arm, task, success, review, name):
@@ -236,12 +236,12 @@ def test_a_waiting_stage_resumes_without_counting_a_retry(tmp_path):
         def validate(self, name, inputs, output):
             pass
     executor = Executor(journal, Gate(), lambda _: None)
-    first = executor.run('review_collection_pilot', {})
+    first = executor.run('review_collection', {})
     assert first['status'] == 'waiting' and first['output'] == {'reason': 'human_review', 'queue': 'q', 'left': 2, 'command': 'c'}
-    second = executor.run('review_collection_pilot', {})
+    second = executor.run('review_collection', {})
     assert second['status'] == 'passed' and second['tries'] == 1 and len(set(calls)) == 2
     with pytest.raises(ValueError, match='settlement'):
-        journal.settle('review_collection_pilot', second['attempt'], 'paused')
+        journal.settle('review_collection', second['attempt'], 'paused')
     journal.close()
 
 
@@ -325,9 +325,9 @@ def test_collection_exports_and_offers_episodes_a_label_could_change(review_camp
         manifest = tmp_path / (output['verdict']['episode_sha256'] + '.json')
         manifest.write_text('{}')
         return {'e4b': {'manifest': str(manifest), 'rows': 2}}
-    gate = CollectionGate(review_campaign.review, 'collection_pilot', 'command')
-    stage = Collection(review_campaign.journal, review_campaign.lineage, Driver(), export, ['e4b'], True,
-                       minimum={'train': 8, 'validation': 8, 'system_test': 8}, review=gate)
+    gate = CollectionGate(review_campaign.review, 'collection', 'command')
+    stage = Collection(review_campaign.journal, review_campaign.lineage, Driver(), export, ['e4b'],
+                       {'train': 8, 'validation': 8, 'system_test': 8}, 1, review=gate)
     inputs = {'host': {}, 'selector': {}, 'teachers': {'teachers': [{'id': 'teacher'}],
               'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}}}
     output = stage.execute(inputs, 'attempt')
@@ -335,7 +335,7 @@ def test_collection_exports_and_offers_episodes_a_label_could_change(review_camp
     assert kinds == ['split', 'fail', 'pass'] * 24
     assert [episode['admitted'] for episode in output['episodes']] == [False, False, True] * 24
     assert all((episode['exports'] is None) == (kind == 'fail') for episode, kind in zip(output["episodes"], kinds, strict=True))
-    items = review_campaign.review.items('collection_pilot')
+    items = review_campaign.review.items('collection')
     assert [item['kind'] for item in items].count('split') == 24 and [item['kind'] for item in items].count('spot_check') == 24
     assert len(exported) == 48 and all(item['summary']['rows'] == 2 for item in items)
 
@@ -343,8 +343,8 @@ def test_collection_exports_and_offers_episodes_a_label_could_change(review_camp
 def test_concurrent_decisions_take_the_next_receipt_number(review_campaign, monkeypatch):
     from bialy.campaign import human_review
     review = review_campaign.review
-    review.open('collection_pilot', 'collection')
-    item = review.offer('collection_pilot', 'split', [subject('a')], [], {'rows': 1}, 1)
+    review.open('collection', 'collection')
+    item = review.offer('collection', 'split', [subject('a')], [], {'rows': 1}, 1)
     original, collisions = human_review.write, []
     def colliding(path, value, exclusive=False):
         if exclusive and path.parent.name == str(item) and not collisions:

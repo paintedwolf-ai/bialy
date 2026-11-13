@@ -18,13 +18,13 @@ def queued(campaign, kind='split', name='a'):
     exports = {'e4b': {'manifest': 'm', 'manifest_sha256': '', 'rows': 7}}
     episode = {'stage': name, 'episode_sha256': 'episode-' + name, 'repetition': 0, 'exports': exports}
     reviews = ('pass', 'fail') if kind == 'split' else ('pass', 'pass')
-    return CollectionGate(campaign.review, 'collection_pilot', 'command').offer_episode(episode, campaign.trial(name, reviews=reviews), task, 'train')
+    return CollectionGate(campaign.review, 'collection', 'command').offer_episode(episode, campaign.trial(name, reviews=reviews), task, 'train')
 
 
-def pause(campaign, queue='collection_pilot'):
+def pause(campaign, queue='collection'):
     (campaign.journal.directory / 'waiting.json').write_text(json.dumps({
         'reason': 'human_review', 'queue': queue, 'left': 1, 'command': 'bialy review', 'stage': 'review_' + queue,
-        'resume': 'python -m bialy.campaign.pilot --configuration pilot.json'}))
+        'resume': 'bialy campaign resume --run run'}))
 
 
 def test_a_directory_without_a_campaign_is_reported(tmp_path, capsys):
@@ -39,14 +39,14 @@ def test_status_reports_queues_and_whether_the_campaign_waits(review_campaign, c
     pause(review_campaign)
     assert bialy(review_campaign, 'status') == 3
     out = capsys.readouterr().out
-    assert 'Collection (pilot)' in out and '1 left · 0 labelled · 0 skipped' in out and 'waiting on you' in out
+    assert 'Collection' in out and '1 left · 0 labelled · 0 skipped' in out and 'waiting on you' in out
     assert bialy(review_campaign, 'status', '--json') == 3
     state = json.loads(capsys.readouterr().out)
-    assert state['waiting_on_you'] == ['collection_pilot'] and state['queues'][0]['open'] == 1
-    assert bialy(review_campaign, 'finish', 'collection_pilot', '--yes') == 0
-    assert 'Finished Collection (pilot). 1 items were decided automatically.' in capsys.readouterr().out
+    assert state['waiting_on_you'] == ['collection'] and state['queues'][0]['open'] == 1
+    assert bialy(review_campaign, 'finish', 'collection', '--yes') == 0
+    assert 'Finished Collection. 1 items were decided automatically.' in capsys.readouterr().out
     assert bialy(review_campaign, 'status') == 0
-    assert 'python -m bialy.campaign.pilot --configuration pilot.json' in capsys.readouterr().out
+    assert 'bialy campaign resume --run run' in capsys.readouterr().out
     (review_campaign.journal.directory / 'waiting.json').unlink()
     assert bialy(review_campaign, 'status') == 0
     assert 'not waiting on you' in capsys.readouterr().out
@@ -56,7 +56,7 @@ def test_show_prints_the_transcript_with_short_evidence_references(review_campai
     item = queued(review_campaign)
     assert bialy(review_campaign, 'show', '#' + str(item)) == 0
     out = capsys.readouterr().out
-    assert f'#{item} · Collection (pilot) · disagreement · build_test_repair · 7 rows' in out
+    assert f'#{item} · Collection · disagreement · build_test_repair · 7 rows' in out
     assert 'One reviewer failed this. Pass recovers 7 training rows' in out
     assert '→ command {"argv": ["go", "test", "./..."]} [r1]' in out and '[r1] success' in out
     assert '… 8 more lines (show --full)' in out and 'Not decided.' in out
@@ -70,10 +70,10 @@ def test_skip_and_finish_are_final(review_campaign, capsys, monkeypatch):
     assert review_campaign.review.item(item)['state'] == 'skipped'
     monkeypatch.setattr('sys.stdin.isatty', lambda: True)
     monkeypatch.setattr('builtins.input', lambda prompt: 'n')
-    assert bialy(review_campaign, 'finish', 'collection_pilot') == 0
+    assert bialy(review_campaign, 'finish', 'collection') == 0
     assert 'Not finished.' in capsys.readouterr().out
     monkeypatch.setattr('builtins.input', lambda prompt: 'y')
-    assert bialy(review_campaign, 'finish', 'collection_pilot') == 0
+    assert bialy(review_campaign, 'finish', 'collection') == 0
     assert bialy(review_campaign, 'skip', str(item)) == 2
     assert 'queue is finished; its decisions are final' in capsys.readouterr().err
     assert bialy(review_campaign, 'skip', 'nope') == 2
@@ -87,7 +87,7 @@ def test_wait_returns_when_the_waiting_queue_is_finished(review_campaign):
     assert bialy(review_campaign, 'wait') == 0
     pause(review_campaign)
     assert bialy(review_campaign, 'wait', '--timeout', '0', '--interval', '0') == 3
-    review_campaign.review.finish('collection_pilot')
+    review_campaign.review.finish('collection')
     assert bialy(review_campaign, 'wait', '--interval', '0') == 0
 
 
@@ -98,7 +98,7 @@ def test_wait_polls_until_the_reviewer_finishes(review_campaign, monkeypatch):
     sleeps = []
     def sleep(seconds):
         sleeps.append(seconds)
-        review_campaign.review.finish('collection_pilot')
+        review_campaign.review.finish('collection')
     monkeypatch.setattr('bialy.review.cli.time.sleep', sleep)
     assert bialy(review_campaign, 'wait', '--interval', '5') == 0
     assert sleeps == [5.0]

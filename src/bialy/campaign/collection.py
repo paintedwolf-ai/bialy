@@ -16,25 +16,24 @@ class Collection:
     With human review, episodes only the reviewers disagree on are exported too, so a
     person's pass can admit them, and every exported episode is offered to the queue.
     """
-    def __init__(self, journal, lineage, driver, export, students, pilot, sleep=time.sleep, minimum=None, review=None):
+    def __init__(self, journal, lineage, driver, export, students, minimum, groups_per_focus, sleep=time.sleep, review=None):
         self.journal, self.lineage, self.students = journal, lineage, tuple(students)
         self.executor = Executor(journal, driver, sleep)
-        self.export, self.pilot, self.minimum, self.review = export, pilot, minimum, review
+        self.export, self.minimum, self.groups_per_focus, self.review = export, minimum, groups_per_focus, review
 
     def execute(self, inputs, attempt):
         tasks = [(json.loads(row[0]), row[1]) for row in self.journal.db.execute(
             "SELECT spec, partition FROM tasks WHERE partition IN ('train','validation','system_test') AND parent IS NULL ORDER BY id")]
         teachers = {teacher['id']: teacher for teacher in inputs['teachers']['teachers']}
-        minimum = self.minimum or (
-            {'train': 32, 'validation': 16, 'system_test': 24} if self.pilot
-            else inputs['plan']['collection_episodes'])
+        minimum = self.minimum
         if (set(minimum) != {'train', 'validation', 'system_test'}
-                or any(type(count) is not int or count < len(self.lineage.focuses) for count in minimum.values())):
+                or any(type(count) is not int or count < 1 for count in minimum.values())):
             raise CampaignFault('collection_episode_requirements_invalid')
-        counts, covered = Counter(), {partition: set() for partition in minimum}
+        counts, covered = Counter(), {partition: {focus: set() for focus in self.lineage.focuses} for partition in minimum}
         episodes, evidence = [], []
         for task, partition in tasks:
-            if counts[partition] >= minimum[partition] and covered[partition] == set(self.lineage.focuses):
+            if counts[partition] >= minimum[partition] and all(
+                    len(covered[partition][focus]) >= self.groups_per_focus for focus in self.lineage.focuses):
                 continue
             # The policy's first route for the focus collects it.
             teacher = teachers[inputs['teachers']['focuses'][task['focus']][0]['teacher_id']]
@@ -69,7 +68,7 @@ class Collection:
                     continue
                 episode['admitted'] = True
                 counts[partition] += 1
-                covered[partition].add(task['focus'])
+                covered[partition][task['focus']].add(task.get('group', task['id']))
                 break
         return {'episodes': episodes, 'minimum': minimum, 'evidence': evidence, 'lineage_sha256': self.lineage.freeze()}
 

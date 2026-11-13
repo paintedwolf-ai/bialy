@@ -1,0 +1,38 @@
+# Campaign profiles. Every profile runs the same handler graph; a profile only sets
+# which segments run and the workload each stage is given. `bialy campaign plan`
+# freezes the chosen profile into the plan.
+
+version: 1
+profiles:
+  # A mechanical rehearsal of the student segment on one host commit. Its training recipe
+  # makes two updates, checkpoints each, and pauses after the first and resumes.
+  dry-run:
+    segments: [student]
+    students: [e4b]
+    quota: pilot
+    recipe: dry_run
+    selector: engine_disabled
+    collection: {train: 1, validation: 1, system_test: 1}
+    coverage: none
+    rows: {train: 2, validation: 1, system_test: 1}
+    max_example_tokens: 10240
+    evaluation_tasks: 1
+    judged: false
+  # A non-promoting run of the student segment; P0 when one is supplied, else the engine disabled.
+  pilot:
+    segments: [student]
+    quota: pilot
+    recipe: pilot
+    selector: supplied_or_engine_disabled
+    collection: {train: 32, validation: 16, system_test: 24}
+    coverage: {groups_per_focus: 2}
+    judged: true
+  # Selector segment on C0, the host adoption boundary, then the student segment on C1.
+  full:
+    segments: [selector, student]
+    quota: full
+    recipe: full
+    selector: p0
+    collection: {train: 64, validation: 24, system_test: 24}
+    coverage: {groups_per_focus: 2}
+    judged: true

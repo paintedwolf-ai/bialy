@@ -13,10 +13,10 @@ class EvaluationPlan:
     """The locked tasks and attempts each tier is evaluated on, with the behavioral policy
     frozen beside them before any student result exists."""
 
-    def __init__(self, journal, lineage, policy=None, collection_episodes=None):
+    def __init__(self, journal, lineage, policy=None, collection_episodes=None, judged=True, tasks=None):
         self.journal, self.lineage = journal, lineage
         self.policy = policy or evaluation_policy.load()
-        self.collection_episodes = collection_episodes
+        self.collection_episodes, self.judged, self.tasks = collection_episodes, judged, tasks
 
     def build(self, inputs):
         policy = self.policy
@@ -24,19 +24,24 @@ class EvaluationPlan:
             "SELECT id,focus,spec_hash,partition FROM tasks WHERE partition IN (?,?) AND parent IS NULL ORDER BY partition,id",
             (policy['decides'], policy['diagnostic']))]
         deciding = [task for task in tasks if task['partition'] == policy['decides']]
-        if any(sum(task['focus'] == focus for task in deciding) < 3 for focus in self.lineage.focuses):
+        if self.tasks is not None:
+            tasks = deciding[:self.tasks]
+        elif any(sum(task['focus'] == focus for task in deciding) < 3 for focus in self.lineage.focuses):
             raise CampaignFault('insufficient_independent_evaluation_tasks')
+        if self.judged and self.tasks is not None:
+            raise CampaignFault('evaluation_plan_invalid')
         collection = self.collection_episodes or {row[0]: row[1] for row in self.journal.db.execute(
             "SELECT partition,COUNT(*) FROM tasks WHERE parent IS NULL AND partition!='development' GROUP BY partition")}
         if (set(collection) != {'train', 'validation', 'system_test'}
-                or any(type(count) is not int or count < len(self.lineage.focuses) for count in collection.values())):
+                or any(type(count) is not int or count < 1 for count in collection.values())):
             raise CampaignFault('collection_episode_requirements_invalid')
         design = policy['design']
         return {'collection_episodes': collection, 'tasks': tasks, 'focuses': list(self.lineage.focuses),
                 'attempts_per_task': design['attempts_per_task'], 'bootstrap_samples': design['bootstrap_samples'],
                 'bootstrap_seed': design['bootstrap_seed'], 'lineage_sha256': self.lineage.freeze(),
                 'measurements_sha256': digest(inputs['measurements']), 'selector': plan_record(inputs['selector']),
-                'policy_sha256': digest(policy), 'planned_attempts_per_arm': len(tasks) * design['attempts_per_task']}
+                'policy_sha256': digest(policy), 'judged': self.judged,
+                'planned_attempts_per_arm': len(tasks) * design['attempts_per_task']}
 
     def execute(self, inputs, attempt):
         result = self.build(inputs)
