@@ -119,11 +119,11 @@ def test_remote_job_creation_preserves_pilot_mode(tmp_path, monkeypatch, pilot, 
 
 
 class ExportMachine:
-    """A training machine whose export has already been launched or finishes on the given observations."""
+    """A training machine whose launched export ends on the given observations."""
     host = 'fixture'
 
-    def __init__(self, observations, gguf_files=('model-Q4_K_M.gguf',)):
-        self.observations, self.gguf_files = list(observations), gguf_files
+    def __init__(self, observations):
+        self.observations = list(observations)
         self.commands, self.received = [], []
 
     def command(self, args, **kwargs):
@@ -136,39 +136,20 @@ class ExportMachine:
         return json.dumps(observation)
 
     def receive(self, source, destination, exclude=(), timeout=600):
-        from bialy.provenance import file_sha256
         self.received.append((source, tuple(exclude)))
-        destination.mkdir(parents=True, exist_ok=True)
-        if source.endswith('merged/manifest.json'):
-            write(destination / 'manifest.json', {'files': 'merged'})
-        elif source.endswith('/gguf/'):
-            for name in self.gguf_files:
-                (destination / name).write_bytes(name.encode())
-            job = destination.parent
-            write(destination / 'manifest.json', {
-                'schema': 'pw-custom-gguf/1', 'load_probe': 'passed', 'llama_cpp_revision': 'c' * 40,
-                'merged_manifest_sha256': file_sha256(job / 'merged/manifest.json'),
-                'unquantized': {'sha256': 'retained-on-machine'},
-                'quantized': {'sha256': file_sha256(destination / 'model-Q4_K_M.gguf')}})
 
 
 def export_fixture(tmp_path, monkeypatch):
-    from bialy.student_host import exporting
-    from bialy.student_host.specification import load
     config = {'llama_commit': 'c' * 40, 'machine': {'uv': '/opt/uv/bin/uv'}}
     destination = tmp_path / 'instance'
-    write_plan = destination / 'job'
-    write_plan.mkdir(parents=True)
-    write(write_plan / 'plan.json', {'specification': load(), 'student': '26b-a4b', 'specification_sha256': 'spec',
-                                     'host_commit': 'host'})
-    monkeypatch.setattr(exporting, 'validate_inputs', lambda plan: None)
-    monkeypatch.setattr(exporting, 'validate_result', lambda plan: None)
+    (destination / 'job').mkdir(parents=True)
     return config, destination
 
 
-def test_export_runs_on_the_training_machine_and_returns_only_the_served_gguf(tmp_path, monkeypatch):
+def test_export_launches_once_on_the_training_machine(tmp_path, monkeypatch):
     import subprocess
     config, destination = export_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote_training.exporting, 'publish', lambda *args, **kwargs: {'published': args})
     machine = ExportMachine([{'exit': None, 'alive': True}, subprocess.TimeoutExpired('probe', 30), {'exit': 0, 'alive': False}])
     artifact = remote_training.export_remotely(machine, config, '/w/job', '/w/job/runs/one', destination, lambda: None, lambda _: None)
     launch = next(args for args in machine.commands if args[:2] == ['bash', '-lc'])[2]
@@ -178,10 +159,27 @@ def test_export_runs_on_the_training_machine_and_returns_only_the_served_gguf(tm
     assert inner[-6:] == ['export', '/w/job/runs/one', '--llama', '/w/job/llama.cpp', '--revision', 'c' * 40]
     assert json.loads((destination / 'export.json').read_text()) == {'pid': 4242}
     assert ('/w/job/runs/one/gguf/', ('model-f16.gguf',)) in machine.received
-    assert artifact['unquantized_retained'] is False and set(artifact['files']) == {'model-Q4_K_M.gguf', 'manifest.json'}
+    assert artifact == {'published': (destination / 'job', 'c' * 40)}
     resumed = ExportMachine([{'exit': 0, 'alive': False}])
     remote_training.export_remotely(resumed, config, '/w/job', '/w/job/runs/one', destination, lambda: None, lambda _: None)
     assert not any(args[:2] == ['bash', '-lc'] for args in resumed.commands)
+
+
+def test_bootstrap_prepares_the_training_and_conversion_projects(tmp_path):
+    class Recorder:
+        def __init__(self):
+            self.commands = []
+
+        def command(self, args, **kwargs):
+            self.commands.append(args)
+            return ''
+
+    remote = Recorder()
+    config = {'machine': {'uv': '/opt/uv/bin/uv'}, 'llama_repository': 'l', 'llama_commit': 'c',
+              **{name + suffix: name for name in ('host', 'bialy') for suffix in ('_repository', '_commit')}}
+    remote_training.bootstrap(remote, config, '/w/job', '26b-a4b')
+    synced = [args[args.index('--project') + 1] for args in remote.commands if 'sync' in args]
+    assert synced == ['/w/job/bialy', '/w/job/host/scripts/bialy/custom_model', '/w/job/host/scripts/generation']
 
 
 @pytest.mark.parametrize('observations, message', [
