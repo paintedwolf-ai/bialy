@@ -101,7 +101,7 @@ def review_assignment():
     from bialy.campaign import ancestry
     from bialy.campaign.lineage import FAMILIES
 
-    ids = ['held-out', 't1'] + ['train-' + name for name in ('a', 'b', 'c', 'spot', 'split', 'spot_check')]
+    ids = ['held-out', 't1', 't2', 't3', 't4'] + ['train-' + name for name in ('a', 'b', 'c', 'spot', 'split', 'spot_check')]
     ids += [partition + family for partition in ancestry.PARTITIONS for family in FAMILIES]
     graph = ancestry.Graph()
     for task_id in ids:
