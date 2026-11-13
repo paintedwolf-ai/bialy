@@ -56,7 +56,7 @@ def test_a_writer_needs_an_ancestry_or_an_explicit_split(factory, tmp_path):
 def test_an_acceptance_set_takes_one_split_and_real_candidates(factory, tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "Chat", Writer)
     monkeypatch.setenv("FIREWORKS_API_KEY", "test")
-    offered = {"floor": ["read"], "loadable": ["edit", "command"], "guides": []}
+    offered = {"floor": ["read"], "loadable": ["edit", "command"]}
     out = tmp_path / "rows.jsonl"
     skillreq.write(factory, CORPUS, out, "deepseek-v4.1-flash", {"clear": 1, "nearmiss": 0, "multi": 0}, 0, 5, split="accept", offered=offered,
                    workspaces=("zod",), workers=1)

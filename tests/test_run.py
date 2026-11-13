@@ -34,7 +34,7 @@ def reported(run):
 def test_run_settings_defaults_and_unknown_keys():
     settings = config.run_settings({"task_cap": 2, "train": {"device": "cpu"}, "engine_on": {"enabled": False}})
     assert settings["task_cap"] == 2 and settings["train"]["device"] == "cpu"
-    assert settings["train"]["recipes"] == ["B5", "B7G", "E4", "code-rank"]
+    assert settings["train"]["recipes"] == ["B5", "E4", "code-rank"]
     assert settings["engine_on"] == {"enabled": False, "deadline_ms": 60000, "heads": None}
     assert config.run_settings({"engine_on": {"deadline_ms": 5}})["engine_on"] == {"enabled": True, "deadline_ms": 5, "heads": None}
     assert settings["lycaon_checkout"].startswith("/")

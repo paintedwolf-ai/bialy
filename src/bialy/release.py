@@ -31,9 +31,9 @@ configs:
 # Painted Wolf Code decision-head dataset {version}
 
 Training rows for the local decision heads of Painted Wolf Code: at each turn
-of a coding-agent session, which loadable tool schemas the turn needed, which
-instruction units it needed, what kind of work it was, and, from an LLM
-judge, how relevant each skill and tool card was to the request.
+of a coding-agent session, which loadable tool schemas the turn needed, what
+kind of work it was, and, from an LLM judge, how relevant each skill and tool
+card was to the request.
 
 ## How the rows were made
 
@@ -53,7 +53,7 @@ request needed. No row comes from a person's private session.
 - Repositories: {repos}
 - Greenfield stacks: {stacks}
 - Held out (repositories and stacks): {holdout}
-- Row schema: `pw-decide-row/1`, shipped as `row.schema.json`; the corpus the rows are read with, as `corpus.json`
+- Row schema: `pw-decide-row/2`, shipped as `row.schema.json`; the corpus the rows are read with, as `corpus.json`
 - Made by: {code_repo} {code_ref} at commit {factory_commit} (tag `dataset-{version}`); sessions ran on Painted Wolf Code at commit {engine_commit}
 - Second-judge agreement (quadratic-weighted kappa): {kappa}
 

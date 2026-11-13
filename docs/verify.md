@@ -86,8 +86,7 @@ uv run bialy fetch heads --version v1 --out heads-v1
 uv run bialy audit heads --release heads-v1 --dataset dataset-v1 --lycaon <checkout> --engine <launcher>
 ```
 
-Every headline metric (tool precision, recall, F1, guide omission precision,
-kind accuracy) must match the shipped report within 0.01; the engine is
+Every headline metric (tool precision, recall, F1, kind accuracy) must match the shipped report within 0.01; the engine is
 deterministic, and the tolerance absorbs floating-point differences between
 CPU and the GPU or Apple silicon the report was made on.
 

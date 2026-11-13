@@ -180,7 +180,7 @@ def test_an_anchored_version_is_never_rebuilt_differently(factory, split_dir, co
 
 def fake_report(precision, recall, f1):
     return {"overall": {"tools": {"_all": {"precision": precision, "recall": recall, "f1": f1, "macro_recall": 0.5, "loads_per_turn": 2.1}},
-                        "guides": {"_all": {"omission_precision": 0.98}}, "kind": {"accuracy": 0.6}, "requests": {"mrr": 0.6}}}
+                        "kind": {"accuracy": 0.6}, "requests": {"mrr": 0.6}}}
 
 
 def test_heads_release_ships_its_evidence(tmp_path):

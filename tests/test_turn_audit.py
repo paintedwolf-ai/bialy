@@ -33,14 +33,12 @@ def test_independent_corpus_keeps_loading_contract_and_disables_untrained_questi
     from independent_corpus import prepare
 
     source = {'questions': {'tools': {'option_words': 6, 'options': {'old': 'Previous release'}},
-                            'guides': {'omittable': ['read'], 'omit_below': .3},
                             'kind': {'veto_tools': True}},
               'tools': [{'name': 'command', 'description': 'Run a command',
                          'request_loads': ['command', 'command_output', 'command_stop']}]}
     result = prepare(source)
     assert result['questions']['tools']['independent']
     assert 'options' not in result['questions']['tools']
-    assert result['questions']['guides']['omittable'] == []
     assert not result['questions']['kind']['veto_tools']
     assert result['tools'][0]['request_loads'] == source['tools'][0]['request_loads']
     assert result['tools'][0]['option'] == 'Run a command'

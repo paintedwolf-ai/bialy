@@ -166,7 +166,7 @@ def main(argv=None):
     p.add_argument("--run", help="export: pass directory containing shards/*/store.db")
     p.add_argument("--tasks", help="export: task directory")
     p.add_argument("--transcripts", help="extract: transcripts.jsonl or transcripts.jsonl.gz")
-    p.add_argument("--rows", action="append", default=[], help="extract: judged pw-decide-row/1 JSONL files (repeatable)")
+    p.add_argument("--rows", action="append", default=[], help="extract: judged pw-decide-row/2 JSONL files (repeatable)")
     p.add_argument("--out", help="export/shadow/repair: output JSONL path")
     p.add_argument("--out-sft", help="extract: output SFT JSONL path")
     p.add_argument("--out-dpo", help="extract: output DPO JSONL path")
