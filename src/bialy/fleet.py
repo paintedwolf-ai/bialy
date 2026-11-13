@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, faults, llm, runner_security
+from . import config, faults, llm, preservation, runner_security
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -508,12 +508,12 @@ def side_file(rows_path, kind):
     return Path("%s.%s" % (rows_path, kind))
 
 
-def export_live(container, shard, out_name, roots=None):
-    """Export rows from a running container's live store into the shard, with the
-    retention and request rows beside them (`<out_name>.retention`,
-    `<out_name>.requests`): the sessions rooted at `roots`, or every session the store
-    holds. Returns whether it succeeded."""
-    args = ["docker", "exec", container, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", "/cfg/store.db", "--out", "/shard/" + out_name]
+def export_live(container, shard, out_name, roots=None, db=preservation.CONTAINER_STORE):
+    """Export rows through a running container into the shard, with the retention and
+    request rows beside them (`<out_name>.retention`, `<out_name>.requests`): the
+    sessions rooted at `roots`, or every session the store holds. `db` is the live store
+    or a snapshot already in the shard. Returns whether it succeeded."""
+    args = ["docker", "exec", container, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", db, "--out", "/shard/" + out_name]
     for kind, flag in SIDE_ROWS:
         args += [flag, "/shard/%s.%s" % (out_name, kind)]
     if roots is not None:
@@ -586,18 +586,50 @@ def health_snapshot(shard, name, proc, code):
         return faults.snapshot(shard), code
 
 
+SNAPSHOT = "%s/%s" % (preservation.CONTAINER_SHARD, preservation.STORE)
+
+
+def snapshot_and_export(name, shard, attempt, output, roots=None):
+    """Snapshot a running container's store into the shard, then export rows from that
+    snapshot, so the rows and the kept store are the same captured state. When the
+    snapshot cannot be verified, rows are exported from the live store under
+    `unpreserved-<output>` for diagnosis only. Returns whether the store was preserved."""
+    try:
+        preservation.container_backup(sh, name, shard, attempt)
+    except preservation.PreservationFault as fault:
+        print("%s: store not preserved (%s)" % (shard.name, fault.code), flush=True)
+        export_live(name, shard, "unpreserved-" + output, roots)
+        return False
+    export_live(name, shard, output, roots, db=SNAPSHOT)
+    return True
+
+
 def stop_shard(name, child, shard, work, output):
-    """Preserve this owned container's live evidence before stopping it."""
+    """Preserve this owned container's evidence before stopping it."""
     if child.poll() is None:
-        export_live(name, shard, output)
-        sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+        snapshot_and_export(name, shard, "aborted", output)
         sh("docker", "stop", "--time", "10", name, check=False)
         child.wait()
     release_work(work)
 
 
+def keep_completed(shard):
+    """Verify the store a completed runner wrote. Without a verified store the shard's rows
+    are set aside as unpreserved, so the shard counts as failed and is driven again.
+    Returns the fault, or None."""
+    try:
+        preservation.adopt(shard, "completed")
+    except preservation.PreservationFault as fault:
+        for name in ("rows", *(kind for kind, _ in SIDE_ROWS)):
+            path = shard / ("%s.jsonl" % name)
+            if path.exists():
+                os.replace(path, shard / ("unpreserved-%s.jsonl" % name))
+        return fault
+    return None
+
+
 def record_task_abort(shard, fault):
-    if not (shard / "store.db").is_file():
+    if preservation.recorded(shard) is None:
         return False
     rows = shard / "rows.jsonl"
     if rows.exists():
@@ -646,6 +678,7 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
     pending = sorted((s for s in (run_dir / "shards").iterdir() if not (s / "rows.jsonl").exists() and not (s / "task-aborted.json").exists() and s.name not in adopted),
                      key=lambda s: (-shard_minutes(factory, s), s.name))
     for shard in pending:
+        preservation.archive_attempt(shard, [p.name for p in shard.glob("unpreserved-*")])
         for stale in ("manifest.jsonl", "runner.log", "sidecar.log", "setup.log", "rows.part", "overdue-rows.part", "ready.json", "health.json", "task-fault.json"):
             (shard / stale).unlink(missing_ok=True)
     limit = int(runners or factory.fleet["runners"])
@@ -693,12 +726,11 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
                         ledger.append(event="health_abort", container=other, shard=current.name, code=reason)
                     raise faults.RunFault(reason, shard.name)
             if code is None and time.time() > deadline:
-                exported = export_live(name, shard, "overdue-rows.part")
-                sh("docker", "exec", name, "sqlite3", "/cfg/store.db", ".backup '/shard/store.db'", check=False)
+                preserved = snapshot_and_export(name, shard, "overdue", "overdue-rows.part")
                 sh("docker", "kill", name, check=False)
                 code = proc.wait()
-                kept = exported and keep_overdue(shard, shard / "overdue-rows.part")
-                ledger.append(event="overdue", container=name, shard=shard.name, kept=kept)
+                kept = preserved and keep_overdue(shard, shard / "overdue-rows.part")
+                ledger.append(event="overdue", container=name, shard=shard.name, kept=kept, preserved=preserved)
                 if not kept:
                     (shard / "rows.jsonl").unlink(missing_ok=True)
             if code is None:
@@ -706,6 +738,10 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
             del active[name]
             ledger.append(event="exit", container=name, shard=shard.name, code=code)
             release_work(work)
+            if (shard / "rows.jsonl").exists() and preservation.recorded(shard) is None:
+                fault = keep_completed(shard)
+                if fault:
+                    ledger.append(event="store_fault", container=name, shard=shard.name, code=fault.code)
             if lost_tasks(shard):
                 refused = refused or account_refusal(factory)
                 if refused:
@@ -754,9 +790,11 @@ def account_refusal(factory):
 def salvage(run_dir, into):
     """Keep what a run's live containers already drove before the run is abandoned.
 
-    For every running container, export the rows of the sessions its manifest lists from
-    the live store, and copy them with the manifest into `into`/shards/<shard>, which
-    `collect` reads like any run. Returns the task ids that settled anywhere in the run."""
+    For every running container, snapshot its store, export from the snapshot the rows of
+    the sessions its manifest lists, and copy the verified store, manifest and rows into
+    `into`/shards/<shard>, which `collect` and `reexport` read like any run. Rows are
+    published last, so an interrupted salvage leaves no shard that looks complete.
+    Returns the shards saved and the task ids that settled anywhere in the run."""
     run_dir, into = Path(run_dir), Path(into)
     saved = 0
     for shard_name, name in running_containers(run_dir).items():
@@ -765,15 +803,19 @@ def salvage(run_dir, into):
         if not manifest.exists() or not manifest.read_text(encoding="utf-8").strip():
             continue
         roots = [json.loads(line)["root_session"] for line in manifest.read_text(encoding="utf-8").splitlines()]
-        if not export_live(name, shard, "salvage-rows.jsonl", roots):
+        if not snapshot_and_export(name, shard, "salvage", "salvage-rows.jsonl", roots):
+            continue
+        if not (shard / "salvage-rows.jsonl").exists():
             continue
         dest = into / "shards" / shard_name
         dest.mkdir(parents=True, exist_ok=True)
+        preservation.copy_verified(shard, dest)
         shutil.copy2(manifest, dest / "manifest.jsonl")
-        shutil.copy2(shard / "salvage-rows.jsonl", dest / "rows.jsonl")
         for kind, _ in SIDE_ROWS:
             if side_file(shard / "salvage-rows.jsonl", kind).exists():
                 shutil.copy2(side_file(shard / "salvage-rows.jsonl", kind), dest / ("%s.jsonl" % kind))
+        shutil.copy2(shard / "salvage-rows.jsonl", dest / "rows.part")
+        os.replace(dest / "rows.part", dest / "rows.jsonl")
         saved += 1
     settled = set()
     for manifest in (run_dir / "shards").glob("*/manifest.jsonl"):
@@ -788,13 +830,18 @@ def reexport(run_dir, lycaon_debug):
     """Export every finished shard's rows again from the store it kept, with the
     exporter given, replacing the shard's rows, retention, and request files. A label
     or row-shape change therefore reaches a pass without driving anything; `collect`
-    then reads the new files like any other. Returns the shards exported."""
+    then reads the new files like any other. A store that no longer matches its record
+    stops the export; a store archived before records were kept is verified and
+    recorded first. Returns the shards exported."""
     run_dir = Path(run_dir)
     done = []
     for shard in sorted((run_dir / "shards").iterdir()):
-        store, manifest = shard / "store.db", shard / "manifest.jsonl"
+        store, manifest = shard / preservation.STORE, shard / "manifest.jsonl"
         if not store.exists() or not manifest.exists() or not (shard / "rows.jsonl").exists():
             continue
+        if preservation.recorded(shard) is None:
+            preservation.adopt(shard, "archived")
+        preservation.check(shard)
         roots = [json.loads(line)["root_session"] for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
         (shard / "roots.txt").write_text("".join(r + "\n" for r in roots if r), encoding="utf-8")
         args = [str(lycaon_debug), "decide", "export", "--db", str(store), "--roots", str(shard / "roots.txt"), "--out", str(shard / "rows.part")]
@@ -824,7 +871,7 @@ def collect(run_dir, pass_name, tasks_dir):
                 task = json.loads(line)
                 specs[task["id"]] = task
     out = run_dir / "rows.jsonl"
-    stats = {"rows": 0, "retention_rows": 0, "request_rows": 0, "shards": 0, "tasks": 0, "settled": 0}
+    stats = {"rows": 0, "retention_rows": 0, "request_rows": 0, "shards": 0, "unpreserved": 0, "tasks": 0, "settled": 0}
     driven = []
     side_out = {kind: open(run_dir / ("%s.jsonl" % kind), "w", encoding="utf-8") for kind, _ in SIDE_ROWS}
     with open(out, "w", encoding="utf-8") as fh:
@@ -832,6 +879,9 @@ def collect(run_dir, pass_name, tasks_dir):
             rows = shard / "rows.jsonl"
             manifest = shard / "manifest.jsonl"
             if not rows.exists() or not manifest.exists():
+                continue
+            if preservation.recorded(shard) is None:
+                stats["unpreserved"] += 1
                 continue
             stats["shards"] += 1
             meta, model_of = {}, {}

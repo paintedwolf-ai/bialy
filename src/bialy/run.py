@@ -47,7 +47,7 @@ from .campaign import ancestry
 
 STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "ancestry", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
           "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on",
-          "split", "custom_model", "coderank", "release", "train", "evaluate", "release_heads", "report")
+          "split", "coderank", "release", "train", "evaluate", "release_heads", "report")
 ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on")
 
 
@@ -684,10 +684,6 @@ def stage_compare(run):
 
 def stage_split(run):
     return split_rows(run, run.path("split"), judged_files(run), retention_files(run))
-
-
-def stage_custom_model(run):
-    return custom_model_run.collect(run, judge_factory=scaled_factory(run))
 
 
 # ---- code-rank pairs -----------------------------------------------------------

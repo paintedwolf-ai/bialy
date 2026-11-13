@@ -26,7 +26,6 @@ def test_quality_focused_model_plan(factory, tmp_path):
     assert factory.run["generators"] == ["gemma-4-26b-a4b-it", "muse-glimmer-30b", "gemma-4-31b", "beam-1.0-501b", "mistral-large-4"]
     assert factory.run["judges"] == ["gemma-4-26b-a4b-it", "beam-1.0-501b", "mistral-large-4"]
     assert factory.run["skillreq"]["writer"] == "gemma-4-26b-a4b-it"
-    assert factory.run["custom_model"]["teacher"] == "mistral-large-4"
     assert factory.model("muse-glimmer-30b").hosted["provider"] == "doubleword"
     assert factory.model("gemma-4-31b").hosted["provider"] == "deepinfra"
     assert factory.model("beam-1.0-501b").hosted["provider"] == "openrouter"
