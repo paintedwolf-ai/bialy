@@ -100,8 +100,7 @@ the rank head ranks in production.
 
 ## Custom-model training rows
 
-Custom-model training data comes from campaign episodes (`python -m
-bialy.campaign.pilot`): each graded, reviewed episode is exported by the pinned
+Custom-model training data comes from campaign episodes (`bialy campaign`): each graded, reviewed episode is exported by the pinned
 host as a bundle, the host's `scripts/bialy/custom_model/collect.py` turns its
 captures into candidates, and `src/bialy/training_rows.py` admits each candidate
 as a `pw-training-row/1`. Admission records every turn: eligible as an ordinary

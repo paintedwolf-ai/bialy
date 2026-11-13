@@ -81,6 +81,10 @@ class Workbench:
         return out
 
 
+def rows(assignment):
+    return {'rows': {'assignment_sha256': assignment.sha256}}
+
+
 def campaign(tmp_path, **changes):
     graph = ancestry.Graph()
     for repository in REPOSITORIES:
@@ -148,9 +152,9 @@ def test_dumps_follow_their_repositorys_partition_and_outside_dumps_are_unused(t
 
 def test_training_freezes_p0_from_train_and_validation_only(tmp_path):
     journal, assignment, run, workbench = campaign(tmp_path)
-    stage = selector.SelectorTraining(journal, assignment.sha256, run, workbench)
-    output = stage.execute({}, 'a')
-    stage.validate({}, output)
+    stage = selector.SelectorTraining(journal, run, workbench)
+    output = stage.execute(rows(assignment), 'a')
+    stage.validate(rows(assignment), output)
     policy = output['policy']
     assert [recipe for recipe, _ in workbench.trained] == ['B5', 'E4', 'code-rank']
     _, inputs = workbench.trained[0]
@@ -162,14 +166,14 @@ def test_training_freezes_p0_from_train_and_validation_only(tmp_path):
     assert json.loads((Path(output['pilot']) / 'thresholds.json').read_text()) == policy['thresholds']
     Path(output['heads']['unit-rank']).write_text('replaced')
     with pytest.raises(CampaignFault, match='selector_policy_changed'):
-        stage.validate({}, output)
+        stage.validate(rows(assignment), output)
     journal.close()
 
 
 def test_p0_identity_follows_its_thresholds(tmp_path):
     first = campaign(tmp_path / 'a')
     second = campaign(tmp_path / 'b', calibrated={'turn': {'tools': {'load_at': 0.5}}})
-    identities = [selector.SelectorTraining(journal, assignment.sha256, run, bench).execute({}, 'a')['policy']['identity']
+    identities = [selector.SelectorTraining(journal, run, bench).execute(rows(assignment), 'a')['policy']['identity']
                   for journal, assignment, run, bench in (first, second)]
     assert identities[0] != identities[1]
     first[0].close()
@@ -179,21 +183,21 @@ def test_p0_identity_follows_its_thresholds(tmp_path):
 def test_training_refuses_a_split_from_another_assignment(tmp_path):
     journal, _, run, workbench = campaign(tmp_path)
     with pytest.raises(CampaignFault, match='selector_split_not_shared'):
-        selector.SelectorTraining(journal, '0' * 64, run, workbench).execute({}, 'a')
+        selector.SelectorTraining(journal, run, workbench).execute({'rows': {'assignment_sha256': '0' * 64}}, 'a')
     journal.close()
 
 
 def test_a_head_that_cannot_train_leaves_the_selector_unqualified(tmp_path):
     journal, assignment, run, workbench = campaign(tmp_path, skip='E4')
     with pytest.raises(CampaignFault, match='selector_unqualified') as raised:
-        selector.SelectorTraining(journal, assignment.sha256, run, workbench).execute({}, 'a')
+        selector.SelectorTraining(journal, run, workbench).execute(rows(assignment), 'a')
     assert raised.value.details['failures'][0]['head'] == 'unit-rank'
     journal.close()
 
 
 def test_qualification_passes_only_when_every_head_clears_its_bar(tmp_path):
     journal, assignment, run, workbench = campaign(tmp_path)
-    trained = selector.SelectorTraining(journal, assignment.sha256, run, workbench).execute({}, 'a')
+    trained = selector.SelectorTraining(journal, run, workbench).execute(rows(assignment), 'a')
     stage = selector.SelectorQualification(journal, run, workbench)
     output = stage.execute({'selector': trained}, 'q')
     assert output['qualified'] is True and output['configuration']['pilot'] == trained['pilot']
@@ -206,7 +210,7 @@ def test_qualification_passes_only_when_every_head_clears_its_bar(tmp_path):
 
 def test_one_head_short_of_its_bar_fails_the_whole_policy(tmp_path):
     journal, assignment, run, workbench = campaign(tmp_path, metrics={'val_acc': 0.3})
-    trained = selector.SelectorTraining(journal, assignment.sha256, run, workbench).execute({}, 'a')
+    trained = selector.SelectorTraining(journal, run, workbench).execute(rows(assignment), 'a')
     with pytest.raises(CampaignFault, match='selector_unqualified') as raised:
         selector.SelectorQualification(journal, run, workbench).execute({'selector': trained}, 'q')
     assert raised.value.details['failures'] == [{'head': 'code-rank', 'metric': 'val_acc', 'value': 0.3, 'at_least': 0.6}]

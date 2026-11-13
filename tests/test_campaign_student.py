@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -75,6 +76,20 @@ def test_training_failure_cannot_be_reported_as_completion(tmp_path):
     with pytest.raises(CampaignFault, match='training_failed') as caught:
         handler.train_local(job)
     assert caught.value.details['exit_status'] == 127
+    journal.close()
+
+
+def test_running_out_of_memory_is_a_terminal_typed_failure(tmp_path):
+    journal, configuration, inputs = setup(tmp_path)
+    handler = Training(journal, configuration, 'e4b', run=lambda *args, **kwargs: SimpleNamespace(returncode=1))
+    job, out = tmp_path / 'job', tmp_path / 'out'
+    job.mkdir()
+    out.mkdir()
+    (job / 'plan.json').write_text(json.dumps({'out': str(out)}))
+    (out / 'terminal.json').write_text(json.dumps({'status': 'failed', 'failure': {'code': 'out_of_memory', 'retryable': False}}))
+    with pytest.raises(CampaignFault, match='student_out_of_memory') as caught:
+        handler.train_local(job)
+    assert caught.value.retryable is False
     journal.close()
 
 
