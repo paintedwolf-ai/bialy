@@ -1,0 +1,484 @@
+# partial_effect_recovery: A step failed after changing something; inspect what it did and finish without repeating it.
+
+groups:
+  - id: journal-append-then-fail
+    workspace: python-cli
+    prompt: >-
+      Run python3 stage.py once to prepare the output. If it fails, inspect what it already changed
+      before recovering. Finish the result without repeating a completed append, write the token it
+      appended to result.txt, and check the journal holds exactly one entry.
+    fixtures:
+      stage.py: |
+        from pathlib import Path
+        with Path('journal.txt').open('a') as stream:
+            stream.write('$token\n')
+        raise RuntimeError('publication failed after journal append')
+    grader: |
+      assert Path('journal.txt').read_text() == '$token\n'
+      assert Path('result.txt').read_text().strip() == '$token'
+    verification: false
+    solution:
+      journal.txt: |
+        $token
+      result.txt: |
+        $token
+    superficial:
+      journal.txt: |
+        $token
+        $token
+      result.txt: |
+        $token
+    variants: [{token: batch-12}, {token: batch-30}]
+
+  - id: half-applied-migration
+    workspace: python-cli
+    prompt: >-
+      migrate.py prefixes the column names in data.csv and then writes the result to out/. It died
+      partway through. Look at what it already did, then get out/data.csv written without prefixing
+      the columns twice.
+    fixtures:
+      data.csv: |
+        ${prefix}id,${prefix}name
+        1,first
+      migrate.py: |
+        from pathlib import Path
+        source = Path('data.csv')
+        lines = source.read_text().splitlines()
+        lines[0] = ','.join('$prefix' + name for name in lines[0].split(','))
+        source.write_text('\n'.join(lines) + '\n')
+        Path('out/data.csv').write_text(source.read_text())
+    grader: |
+      assert Path('out/data.csv').read_text() == '${prefix}id,${prefix}name\n1,first\n'
+    verification: false
+    solution:
+      out/data.csv: |
+        ${prefix}id,${prefix}name
+        1,first
+    superficial:
+      out/data.csv: |
+        ${prefix}${prefix}id,${prefix}${prefix}name
+        1,first
+    variants: [{prefix: v2_}, {prefix: legacy_}]
+
+  - id: version-bump-then-fail
+    workspace: python-cli
+    prompt: >-
+      Run publish.py once; it bumps VERSION and then writes dist/MANIFEST. If it fails, check what
+      it already changed and finish the publication so the version moved up exactly once and the
+      manifest names app.txt.
+    fixtures:
+      VERSION: |
+        $version
+      app.txt: |
+        payload
+      publish.py: |
+        from pathlib import Path
+        version = Path('VERSION')
+        version.write_text(str(int(version.read_text()) + 1) + '\n')
+        Path('dist/MANIFEST').write_text('app.txt\n')
+    grader: |
+      assert Path('VERSION').read_text().strip() == str($version + 1)
+      assert Path('dist/MANIFEST').read_text().split() == ['app.txt']
+    verification: false
+    solution:
+      VERSION: |
+        ${next}
+      dist/MANIFEST: |
+        app.txt
+    superficial:
+      VERSION: |
+        ${twice}
+      dist/MANIFEST: |
+        app.txt
+    variants: [{version: 4, next: 5, twice: 6}, {version: 19, next: 20, twice: 21}]
+
+  - id: counter-then-changelog
+    workspace: python-cli
+    prompt: >-
+      Run release.py once; it increments counter.txt and then appends the release line to
+      CHANGELOG.md. If it fails, inspect the state, finish the changelog for release $release, and
+      leave the counter incremented once.
+    fixtures:
+      counter.txt: |
+        $count
+      CHANGELOG.md: |
+        # Changes
+      release.py: |
+        from pathlib import Path
+        counter = Path('counter.txt')
+        counter.write_text(str(int(counter.read_text()) + 1) + '\n')
+        raise OSError('changelog is locked')
+    grader: |
+      assert Path('counter.txt').read_text().strip() == str($count + 1)
+      assert Path('CHANGELOG.md').read_text().strip().splitlines()[-1] == '- Release $release'
+    verification: false
+    solution:
+      counter.txt: |
+        ${next}
+      CHANGELOG.md: |
+        # Changes
+        - Release $release
+    superficial:
+      counter.txt: |
+        ${twice}
+      CHANGELOG.md: |
+        # Changes
+        - Release $release
+    variants: [{count: 2, next: 3, twice: 4, release: "1.4"}, {count: 7, next: 8, twice: 9, release: "2.0"}]
+
+  - id: build-number-then-tag
+    workspace: python-cli
+    prompt: >-
+      Run python3 bump.py once. It increases the build number and then writes the release tag. If it fails,
+      check what it already changed and finish so tag.txt names the new build, without bumping it twice.
+    fixtures:
+      build.txt: |
+        $start
+      bump.py: |
+        from pathlib import Path
+        number = int(Path('build.txt').read_text()) + 1
+        Path('build.txt').write_text('%d\n' % number)
+        raise RuntimeError('tag service unavailable')
+    grader: |
+      assert Path('build.txt').read_text() == '%d\n' % ($start + 1)
+      assert Path('tag.txt').read_text().strip() == 'v%d' % ($start + 1)
+    verification: false
+    solution:
+      build.txt: |
+        ${next}
+      tag.txt: |
+        v${next}
+    superficial:
+      build.txt: |
+        ${after}
+      tag.txt: |
+        v${after}
+    variants: [{start: 41, next: 42, after: 43}, {start: 107, next: 108, after: 109}]
+
+  - id: header-then-format
+    workspace: python-cli
+    prompt: >-
+      Run python3 add_header.py once to put the licence header on module.py and reformat it. If it stops
+      partway, inspect the file and finish so the header appears exactly once.
+    fixtures:
+      module.py: |
+        def value():
+            return $value
+      add_header.py: |
+        from pathlib import Path
+        path = Path('module.py')
+        path.write_text('# Licensed under $licence\n' + path.read_text())
+        raise RuntimeError('formatter crashed after the header was added')
+    grader: |
+      text = Path('module.py').read_text()
+      assert text.count('# Licensed under $licence') == 1
+      assert text.startswith('# Licensed under $licence\n')
+      assert 'return $value' in text
+    verification: false
+    solution:
+      module.py: |
+        # Licensed under $licence
+        def value():
+            return $value
+    superficial:
+      module.py: |
+        # Licensed under $licence
+        # Licensed under $licence
+        def value():
+            return $value
+    variants: [{licence: MIT, value: 3}, {licence: Apache-2.0, value: 9}]
+
+  - id: queue-stops-on-bad-item
+    workspace: python-cli
+    prompt: >-
+      Run python3 process.py to work through queue.txt. Each finished item is appended to done.txt. If it stops
+      on an item it cannot handle, record that item in failed.txt, process the rest, and never process an item twice.
+    fixtures:
+      queue.txt: |
+        $a
+        $b
+        broken
+        $c
+      process.py: |
+        from pathlib import Path
+        for item in Path('queue.txt').read_text().split():
+            if item == 'broken':
+                raise ValueError('cannot process ' + item)
+            with Path('done.txt').open('a') as stream:
+                stream.write(item.upper() + '\n')
+    grader: |
+      assert Path('done.txt').read_text() == '$a\n$b\n$c\n'.upper()
+      assert Path('failed.txt').read_text().strip() == 'broken'
+    verification: false
+    solution:
+      done.txt: |
+        ${A}
+        ${B}
+        ${C}
+      failed.txt: |
+        broken
+    superficial:
+      done.txt: |
+        ${A}
+        ${B}
+        ${A}
+        ${B}
+        ${C}
+      failed.txt: |
+        broken
+    variants: [{a: red, b: green, c: blue, A: RED, B: GREEN, C: BLUE}, {a: one, b: two, c: three, A: ONE, B: TWO, C: THREE}]
+
+  - id: transfer-debit-only
+    workspace: python-cli
+    prompt: >-
+      Run python3 transfer.py once to move $amount from savings to checking in balances.json. If it fails,
+      look at what it already did and complete the transfer without debiting savings again.
+    fixtures:
+      balances.json: |
+        {"savings": 500, "checking": 100}
+      transfer.py: |
+        import json
+        from pathlib import Path
+        path = Path('balances.json')
+        balances = json.loads(path.read_text())
+        balances['savings'] -= $amount
+        path.write_text(json.dumps(balances))
+        raise ConnectionError('credit step failed')
+    grader: |
+      assert json.loads(Path('balances.json').read_text()) == {'savings': 500 - $amount, 'checking': 100 + $amount}
+    verification: false
+    solution:
+      balances.json: |
+        {"savings": ${savings}, "checking": ${checking}}
+    superficial:
+      balances.json: |
+        {"savings": ${double}, "checking": ${checking}}
+    variants: [{amount: 50, savings: 450, checking: 150, double: 400}, {amount: 120, savings: 380, checking: 220, double: 260}]
+
+  - id: config-key-migration
+    workspace: python-cli
+    prompt: >-
+      Run python3 migrate_config.py once. It renames the "$old" setting to "$new" and then records version 2.
+      If it fails partway, inspect config.json and finish the migration without renaming anything twice.
+    fixtures:
+      config.json: |
+        {"$old": true, "version": 1}
+      migrate_config.py: |
+        import json
+        from pathlib import Path
+        path = Path('config.json')
+        config = json.loads(path.read_text())
+        config['$new'] = config.pop('$old')
+        path.write_text(json.dumps(config))
+        raise RuntimeError('version stamp failed')
+    grader: |
+      assert json.loads(Path('config.json').read_text()) == {'$new': True, 'version': 2}
+    verification: false
+    solution:
+      config.json: |
+        {"$new": true, "version": 2}
+    superficial:
+      config.json: |
+        {"$old": true, "$new": true, "version": 2}
+    variants: [{old: verbose, new: log_verbose}, {old: colour, new: color}]
+
+  - id: notifications-partly-sent
+    workspace: python-cli
+    prompt: >-
+      Run python3 notify.py once to notify everyone in recipients.txt; each notification it sends is logged
+      in sent.log. If it stops, find who was already notified and notify only the rest, so everyone is notified once.
+    fixtures:
+      recipients.txt: |
+        $first
+        $second
+        $third
+      notify.py: |
+        from pathlib import Path
+        for number, name in enumerate(Path('recipients.txt').read_text().split()):
+            if number == 2:
+                raise TimeoutError('mail relay timed out')
+            with Path('sent.log').open('a') as stream:
+                stream.write(name + '\n')
+    grader: |
+      assert sorted(Path('sent.log').read_text().split()) == sorted(['$first', '$second', '$third'])
+    verification: false
+    solution:
+      sent.log: |
+        $first
+        $second
+        $third
+    superficial:
+      sent.log: |
+        $first
+        $second
+        $first
+        $second
+        $third
+    variants: [{first: ana, second: ben, third: cho}, {first: dev, second: eli, third: fay}]
+
+  - id: scaffold-without-readme
+    workspace: python-cli
+    prompt: >-
+      Run python3 scaffold.py once to lay out the $project service under app/. If it fails, see what it already
+      created and finish the layout, keeping any file it already wrote exactly as it is.
+    fixtures:
+      scaffold.py: |
+        from pathlib import Path
+        root = Path('app')
+        (root / 'src').mkdir(parents=True, exist_ok=True)
+        (root / 'src' / 'main.py').write_text('print("$project")\n')
+        raise OSError('template for README.md missing')
+    grader: |
+      assert Path('app/src/main.py').read_text() == 'print("$project")\n'
+      assert Path('app/README.md').read_text().strip().startswith('# $project')
+    verification: false
+    solution:
+      app/src/main.py: |
+        print("$project")
+      app/README.md: |
+        # $project
+    superficial:
+      app/src/main.py: |
+        print("placeholder")
+      app/README.md: |
+        # $project
+    variants: [{project: atlas}, {project: beacon}]
+
+  - id: tag-recorded-then-notes
+    workspace: python-cli
+    prompt: >-
+      Run python3 release.py once to tag $version and write its notes. If it fails, check what it already
+      recorded and finish the notes without tagging the release a second time.
+    fixtures:
+      tags.txt: |
+        v0.9.0
+      release.py: |
+        from pathlib import Path
+        with Path('tags.txt').open('a') as stream:
+            stream.write('$version\n')
+        raise RuntimeError('could not render release notes')
+    grader: |
+      assert Path('tags.txt').read_text() == 'v0.9.0\n$version\n'
+      assert '$version' in Path('NOTES.md').read_text()
+    verification: false
+    solution:
+      tags.txt: |
+        v0.9.0
+        $version
+      NOTES.md: |
+        # $version
+    superficial:
+      tags.txt: |
+        v0.9.0
+        $version
+        $version
+      NOTES.md: |
+        # $version
+    variants: [{version: v1.0.0}, {version: v1.1.0}]
+
+  - id: seed-rows-then-marker
+    workspace: python-cli
+    prompt: >-
+      Run python3 seed.py once to load the $table rows into seed.csv and mark the seed complete. If it fails,
+      check what it already loaded and finish so each row appears once and seeded.txt names the table.
+    fixtures:
+      seed.py: |
+        from pathlib import Path
+        with Path('seed.csv').open('a') as stream:
+            for number in range(1, 4):
+                stream.write('$table,%d\n' % number)
+        raise RuntimeError('could not write the completion marker')
+    grader: |
+      assert Path('seed.csv').read_text() == ''.join('$table,%d\n' % number for number in range(1, 4))
+      assert Path('seeded.txt').read_text().strip() == '$table'
+    verification: false
+    solution:
+      seed.csv: |
+        $table,1
+        $table,2
+        $table,3
+      seeded.txt: |
+        $table
+    superficial:
+      seed.csv: |
+        $table,1
+        $table,2
+        $table,3
+        $table,1
+        $table,2
+        $table,3
+      seeded.txt: |
+        $table
+    variants: [{table: users}, {table: plans}]
+
+  - id: inventory-reserve-twice
+    workspace: python-cli
+    prompt: >-
+      Run python3 reserve.py once to reserve $quantity units of $sku for order 17. It updates stock.json and
+      then the order file. If it fails, check what it already changed and finish without reserving the stock twice.
+    fixtures:
+      stock.json: |
+        {"$sku": 40}
+      reserve.py: |
+        import json
+        from pathlib import Path
+        path = Path('stock.json')
+        stock = json.loads(path.read_text())
+        stock['$sku'] -= $quantity
+        path.write_text(json.dumps(stock))
+        raise RuntimeError('order store unavailable')
+    grader: |
+      assert json.loads(Path('stock.json').read_text()) == {'$sku': 40 - $quantity}
+      assert json.loads(Path('order-17.json').read_text()) == {'sku': '$sku', 'quantity': $quantity}
+    verification: false
+    solution:
+      stock.json: |
+        {"$sku": ${left}}
+      order-17.json: |
+        {"sku": "$sku", "quantity": $quantity}
+    superficial:
+      stock.json: |
+        {"$sku": ${twice}}
+      order-17.json: |
+        {"sku": "$sku", "quantity": $quantity}
+    variants: [{sku: bolt-m4, quantity: 6, left: 34, twice: 28}, {sku: nut-m6, quantity: 15, left: 25, twice: 10}]
+
+  - id: cache-warm-then-index
+    workspace: python-cli
+    prompt: >-
+      Run python3 warm.py once. It writes a cache entry for each page of the $site site and then the index. If it
+      fails, inspect the cache directory and write index.txt listing every cached page once, without writing any
+      entry again.
+    fixtures:
+      warm.py: |
+        from pathlib import Path
+        cache = Path('cache')
+        cache.mkdir(exist_ok=True)
+        for page in ('home', 'about'):
+            with (cache / (page + '.html')).open('a') as stream:
+                stream.write('<p>$site %s</p>\n' % page)
+        raise RuntimeError('index writer failed')
+    grader: |
+      assert Path('cache/home.html').read_text() == '<p>$site home</p>\n'
+      assert Path('cache/about.html').read_text() == '<p>$site about</p>\n'
+      assert sorted(Path('index.txt').read_text().split()) == ['about', 'home']
+    verification: false
+    solution:
+      cache/home.html: |
+        <p>$site home</p>
+      cache/about.html: |
+        <p>$site about</p>
+      index.txt: |
+        home
+        about
+    superficial:
+      cache/home.html: |
+        <p>$site home</p>
+        <p>$site home</p>
+      cache/about.html: |
+        <p>$site about</p>
+        <p>$site about</p>
+      index.txt: |
+        home
+        about
+    variants: [{site: docs}, {site: shop}]

@@ -1,0 +1,541 @@
+# failure_diagnosis: A documented command or path fails; find what is actually wrong before changing code.
+
+groups:
+  - id: documented-verify-missing
+    workspace: python-cli
+    prompt: >-
+      The documented verification command is python3 verify.py. Try it, investigate any failure, find
+      the checks that actually exist, and fix compute(n) to return n + $offset. Report the verification
+      command that worked.
+    fixtures:
+      value.py: |
+        def compute(n):
+            return n
+      checks/check.py: |
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from value import compute
+        assert compute(3) == 3 + $offset
+    grader: |
+      from value import compute
+      assert compute(3) == 3 + $offset
+      assert compute(0) == $offset
+      assert compute(-2) == $offset - 2
+    solution:
+      value.py: |
+        def compute(n):
+            return n + $offset
+    superficial:
+      value.py: |
+        def compute(n):
+            return 3 + $offset
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{offset: 6}, {offset: 10}]
+
+  - id: renamed-formatter-import
+    workspace: python-cli
+    prompt: >-
+      python3 report.py crashes on startup since the formatting module was tidied up. Work out what
+      broke and get the report working again without changing what fmt.py offers.
+    fixtures:
+      fmt.py: |
+        def format_amount(value):
+            return '$currency' + format(value, ',.2f')
+      report.py: |
+        from fmt import format_total
+        def render(values):
+            return ', '.join(format_total(value) for value in values)
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    grader: |
+      import fmt
+      from report import render
+      assert hasattr(fmt, 'format_amount')
+      assert render([1, 2.5]) == '$currency' + '1.00, ' + '$currency' + '2.50'
+      assert render([1234]) == '$currency' + '1,234.00'
+    verification: false
+    solution:
+      report.py: |
+        from fmt import format_amount
+        def render(values):
+            return ', '.join(format_amount(value) for value in values)
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    superficial:
+      report.py: |
+        def render(values):
+            return '$currency' + '1.00, ' + '$currency' + '2.50'
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    variants: [{currency: "EUR "}, {currency: "GBP "}]
+
+  - id: settings-file-path
+    workspace: python-cli
+    prompt: >-
+      Running python3 app.py fails because it can't find its settings, but settings.ini is right there
+      in the project. Figure out why and make the app read the file it ships with.
+    fixtures:
+      settings.ini: |
+        [app]
+        name = $name
+        workers = 2
+      app.py: |
+        import configparser
+        from pathlib import Path
+        def load():
+            parser = configparser.ConfigParser()
+            with open(Path('config') / 'settings.ini') as stream:
+                parser.read_file(stream)
+            return dict(parser['app'])
+        if __name__ == '__main__':
+            print(load())
+    grader: |
+      import os, tempfile
+      Path('settings.ini').write_text('[app]\nname = changed\nworkers = 5\n')
+      os.chdir(tempfile.gettempdir())
+      from app import load
+      assert load() == {'name': 'changed', 'workers': '5'}
+    verification: false
+    solution:
+      app.py: |
+        import configparser
+        from pathlib import Path
+        def load():
+            parser = configparser.ConfigParser()
+            with open(Path(__file__).resolve().parent / 'settings.ini') as stream:
+                parser.read_file(stream)
+            return dict(parser['app'])
+        if __name__ == '__main__':
+            print(load())
+    superficial:
+      app.py: |
+        def load():
+            return {'name': '$name', 'workers': '2'}
+        if __name__ == '__main__':
+            print(load())
+    variants: [{name: billing}, {name: ledger}]
+
+  - id: port-variable-name
+    workspace: python-cli
+    prompt: >-
+      The service exits with KeyError: 'APP_PORT'. The README says it reads PORT and falls back to 8000.
+      Find out what's going on and make it behave as documented.
+    fixtures:
+      README.md: |
+        The service listens on the port in the PORT environment variable, or 8000 when it is unset.
+      service.py: |
+        import os
+        def port():
+            return int(os.environ['APP_PORT'])
+    grader: |
+      import os
+      from service import port
+      os.environ.pop('PORT', None)
+      os.environ.pop('APP_PORT', None)
+      assert port() == 8000
+      os.environ['PORT'] = '$port'
+      assert port() == $port
+    verification: false
+    solution:
+      service.py: |
+        import os
+        def port():
+            return int(os.environ.get('PORT', '8000'))
+    superficial:
+      service.py: |
+        def port():
+            return 8000
+    variants: [{port: 9090}, {port: 7311}]
+
+  - id: missing-environment-default
+    workspace: python-cli
+    prompt: >-
+      python3 greet.py crashes on a fresh machine. It should greet with the GREETING environment variable
+      when set and "$default" otherwise. Reproduce the crash, find its cause, fix it, and confirm both cases.
+    fixtures:
+      greet.py: |
+        import os
+        def greeting():
+            return os.environ['GREETING']
+        if __name__ == '__main__':
+            print(greeting())
+    grader: |
+      import os
+      os.environ.pop('GREETING', None)
+      from greet import greeting
+      assert greeting() == '$default'
+      os.environ['GREETING'] = 'Hi'
+      assert greeting() == 'Hi'
+    solution:
+      greet.py: |
+        import os
+        def greeting():
+            return os.environ.get('GREETING', '$default')
+        if __name__ == '__main__':
+            print(greeting())
+    superficial:
+      greet.py: |
+        def greeting():
+            return '$default'
+        if __name__ == '__main__':
+            print(greeting())
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{default: Hello}, {default: Welcome}]
+
+  - id: empty-average
+    workspace: python-cli
+    prompt: >-
+      The nightly stats job died on a day with no readings. Reproduce it with an empty list, find what
+      fails, and make mean() return 0.0 for no readings while keeping every other result unchanged.
+    fixtures:
+      stats.py: |
+        def mean(values):
+            return sum(values) / len(values)
+    grader: |
+      from stats import mean
+      assert mean([]) == 0.0
+      assert mean([$a, $b]) == ($a + $b) / 2
+      assert mean([5]) == 5
+    solution:
+      stats.py: |
+        def mean(values):
+            return sum(values) / len(values) if values else 0.0
+    superficial:
+      stats.py: |
+        def mean(values):
+            return 0.0
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{a: 4, b: 10}, {a: 7, b: 21}]
+
+  - id: data-path-from-cwd
+    workspace: python-cli
+    prompt: >-
+      python3 tools/limits.py works from inside tools/ but fails from the project root. Find out why and make
+      it read tools/limits.txt wherever it is run from; the limit it reports should be $limit.
+    fixtures:
+      tools/limits.txt: |
+        $limit
+      tools/limits.py: |
+        from pathlib import Path
+        def limit():
+            return int(Path('limits.txt').read_text())
+        if __name__ == '__main__':
+            print(limit())
+    grader: |
+      import importlib.util
+      spec = importlib.util.spec_from_file_location('limits', Path('tools/limits.py'))
+      module = importlib.util.module_from_spec(spec)
+      spec.loader.exec_module(module)
+      assert module.limit() == $limit
+      Path('tools/limits.txt').write_text('7\n')
+      assert module.limit() == 7
+    solution:
+      tools/limits.py: |
+        from pathlib import Path
+        def limit():
+            return int((Path(__file__).resolve().parent / 'limits.txt').read_text())
+        if __name__ == '__main__':
+            print(limit())
+    superficial:
+      tools/limits.py: |
+        def limit():
+            return $limit
+        if __name__ == '__main__':
+            print(limit())
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{limit: 25}, {limit: 80}]
+
+  - id: config-trailing-comma
+    workspace: python-cli
+    prompt: >-
+      python3 serve.py stopped starting after someone edited the configuration. Find what is actually
+      wrong, repair it without changing how serve.py reads its settings, and confirm it reports port $port.
+    fixtures:
+      config.json: |
+        {"port": $port, "debug": false,}
+      serve.py: |
+        import json
+        from pathlib import Path
+        def port():
+            return json.loads(Path('config.json').read_text())['port']
+        if __name__ == '__main__':
+            print(port())
+    grader: |
+      assert json.loads(Path('config.json').read_text()) == {'port': $port, 'debug': False}
+      assert 'json.loads' in Path('serve.py').read_text()
+      from serve import port
+      assert port() == $port
+    verification: false
+    solution:
+      config.json: |
+        {"port": $port, "debug": false}
+    superficial:
+      serve.py: |
+        def port():
+            return $port
+        if __name__ == '__main__':
+            print(port())
+    variants: [{port: 8080}, {port: 9000}]
+
+  - id: script-name-as-argument
+    workspace: python-cli
+    prompt: >-
+      python3 shout.py $word should print the word in capitals, but it prints something else. Run it, work out
+      what it is actually reading, and fix it so the first argument is shouted.
+    fixtures:
+      shout.py: |
+        import sys
+        def shout(args):
+            return args[0].upper()
+        if __name__ == '__main__':
+            print(shout(sys.argv))
+    grader: |
+      import subprocess, sys as system
+      result = subprocess.run([system.executable, 'shout.py', '$word'], capture_output=True, text=True)
+      assert result.stdout.strip() == '$word'.upper(), result.stdout
+      result = subprocess.run([system.executable, 'shout.py', 'quiet'], capture_output=True, text=True)
+      assert result.stdout.strip() == 'QUIET'
+    solution:
+      shout.py: |
+        import sys
+        def shout(args):
+            return args[0].upper()
+        if __name__ == '__main__':
+            print(shout(sys.argv[1:]))
+    superficial:
+      shout.py: |
+        print('$word'.upper())
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{word: hello}, {word: ready}]
+
+  - id: utf8-notes
+    workspace: python-cli
+    prompt: >-
+      python3 notes.py fails on the notes file that now includes "$text". Reproduce the error, find the cause,
+      and make it count the lines regardless of the machine's default encoding.
+    fixtures:
+      notes.txt: |
+        first
+        $text
+        last
+      notes.py: |
+        def lines(path='notes.txt'):
+            with open(path, encoding='ascii') as stream:
+                return len(stream.read().splitlines())
+        if __name__ == '__main__':
+            print(lines())
+    grader: |
+      from notes import lines
+      assert lines() == 3
+      assert 'utf' in Path('notes.py').read_text().lower()
+    solution:
+      notes.py: |
+        def lines(path='notes.txt'):
+            with open(path, encoding='utf-8') as stream:
+                return len(stream.read().splitlines())
+        if __name__ == '__main__':
+            print(lines())
+    superficial:
+      notes.py: |
+        def lines(path='notes.txt'):
+            return 3
+        if __name__ == '__main__':
+            print(lines())
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{text: café crème}, {text: naïve résumé}]
+
+  - id: port-string-comparison
+    workspace: python-cli
+    prompt: >-
+      With PORT=$port set, python3 check_port.py claims the port is privileged. Find why the comparison goes
+      wrong and fix it; ports below 1024 are privileged.
+    fixtures:
+      check_port.py: |
+        import os
+        def privileged():
+            return os.environ.get('PORT', '80') < '1024'
+        if __name__ == '__main__':
+            print(privileged())
+    grader: |
+      import os
+      from check_port import privileged
+      os.environ['PORT'] = '$port'
+      assert privileged() is False
+      os.environ['PORT'] = '80'
+      assert privileged() is True
+      os.environ['PORT'] = '1024'
+      assert privileged() is False
+    solution:
+      check_port.py: |
+        import os
+        def privileged():
+            return int(os.environ.get('PORT', '80')) < 1024
+        if __name__ == '__main__':
+            print(privileged())
+    superficial:
+      check_port.py: |
+        def privileged():
+            return False
+        if __name__ == '__main__':
+            print(privileged())
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{port: 8000}, {port: 5000}]
+
+  - id: float-index-middle
+    workspace: python-cli
+    prompt: >-
+      python3 middle.py fails with a TypeError when picking the middle entry of the queue. Reproduce it, find
+      the cause, and make middle() return the middle item, the later of the two for an even length.
+    fixtures:
+      middle.py: |
+        def middle(items):
+            return items[len(items) / 2]
+        if __name__ == '__main__':
+            print(middle(list(range($length))))
+    grader: |
+      from middle import middle
+      assert middle(list(range($length))) == $length // 2
+      assert middle(['a', 'b', 'c']) == 'b'
+      assert middle(['a', 'b', 'c', 'd']) == 'c'
+    solution:
+      middle.py: |
+        def middle(items):
+            return items[len(items) // 2]
+        if __name__ == '__main__':
+            print(middle(list(range($length))))
+    superficial:
+      middle.py: |
+        def middle(items):
+            return $length // 2
+        if __name__ == '__main__':
+            print(middle(list(range($length))))
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{length: 9}, {length: 14}]
+
+  - id: naive-aware-deadline
+    workspace: python-cli
+    prompt: >-
+      python3 deadline.py raises a TypeError when checking whether a task is overdue. Reproduce it, find the
+      mismatch, and make overdue() work with the UTC timestamps the tasks store; the grace period is $grace minutes.
+    fixtures:
+      deadline.py: |
+        from datetime import datetime, timedelta, timezone
+        GRACE = timedelta(minutes=$grace)
+        def overdue(due, now=None):
+            now = now or datetime.now()
+            return now > due + GRACE
+    grader: |
+      from datetime import datetime, timedelta, timezone
+      from deadline import overdue
+      due = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+      assert overdue(due, due + timedelta(minutes=$grace + 1))
+      assert not overdue(due, due + timedelta(minutes=$grace))
+      assert overdue(datetime(2000, 1, 1, tzinfo=timezone.utc))
+    solution:
+      deadline.py: |
+        from datetime import datetime, timedelta, timezone
+        GRACE = timedelta(minutes=$grace)
+        def overdue(due, now=None):
+            now = now or datetime.now(timezone.utc)
+            return now > due + GRACE
+    superficial:
+      deadline.py: |
+        from datetime import datetime, timedelta, timezone
+        GRACE = timedelta(minutes=$grace)
+        def overdue(due, now=None):
+            return now is not None and now > due + GRACE
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{grace: 5}, {grace: 30}]
+
+  - id: circular-import
+    workspace: python-cli
+    prompt: >-
+      python3 app.py fails at import time after a refactor split the code into models.py and helpers.py.
+      Find the actual cause and restructure so app.py prints the label for item $item; keep both modules.
+    fixtures:
+      models.py: |
+        from helpers import label
+        class Item:
+            def __init__(self, number):
+                self.number = number
+            def describe(self):
+                return label(self)
+      helpers.py: |
+        from models import Item
+        def label(item):
+            assert isinstance(item, Item)
+            return 'item-%d' % item.number
+      app.py: |
+        from models import Item
+        if __name__ == '__main__':
+            print(Item($item).describe())
+    grader: |
+      import subprocess, sys as system
+      result = subprocess.run([system.executable, 'app.py'], capture_output=True, text=True)
+      assert result.stdout.strip() == 'item-$item', result.stderr
+      assert Path('models.py').exists() and Path('helpers.py').exists()
+      from models import Item
+      assert Item(2).describe() == 'item-2'
+    solution:
+      helpers.py: |
+        def label(item):
+            return 'item-%d' % item.number
+    superficial:
+      app.py: |
+        print('item-$item')
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{item: 4}, {item: 17}]
+
+  - id: unregistered-handler
+    workspace: python-cli
+    prompt: >-
+      python3 dispatch.py $command answers "unknown command" even though a handler for it exists. Find why it is
+      never found and fix it without hardcoding the command in the dispatcher.
+    fixtures:
+      dispatch.py: |
+        import sys
+        HANDLERS = {}
+        def register(name):
+            def wrap(function):
+                HANDLERS[name] = function
+                return function
+            return wrap
+        def run(name):
+            handler = HANDLERS.get(name)
+            return handler() if handler else 'unknown command'
+        def $command():
+            return '$command done'
+        if __name__ == '__main__':
+            print(run(sys.argv[1]))
+    grader: |
+      import dispatch
+      assert dispatch.run('$command') == '$command done'
+      assert dispatch.run('missing') == 'unknown command'
+      assert '@register' in Path('dispatch.py').read_text()
+    solution:
+      dispatch.py: |
+        import sys
+        HANDLERS = {}
+        def register(name):
+            def wrap(function):
+                HANDLERS[name] = function
+                return function
+            return wrap
+        def run(name):
+            handler = HANDLERS.get(name)
+            return handler() if handler else 'unknown command'
+        @register('$command')
+        def $command():
+            return '$command done'
+        if __name__ == '__main__':
+            print(run(sys.argv[1]))
+    superficial:
+      dispatch.py: |
+        import sys
+        def run(name):
+            return '$command done' if name == '$command' else 'unknown command'
+        if __name__ == '__main__':
+            print(run(sys.argv[1]))
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{command: backup}, {command: rotate}]
