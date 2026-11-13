@@ -39,7 +39,7 @@ ATTEMPT = {'stage_status': 'passed', 'effective_thinking': False, 'success': Fal
 
 
 def handlers():
-    stages = {name: Handler() for name in ('host_qualification', 'reviewer_qualification', 'teacher_baseline',
+    stages = {name: Handler() for name in ('host_qualification', 'reviewer_qualification', 'teacher_qualification',
               'collection_pilot', 'dataset_pilot', 'baseline_e4b', 'evaluate_base_e4b', 'pilot_e4b', 'export_e4b')}
     stages['host_qualification'].output = {'conservative_reference': {'qualified': True}}
     stages['evaluate_base_e4b'].output = {'attempts': [ATTEMPT]}

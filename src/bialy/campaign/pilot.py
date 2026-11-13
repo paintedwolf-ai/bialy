@@ -35,7 +35,7 @@ class Pilot:
             try:
                 host = self.stage('host_qualification', {})
                 self.stage('reviewer_qualification', {'host': host})
-                teachers = self.stage('teacher_baseline', {'host': host})
+                teachers = self.stage('teacher_qualification', {'host': host})
                 common = {'host': host, 'selector': host['conservative_reference'], 'teachers': teachers}
                 collection = self.stage('collection_pilot', common)
                 review = self.stage('review_collection_pilot', {'collection': collection}) if self.review else None

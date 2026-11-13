@@ -5,7 +5,7 @@ import pytest
 from conftest import FOCUSES, register_bank
 
 from bialy.campaign.ancestry import PARTITIONS
-from bialy.campaign.collection import Collection, TeacherBaseline
+from bialy.campaign.collection import Collection
 from bialy.campaign.dataset import Assembly
 from bialy.campaign.journal import CampaignFault, Journal
 from bialy.campaign.lineage import Lineage
@@ -40,7 +40,7 @@ def test_collection_records_every_episode_and_reuses_pilot_attempts(tmp_path):
         return {student: {'manifest': str(manifest), 'rows': 2} for student in students()}
     minimum = dict.fromkeys(('train', 'validation', 'system_test'), 8)
     inputs = {'host': {}, 'selector': {}, 'teachers': {
-        'teachers': [{'id': 'teacher'}], 'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}},
+        'teachers': [{'id': 'teacher'}], 'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}},
         'plan': {'collection_episodes': minimum}}
     pilot = Collection(journal, lineage, driver, export, students(), True, minimum=minimum)
     result = pilot.execute(inputs, 'pilot')
@@ -93,28 +93,7 @@ def test_assembly_uses_the_first_admitted_attempt_of_each_task(tmp_path):
     journal.close()
 
 
-def test_teacher_floors_come_from_development_attempts(tmp_path):
-    journal = Journal(tmp_path, {})
-    lineage = Lineage(journal, FOCUSES)
-    register_bank(lineage, [{'id': f'{partition}-{family}-{index}', 'partition': partition, 'focus': family, 'source_class': 'synthetic'}
-                   for partition in PARTITIONS for family in FOCUSES for index in range(4)])
-    lineage.freeze()
-    driver = Driver()
-    baseline = TeacherBaseline(journal, lineage, driver, [{'id': 'teacher'}])
-    inputs = {'host': {'conservative_reference': {}, 'teacher_capture_qualified': {'teacher': True}}}
-    result = baseline.execute(inputs, 'baseline')
-    baseline.validate(inputs, result)
-    assert len(driver.calls) == 64
-    for route in result['focuses'].values():
-        assert route['qualified'] == 4 and route['attempts'] == 8
-        assert 0 < route['floor'] < 0.5
-    assert baseline.reconcile(inputs, 'baseline') == result
-    assert len(driver.calls) == 64
-    journal.close()
-
-
-@pytest.mark.parametrize('kind', ['teacher', 'collection'])
-def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_path, kind):
+def test_infrastructure_failure_stops_paid_collection_episodes(tmp_path):
     journal = Journal(tmp_path, {})
     lineage = Lineage(journal, FOCUSES)
     register_bank(lineage, [{'id': partition + family, 'partition': partition, 'focus': family, 'source_class': 'synthetic'}
@@ -127,11 +106,8 @@ def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_
     driver.execute = broken
     inputs = {'host': {'conservative_reference': {}, 'teacher_capture_qualified': {'teacher': True}},
               'selector': {}, 'teachers': {'teachers': [{'id': 'teacher'}],
-                                          'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}}}
-    if kind == 'teacher':
-        stage = TeacherBaseline(journal, lineage, driver, [{'id': 'teacher'}], minimum_tasks=1, repetitions=1)
-    else:
-        stage = Collection(journal, lineage, driver, None, students(), True)
+                                          'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}}}
+    stage = Collection(journal, lineage, driver, None, students(), True)
     with pytest.raises(CampaignFault, match='episode_incomplete') as failure:
         stage.execute(inputs, 'run')
     assert failure.value.details['fault']['code'] == 'evidence_unavailable'

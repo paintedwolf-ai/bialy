@@ -42,9 +42,10 @@ import sys
 import time
 from pathlib import Path
 
-from . import audit, coderank, config, custom_quality, dpo, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
+from . import audit, coderank, config, dpo, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
 from . import run as runmod
 from .campaign import ancestry
+from .campaign.review_contract import judge_rows
 from .review import cli as review_cli
 
 
@@ -214,7 +215,7 @@ def main(argv=None):
         if args.action == "quality":
             if not (args.sft and args.transcripts and args.out):
                 ap.error("dpo quality needs --sft, --transcripts, and --out")
-            print(json.dumps(custom_quality.judge_rows(factory, args.sft, args.transcripts, args.out, args.seed), indent=2))
+            print(json.dumps(judge_rows(factory, args.sft, args.transcripts, args.out, args.seed), indent=2))
             return 0
         if args.action == "export":
             if not (args.run and args.tasks and args.out):

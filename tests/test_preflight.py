@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 import yaml
+from host_bundles import Image
 
 from bialy import custom_model_run, faults, fleet, preflight
 from bialy import run as runmod
@@ -193,23 +194,44 @@ def test_preflight_requires_receipt_admission_not_just_kept_payloads(factory, tm
     shard = run.path("preflight-on/shards/fixture")
     (shard / "training-captures").mkdir(parents=True)
     (shard / "training-captures/one.json").write_text(json.dumps({"schema": "pw-training-turn/1", "student_request": {"tools": []}}))
+    (shard / "manifest.jsonl").write_text('{"root_session": "root"}\n')
+    image = Image()
+    monkeypatch.setattr(preflight.host_bundle, "contract", lambda *args: ({}, "c" * 64))
+    original = preflight.host_bundle.export
+    monkeypatch.setattr(preflight.host_bundle, "export", lambda *args: original(*args, process=image))
     def export(args, **kw):
         assert args[1] == str(run.checkout / "scripts/bialy/custom_model/collect.py")
-        source = Path(args[args.index("--fleet") + 1])
-        assert (source / "shards" / "fixture").resolve() == shard.resolve()
-        assert [p.name for p in (source / "shards").iterdir()] == ["fixture"]
+        assert Path(args[args.index("--bundle") + 1]) == run.path("preflight-on/bundles/fixture/root")
         binding = json.loads(Path(args[args.index("--binding") + 1]).read_text())
         assert binding["student_model"] in {model["directory"] for model in load()["models"].values()} and binding["epoch"] == "fixture"
+        assert binding["contract_sha256"] == "c" * 64
         output = Path(args[args.index("--out") + 1])
         output.mkdir()
         (output / "manifest.json").write_text(json.dumps({"counts": counts}))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(preflight.subprocess, "run", export)
     if expected:
-        assert preflight.verify_receipts(run, shard) == dict.fromkeys(students(), expected)
+        assert preflight.verify_receipts(run, shard, "on") == dict.fromkeys(students(), expected)
     else:
         with pytest.raises(faults.RunFault, match="receipt_not_accepted"):
-            preflight.verify_receipts(run, shard)
+            preflight.verify_receipts(run, shard, "on")
+
+
+def test_preflight_needs_the_images_contract_and_an_exported_bundle(factory, tmp_path, monkeypatch):
+    run = collection(factory, tmp_path)
+    shard = run.path("preflight-on/shards/fixture")
+    (shard / "training-captures").mkdir(parents=True)
+    (shard / "manifest.jsonl").write_text('{"root_session": "root"}\n')
+    def refuse(*args):
+        raise preflight.host_bundle.HostEvidenceError("host_contract_revision_mismatch")
+    monkeypatch.setattr(preflight.host_bundle, "contract", refuse)
+    with pytest.raises(faults.RunFault, match="preflight_host_contract_failed"):
+        preflight.verify_receipts(run, shard, "on")
+    monkeypatch.setattr(preflight.host_bundle, "contract", lambda *args: ({}, "c" * 64))
+    original = preflight.host_bundle.export
+    monkeypatch.setattr(preflight.host_bundle, "export", lambda *args: original(*args, process=Image(fail="training-bundle")))
+    with pytest.raises(faults.RunFault, match="preflight_bundle_export_failed"):
+        preflight.verify_receipts(run, shard, "on")
 
 
 def test_failed_preflight_retains_consistent_private_store(tmp_path):
