@@ -1,0 +1,35 @@
+# The selector policy P0: the three decision heads a campaign trains on its shared
+# splits, the thresholds it binds, the bars the heads must clear together on the
+# development split, and the share of student episodes deliberately run with the
+# engine off. P0 is whole or absent: one head short of its bar ends the stage as
+# selector_unqualified, and no threshold moves to rescue it.
+
+version: 1
+decisions: lycaon/config/packs/painted-wolf/platform/host/decisions.yaml
+heads:
+  turn-load: B5
+  unit-rank: E4
+  code-rank: code-rank
+# Thresholds the host's calibration sets from the validation split.
+calibrated:
+  turn.tools: [load_at]
+  turn.skills: [preload_at]
+  request: [load_at, max_loads, nearest_loads]
+# Thresholds P0 binds as decisions.yaml states them.
+bound:
+  turn.skills: [margin]
+  lookup: [read_at, margin]
+  tool_event: [read_at, pointer_at, margin]
+# Measures from the development replay (turn-load, unit-rank) and the code-rank
+# head's validation-partition measures, each with its floor.
+bars:
+  turn-load:
+    - {metric: overall.tools._all.recall, at_least: 0.85}
+    - {metric: overall.tools._all.precision, at_least: 0.5}
+  unit-rank:
+    - {metric: overall.requests.wanted.top1, at_least: 0.5}
+  code-rank:
+    - {metric: val_acc, at_least: 0.6}
+# One training variant in ten is collected with the engine off, so the student sees
+# the conservative surface; frozen with the evaluation plan.
+fallback_rate: 0.1

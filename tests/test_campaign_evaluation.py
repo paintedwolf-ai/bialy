@@ -33,7 +33,8 @@ def test_every_planned_attempt_is_retained_and_resume_does_not_replay(tmp_path):
                    for partition in PARTITIONS for family in FOCUSES for index in range(3)])
     lineage.freeze()
     planner = EvaluationPlan(journal, lineage, repetitions=2)
-    plan = planner.execute({'measurements': {'accepted': 32}}, 'plan')
+    plan = planner.execute({'measurements': {'accepted': 32}, 'selector': {'qualified': True, 'mode': 'explicit_tool_loading'}}, 'plan')
+    assert plan['selector'] == {'policy': None, 'fallback_rate': 0}
     assert plan['planned_attempts_per_arm'] == 48
     driver = Driver()
     evaluation = Evaluation(journal, lineage, driver, 'e4b', 'base', {'kind': 'student'}, sleep=lambda _: None)

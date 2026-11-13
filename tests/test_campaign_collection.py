@@ -137,3 +137,26 @@ def test_infrastructure_failure_stops_paid_episodes_without_grading_teacher(tmp_
     assert failure.value.details['fault']['code'] == 'evidence_unavailable'
     assert len(driver.calls) == 1
     journal.close()
+
+
+def test_planned_fallback_episodes_run_on_the_conservative_reference(tmp_path):
+    journal = Journal(tmp_path / 'campaign', {})
+    lineage = Lineage(journal, FOCUSES)
+    register_bank(lineage, [{'id': partition + family, 'partition': partition, 'focus': family, 'source_class': 'synthetic'}
+                   for partition in PARTITIONS for family in FOCUSES])
+    lineage.freeze()
+    driver = Driver()
+    def export(inputs, output):
+        manifest = tmp_path / (output['task'] + '.json')
+        manifest.write_text(output['task'])
+        return {student: {'manifest': str(manifest), 'rows': 2} for student in students()}
+    conservative = {'qualified': True, 'mode': 'explicit_tool_loading'}
+    p0 = {'pilot': '/pilot', 'policy': 'p0', 'fallback_rate': 0.5}
+    inputs = {'host': {'conservative_reference': conservative}, 'selector': p0, 'teachers': {
+        'teachers': [{'id': 'teacher'}], 'focuses': {family: {'teacher_id': 'teacher'} for family in FOCUSES}}}
+    minimum = dict.fromkeys(('train', 'validation', 'system_test'), 8)
+    result = Collection(journal, lineage, driver, export, students(), True, minimum=minimum).execute(inputs, 'pilot')
+    strata = [episode['stratum'] for episode in result['episodes']]
+    assert set(strata) == {'p0', 'planned_fallback'}
+    assert [call['selector'] for call in driver.calls] == [conservative if s == 'planned_fallback' else p0 for s in strata]
+    journal.close()

@@ -89,6 +89,18 @@ adapter result, and drives paired host evaluations with thinking off. Its result
 separates pipeline completion from behavioral success and never qualifies a model
 for promotion. The multi-turn probe does not establish long-context behavior.
 
+A full campaign trains its decision heads before it collects student episodes.
+The selector stage fits the turn-load, unit-rank and code-rank heads with the
+existing recipes on the shared training split, and the host's calibration sets
+the thresholds it calibrates from the validation split. The host's replay then
+measures the heads on development against the bars in
+`config/campaign/selector.yaml`. The result, `P0`, binds the heads, backbone,
+catalog, decision contract and every threshold, and is whole or absent: one head
+short of its bar ends the stage as `selector_unqualified`, and collection runs on
+the conservative reference instead. Under `P0`, one training variant in ten is
+collected with the engine off as a planned fallback, and the evaluation plan
+records the rate.
+
 Session and response reviewers receive explicit JSON schemas whose evidence
 references are restricted to the supplied receipts. Returned references are
 validated again before admission. Unexpected stage failures retain private
