@@ -16,7 +16,7 @@ def queued(campaign, kind='split', name='a'):
     exports = {'e4b': {'manifest': 'm', 'manifest_sha256': '', 'rows': 7}}
     episode = {'stage': name, 'episode_sha256': 'episode-' + name, 'repetition': 0, 'exports': exports}
     reviews = ('pass', 'fail') if kind == 'split' else ('pass', 'pass')
-    return CollectionGate(campaign.review, 'collection_pilot', 'command').offer_episode(episode, campaign.trial(name, reviews=reviews), task)
+    return CollectionGate(campaign.review, 'collection_pilot', 'command').offer_episode(episode, campaign.trial(name, reviews=reviews), task, 'train')
 
 
 def pause(campaign, queue='collection_pilot'):

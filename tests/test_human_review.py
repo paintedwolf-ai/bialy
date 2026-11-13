@@ -109,12 +109,12 @@ def test_collection_gate_waits_then_passes_frozen_decisions(review_campaign):
     task = review_campaign.task('train-a', partition='train')
     exports = {'e4b': {'manifest': 'm', 'manifest_sha256': '', 'rows': 3}, '12b': {'manifest': 'm', 'manifest_sha256': '', 'rows': 5}}
     episode = {'stage': 'a', 'episode_sha256': 'episode-a', 'repetition': 0, 'exports': exports}
-    item = gate.offer_episode(episode, review_campaign.trial('a', reviews=('pass', 'fail')), task)
+    item = gate.offer_episode(episode, review_campaign.trial('a', reviews=('pass', 'fail')), task, 'train')
     assert review.item(item)['kind'] == 'split' and review.item(item)['summary']['rows'] == 3
     assert gate.offer_episode({**episode, 'stage': 'b', 'episode_sha256': 'episode-b'},
-                              review_campaign.trial('b', reviews=('fail', 'fail')), task) is None
+                              review_campaign.trial('b', reviews=('fail', 'fail')), task, 'train') is None
     assert gate.offer_episode({**episode, 'stage': 'c', 'episode_sha256': 'episode-c', 'exports': None},
-                              review_campaign.trial('c'), task) is None
+                              review_campaign.trial('c'), task, 'train') is None
     inputs = {'collection': {'episodes': [episode]}}
     with pytest.raises(StageWaiting) as waiting:
         gate.execute(inputs, 'attempt')
@@ -298,8 +298,9 @@ def test_admission_uses_a_human_decision_only_when_the_checks_passed(tmp_path, p
 
 
 def test_collection_exports_and_offers_episodes_a_label_could_change(review_campaign, tmp_path):
+    from bialy.campaign.ancestry import PARTITIONS
     from bialy.campaign.collection import Collection
-    from bialy.campaign.lineage import FAMILIES, PARTITIONS
+    from bialy.campaign.lineage import FAMILIES
     tasks = {}
     for partition in sorted(PARTITIONS):
         for family in FAMILIES:

@@ -105,7 +105,7 @@ class Collection:
                 if not all(exported[student]['rows'] > 0 for student in self.students):
                     continue
                 if self.review is not None:
-                    self.review.offer_episode(episode, result['output'], task)
+                    self.review.offer_episode(episode, result['output'], task, partition)
                 if not result['output']['success']:
                     continue
                 episode['admitted'] = True

@@ -59,11 +59,11 @@ def test_the_freeze_binds_the_assignment(tmp_path):
         identity = lineage.freeze()
         journal.close()
         return identity
-    tasks = bank()
-    moved = [dict(t, partition="validation") if t["id"] == "train" + FAMILIES[0] else t for t in tasks]
-    moved = [dict(t, partition="train") if t["id"] == "validation" + FAMILIES[0] else t for t in moved]
-    assert frozen(tmp_path / "a", tasks) == frozen(tmp_path / "b", tasks)
-    assert frozen(tmp_path / "a2", tasks) != frozen(tmp_path / "c", moved)
+    def moved():
+        tasks = [dict(t, partition="validation") if t["id"] == "train" + FAMILIES[0] else t for t in bank()]
+        return [dict(t, partition="train") if t["id"] == "validation" + FAMILIES[0] else t for t in tasks]
+    assert frozen(tmp_path / "a", bank()) == frozen(tmp_path / "b", bank())
+    assert frozen(tmp_path / "a2", bank()) != frozen(tmp_path / "c", moved())
 
 
 def test_a_private_source_never_enters_the_ancestry_or_the_bank(tmp_path):
