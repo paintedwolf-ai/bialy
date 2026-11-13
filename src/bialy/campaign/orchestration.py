@@ -87,6 +87,7 @@ class Campaign:
         qualification = self.stage('selector_qualification', {**common, 'selector': trained['output']})
         if qualification['status'] != 'passed' or qualification['output'].get('qualified') is not True:
             return None
+        self.stage('selector_holdout', {'selector': trained['output']})
         adoption = self.stage('host_adoption', {'policy': trained['output']['policy']})
         if adoption['status'] != 'passed':
             return None

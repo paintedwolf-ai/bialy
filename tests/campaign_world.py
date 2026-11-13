@@ -63,6 +63,7 @@ def outputs(students, selector_qualified=True):
              'selector_training': {'policy': POLICY, 'heads': {}, 'launcher': '/launcher', 'corpus': '/corpus', 'pilot': '/pilot'},
              'selector_qualification': {'qualified': selector_qualified,
                                         'configuration': {'pilot': '/pilot', 'policy': 'p0', 'fallback_rate': 0.1}},
+             'selector_holdout': {'schema': 'pw-selector-holdout/1', 'policy': 'p0'},
              'selector_supplied': {'qualified': False},
              'collection': {'episodes': ['shared']}, 'dataset': {'data_status': 'data_ready'}, 'evaluation_plan': {'tasks': []},
              'cleanup': {'reaped': True}}

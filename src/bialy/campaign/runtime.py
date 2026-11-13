@@ -139,6 +139,7 @@ def compose(journal, directory, body, adopted=None):
         rows_run = head_run(cfg)
         handlers.update(head_rows=HeadRows(rows_run), selector_training=selector.SelectorTraining(journal, rows_run),
                         selector_qualification=selector.SelectorQualification(journal, rows_run),
+                        selector_holdout=selector.SelectorHoldout(journal, rows_run),
                         host_adoption=Adoption(cfg['checkout'], adopted, run_command + ' --host-commit COMMIT --host-image IMAGE'))
         if adopted is None:
             return handlers
@@ -244,6 +245,14 @@ def main(args):
             raise CampaignFault('adoption_needs_commit_and_image')
         adopted = {'host_commit': args.host_commit, 'host_image': args.host_image} if args.host_commit else None
         result = drive(Path(args.run).parent, adopted)
+    elif args.action == 'decide':
+        from . import decisions
+        print(json.dumps(decisions.decide(args.run, json.loads(args.probes.read_text()), args.by), indent=2))
+        return 0
+    elif args.action == 'record':
+        from . import decisions
+        print(json.dumps(decisions.record(args.run, args.ledger, args.campaign, json.loads(args.publications.read_text())), indent=2))
+        return 0
     elif args.action == 'status':
         print(json.dumps(status(args.run), indent=2))
         return 0
