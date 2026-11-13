@@ -8,7 +8,7 @@ from bialy.campaign.dry_run_data import import_evidence, qualified, read_source
 from bialy.campaign.episodes import Episodes
 from bialy.campaign.journal import CampaignFault, Journal, canonical
 from bialy.campaign.lineage import Lineage
-from bialy.campaign.pilot_bank import build
+from bialy.campaign.pilot_bank import assignment, build
 from bialy.student_host.select_rows import select
 from bialy.student_host.specification import arguments, load
 
@@ -39,7 +39,8 @@ def test_dry_run_pauses_after_one_update_and_resumes_without_that_bound():
 
 def prepare_evidence(journal, bank):
     lineage = Lineage(journal)
-    lineage.roots(build(bank))
+    tasks = build(bank)
+    lineage.roots(tasks, assignment(tasks, 'seed'))
     lineage.freeze()
     Episodes(journal, lineage)
     journal.db.execute('CREATE TABLE judge_controls(identity TEXT PRIMARY KEY, receipt TEXT NOT NULL)')

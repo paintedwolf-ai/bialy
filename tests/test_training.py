@@ -32,11 +32,12 @@ def test_epoch_cap_replaces_or_adds_the_flag():
     assert training.with_epochs(["--epochs", "45"], None) == ["--epochs", "45"]
 
 
-def test_skillreq_eval_keeps_the_writers_evaluation_families(tmp_path):
-    rows = [{"meta": {"split": "train", "family": "a"}}, {"meta": {"split": "eval", "family": "b"}}]
+def test_skill_requests_are_read_by_their_familys_partition(tmp_path):
+    rows = [{"meta": {"split": p, "family": p[0]}} for p in ("train", "validation", "development", "system_test")]
     (tmp_path / "judged.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-    out = training.skillreq_eval(tmp_path / "judged.jsonl", tmp_path / "eval.jsonl")
-    assert [json.loads(line)["meta"]["family"] for line in out.read_text().splitlines()] == ["b"]
+    for partition in ("train", "validation"):
+        out = training.skillreq_partition(tmp_path / "judged.jsonl", partition, tmp_path / (partition + ".jsonl"))
+        assert [json.loads(line)["meta"]["family"] for line in out.read_text().splitlines()] == [partition[0]]
 
 
 def test_recipes_without_their_inputs_are_skipped_not_failed(tmp_path, monkeypatch):

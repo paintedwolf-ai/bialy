@@ -27,14 +27,30 @@ def row(repo, group, n, host="coordinator", judge_model="glm-5.3-flash", **label
     }
 
 
+# Each split file's rows as (workspace, prompt group, task number, partition).
+SPLIT_LAYOUT = {"train.jsonl": [("flask", "flask:a", 1, "train"), ("flask", "flask:a", 2, "train"), ("gin", "gin:b", 3, "train")],
+                "val.jsonl": [("gin", "gin:c", 4, "validation")],
+                "development.jsonl": [("httpx", "httpx:e", 6, "development")],
+                "holdout.jsonl": [("zod", "zod:d", 5, "system_test")]}
+
+
+def layout_ancestry(path):
+    """The assignment the split fixture was made by, each task placed explicitly."""
+    from bialy.campaign import ancestry
+
+    graph = ancestry.Graph()
+    for rows in SPLIT_LAYOUT.values():
+        for _, _, n, partition in rows:
+            graph.add(ancestry.task_node("t%d" % n), "task", source_class="synthetic", holdout=partition)
+    return ancestry.allocate(graph, 7, {"train": 1.0}).save(path)
+
+
 @pytest.fixture
 def split_dir(tmp_path):
-    """train/val/holdout files that split correctly: zod is held out."""
+    """Split files that match SPLIT_LAYOUT: zod is held out."""
     out = tmp_path / "split"
     out.mkdir()
-    layout = {"train.jsonl": [("flask", "flask:a", 1), ("flask", "flask:a", 2), ("gin", "gin:b", 3)],
-              "val.jsonl": [("gin", "gin:c", 4)],
-              "holdout.jsonl": [("zod", "zod:d", 5)]}
+    layout = {name: [(workspace, group, n) for workspace, group, n, _ in rows] for name, rows in SPLIT_LAYOUT.items()}
     for name, rows in layout.items():
         (out / name).write_text("".join(json.dumps(row(*r)) + "\n" for r in rows))
     return out
@@ -42,10 +58,10 @@ def split_dir(tmp_path):
 
 @pytest.fixture
 def driven_file(tmp_path):
-    """tasks-driven.jsonl for the split fixture's five rows."""
+    """tasks-driven.jsonl for the split fixture's six rows."""
     path = tmp_path / "tasks-driven.jsonl"
     path.write_text("".join(json.dumps({"id": "t%d" % n, "prompt": "request %d" % n, "outcome": {"status": "settled", "run": "r"}}) + "\n"
-                            for n in range(1, 6)))
+                            for n in range(1, 7)))
     return path
 
 
@@ -124,3 +140,16 @@ def review_campaign(tmp_path):
     campaign = ReviewCampaign(journal, Review(journal.directory), Lineage(journal))
     yield campaign
     journal.close()
+
+
+def register_bank(lineage, tasks):
+    """Register root tasks whose partitions a test fixes: each task is placed by an
+    explicit holdout in its own ancestry component."""
+    from bialy.campaign import ancestry
+
+    graph = ancestry.Graph()
+    for task in tasks:
+        graph.add(ancestry.task_node(task["id"]), "task", source_class="synthetic", holdout=task["partition"])
+    assignment = ancestry.allocate(graph, 7, {"train": 1.0})
+    lineage.roots([{k: v for k, v in task.items() if k != "partition"} for task in tasks], assignment)
+    return assignment

@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from conftest import register_bank
 
 from bialy.campaign.dataset import Assembly
 from bialy.campaign.evaluation import Comparison
@@ -255,13 +256,14 @@ def test_an_existing_campaign_opens_without_restating_its_identity(tmp_path):
 
 
 def recorded_episode(journal, passed_checks, reviewer_values):
+    from bialy.campaign.ancestry import PARTITIONS
     from bialy.campaign.episodes import Episodes
     from bialy.campaign.journal import digest
-    from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
+    from bialy.campaign.lineage import FAMILIES, Lineage
     lineage = Lineage(journal)
     tasks = [{'id': partition + family, 'partition': partition, 'family': family, 'source_class': 'synthetic',
               'required_checks': ['outcome']} for partition in sorted(PARTITIONS) for family in FAMILIES]
-    lineage.roots(tasks)
+    register_bank(lineage, tasks)
     lineage.freeze()
     task = tasks[0]
     lineage.bind_session('epoch', 'session', task['id'])

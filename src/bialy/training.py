@@ -117,12 +117,12 @@ def mixed_rows(out, fraction, seed, *rows):
     return out
 
 
-def skillreq_eval(judged, out):
-    """The judged skill requests whose families the writer set aside for evaluation."""
+def skillreq_partition(judged, partition, out):
+    """The judged skill requests whose families the run's ancestry put in `partition`."""
     out = Path(out)
     with open(judged, encoding="utf-8") as src, open(out, "w", encoding="utf-8") as dst:
         for line in src:
-            if line.strip() and (json.loads(line).get("meta") or {}).get("split") == "eval":
+            if line.strip() and (json.loads(line).get("meta") or {}).get("split") == partition:
                 dst.write(line if line.endswith("\n") else line + "\n")
     return out
 

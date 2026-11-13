@@ -2,11 +2,13 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import register_bank
 
+from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.episodes import Episodes
 from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal, digest
-from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
+from bialy.campaign.lineage import FAMILIES, Lineage
 from bialy.campaign.sources import authority_key, seal_dataset
 from bialy.provenance import file_sha256
 
@@ -14,7 +16,7 @@ from bialy.provenance import file_sha256
 def fixture(tmp_path):
     journal = Journal(tmp_path / 'campaign', {})
     lineage = Lineage(journal)
-    lineage.roots([{'id': partition + family, 'family': family, 'partition': partition, 'source_class': 'synthetic', 'required_checks': ['outcome']}
+    register_bank(lineage, [{'id': partition + family, 'family': family, 'partition': partition, 'source_class': 'synthetic', 'required_checks': ['outcome']}
                    for partition in PARTITIONS for family in FAMILIES])
     lineage.freeze()
     lineage.bind_session('epoch', 'session', 'train' + FAMILIES[0])

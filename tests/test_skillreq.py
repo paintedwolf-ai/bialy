@@ -1,6 +1,6 @@
 import json
 
-from bialy import llm, skillreq
+from bialy import llm, skillreq, split
 
 
 class Writer:
@@ -26,19 +26,31 @@ def test_a_request_that_names_its_skill_is_dropped():
     assert not skillreq.names_skill("run it in a container", "work-with-containers")
 
 
-def test_families_split_whole_and_rows_carry_no_behaviour(factory, tmp_path, monkeypatch):
+def ancestry_for(factory, families, none_families):
+    return split.assign(factory, [], skillreq.family_nodes(factory, CORPUS, families, none_families, 7))
+
+
+def test_families_take_their_ancestry_partition_and_rows_carry_no_behaviour(factory, tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "Chat", Writer)
     monkeypatch.setenv("FIREWORKS_API_KEY", "test")
     out = tmp_path / "rows.jsonl"
-    report = skillreq.write(factory, CORPUS, out, "glm-5.3-flash", {"clear": 3, "nearmiss": 1, "multi": 0}, 2, 5, eval_fraction=0.5, workers=2)
+    families = {"clear": 3, "nearmiss": 1, "multi": 0}
+    assignment = ancestry_for(factory, families, 2)
+    report = skillreq.write(factory, CORPUS, out, "glm-5.3-flash", families, 2, 5, workers=2, assignment=assignment)
     rows = [json.loads(line) for line in out.read_text().splitlines()]
-    assert report["failed"] == 0 and rows
+    assert report["failed"] == 0 and rows and sum(report["splits"].values()) == len(rows)
     assert all("work-with-containers" not in r["state"]["user"] for r in rows)
     assert all(r["labels"]["skills"] == [] and r["labels"]["tools"] == [] and not r["partial"] for r in rows)
-    splits = {}
-    for r in rows:
-        splits.setdefault(r["meta"]["family"], set()).add(r["meta"]["split"])
-    assert all(len(s) == 1 for s in splits.values())
+    assert all(r["meta"]["split"] == assignment.partition(skillreq.family_node(r["meta"]["family"])) for r in rows)
+    held = [r for r in rows if r["project"] in factory.holdout()]
+    assert all(r["meta"]["split"] == "system_test" for r in held)
+
+
+def test_a_writer_needs_an_ancestry_or_an_explicit_split(factory, tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match="ancestry assignment or one explicit split"):
+        skillreq.write(factory, CORPUS, tmp_path / "rows.jsonl", "glm-5.3-flash", {"clear": 1, "nearmiss": 0, "multi": 0}, 0, 5)
 
 
 def test_an_acceptance_set_takes_one_split_and_real_candidates(factory, tmp_path, monkeypatch):
@@ -63,7 +75,9 @@ def test_a_family_can_be_set_in_a_new_project_on_a_stack(factory, tmp_path, monk
     monkeypatch.setattr(llm, "Chat", Recorder)
     monkeypatch.setenv("FIREWORKS_API_KEY", "test")
     out = tmp_path / "rows.jsonl"
-    skillreq.write(factory, CORPUS, out, "deepseek-v4.1-flash", {"clear": 1, "nearmiss": 0, "multi": 0}, 0, 5, workspaces=("react-vite",), workers=1)
+    families = {"clear": 1, "nearmiss": 0, "multi": 0}
+    assignment = split.assign(factory, [], skillreq.family_nodes(factory, CORPUS, families, 0, 7, workspaces=("react-vite",)))
+    skillreq.write(factory, CORPUS, out, "deepseek-v4.1-flash", families, 0, 5, workspaces=("react-vite",), workers=1, assignment=assignment)
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert seen and all(u.startswith("The developer works in a new react-vite project (React with TypeScript") for u in seen)
     assert rows and all(r["project"] == "react-vite" and r["meta"]["workspace_kind"] == "stack" for r in rows)
