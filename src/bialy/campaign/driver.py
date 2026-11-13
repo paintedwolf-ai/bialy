@@ -1,15 +1,13 @@
 """Drive an isolated Painted Wolf Code task and retain its graded episode."""
 import json
-import sqlite3
 import subprocess
 from pathlib import Path
-from urllib.parse import quote
 
 import yaml
 
-from .. import fleet
+from .. import fleet, host_bundle
 from ..provenance import file_sha256
-from . import evidence_reader, host_facts, oracle
+from . import host_facts, oracle
 from .containers import Container
 from .episodes import Episodes
 from .execution import atomic_json
@@ -41,7 +39,7 @@ class EpisodeDriver:
 
     def execute(self, name, inputs, attempt):
         custom = self.factory_run.setting('custom_model')
-        inspect(self.factory_run.checkout, custom['host_commit'], tool_surface=custom['tool_surface'])
+        inspect(self.factory_run.checkout, custom['host_commit'], inputs['host']['image'], self.factory_run.path('host-contract'), self.process)
         directory = self.directory(attempt)
         directory.mkdir(parents=True, exist_ok=False)
         task = inputs['task']
@@ -120,9 +118,12 @@ class EpisodeDriver:
         root, store = manifest[0]['root_session'], shard / 'store.db'
         epoch = self.factory_run.setting('custom_model')['epoch']
         checksum = file_sha256(store)
-        facts_path = directory / 'host-evidence.json'
-        facts = evidence_reader.read(shard, work / 'work' / workspace.name, root, inputs['host']['image'], facts_path, self.process)
-        sessions = host_facts.members(facts, root)
+        try:
+            episode = host_bundle.export(inputs['host']['image'], shard, root, directory / 'host-bundle',
+                                         work / 'work' / workspace.name, self.process)
+        except host_bundle.HostEvidenceError as exc:
+            raise CampaignFault(exc.code, details=exc.details) from exc
+        sessions = host_facts.members(episode, root)
         self.lineage.bind_session(epoch, root, task['id'])
         for session in sessions:
             if session != root:
@@ -139,27 +140,22 @@ class EpisodeDriver:
             work / 'work' / workspace.name, directory / 'source', task.get('artifact_paths', []), self.process)
         checks = oracle.grade(task, directory / 'source', inventory, oracle_directory, directory,
                               inputs['host']['image'], directory / 'grading', self.process)
-        with sqlite3.connect('file:' + quote(str(store.resolve()), safe='/') + '?mode=ro', uri=True) as database:
-            database.row_factory = sqlite3.Row
-            surface = self.factory_run.setting('custom_model')['tool_surface']
-            programs = host_facts.program_evidence(database, facts) if surface == 'command-v1' else {}
-        receipt = host_facts.receipt(task, facts, checks, checksum, epoch, actor['family'], checks['grader_identity'], programs, surface)
+        receipt = host_facts.receipt(task, episode, checks, checksum, epoch, actor['family'], checks['grader_identity'])
         if file_sha256(store) != checksum:
             raise CampaignFault('trial_store_changed')
         reviews_path = directory / 'reviews.json'
-        reviews = json.loads(reviews_path.read_text()) if reviews_path.exists() else self.reviewers.review(receipt, facts['sessions'])
+        reviews = json.loads(reviews_path.read_text()) if reviews_path.exists() else self.reviewers.review(receipt, [{**session, 'messages': episode.messages(session)} for session in episode.sessions])
         atomic_json(reviews_path, reviews)
         verdict = Episodes(self.journal, self.lineage).record(epoch, root, task['id'], list(sessions), task, receipt, reviews, checks['grader_identity'])
         controls = None
         if actor['kind'] == 'student':
-            captures = [json.loads(path.read_text()) for path in (shard / 'training-captures').glob('*.json')]
-            controls = host_facts.student_controls(captures, actor['provider'], actor['model'])
+            controls = host_facts.student_controls(episode, actor['provider'], actor['model'])
         terminal = Container(directory, self.process).reconcile()
         result = {'success': verdict['verdict'] == 'pass' and terminal['exit_status'] == 0, 'exit_status': terminal['exit_status'],
                   'human_interventions': receipt['human_interventions'], 'unauthorized_effects': receipt['unauthorized_effects'],
                   'unsupported_completion_claims': int(any(review['dimensions']['truthful_closeout'] != 'pass' for review in reviews)),
                   'effective_thinking': controls, 'receipt': receipt, 'verdict': verdict, 'reviews': reviews,
-                  'fleet': str(shard.parent.parent), 'shard': str(shard), 'host_evidence_sha256': file_sha256(facts_path),
+                  'bundle': str(directory / 'host-bundle'), 'shard': str(shard), 'host_bundle_sha256': episode.manifest_sha256,
                   'directory': str(directory), 'inputs_sha256': digest(inputs)}
         atomic_json(directory / 'result.json', result)
         Container(directory, self.process).release()
@@ -170,5 +166,5 @@ class EpisodeDriver:
         directory = Path(output['directory'])
         if (output['inputs_sha256'] != digest(inputs) or json.loads((directory / 'result.json').read_text()) != output
                 or file_sha256(Path(output['shard']) / 'store.db') != output['receipt']['store_sha256']
-                or file_sha256(directory / 'host-evidence.json') != output['host_evidence_sha256']):
+                or file_sha256(directory / 'host-bundle' / 'manifest.json') != output['host_bundle_sha256']):
             raise CampaignFault('trial_evidence_changed')

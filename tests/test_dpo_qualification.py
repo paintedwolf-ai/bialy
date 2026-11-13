@@ -12,7 +12,7 @@ def captured_row():
     target = {"role": "assistant", "text": "", "tool_calls": [{"id": "c1", "name": "read", "arguments": '{"path":"app.py"}'}]}
     capture = {
         "schema": CAPTURE_SCHEMA, "request_id": "request-1", "session_id": "s1", "message_id": "a1",
-        "host_revision": "1" * 40, "epoch": "legacy", "tool_surface": "legacy",
+        "host_revision": "1" * 40, "epoch": "fixture", "contract_sha256": "d" * 64,
         "catalog_sha256": "2" * 64, "state_sha256": "3" * 64,
         "messages": prompt,
         "tools": [{"type": "function", "function": {
@@ -24,7 +24,7 @@ def captured_row():
     capture["sha256"] = digest(capture)
     validation = {
         "schema": VALIDATION_SCHEMA, "validator": HOST_VALIDATOR, "receipt_id": "validation-1",
-        **{key: capture[key] for key in ("state_sha256", "host_revision", "epoch", "tool_surface", "catalog_sha256")},
+        **{key: capture[key] for key in ("state_sha256", "host_revision", "epoch", "contract_sha256", "catalog_sha256")},
         "request_sha256": capture["sha256"], "kind": "accepted_response", "outcome": "accepted",
         "response_origin": "model", "response_sha256": digest(target),
         "quality": {"verdict": "pass", "method": "model_judge", "judge_model": "judge", "judge_revision": "revision", "judge_family": "qwen", "teacher_family": "gemma",
