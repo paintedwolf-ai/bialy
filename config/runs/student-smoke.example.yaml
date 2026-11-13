@@ -23,7 +23,6 @@ run:
   custom_model:
     enabled: true
     epoch: smoke-1
-    tool_surface: legacy
     host_commit: <host commit>
     quality_judge: true
     student: gemma-4-e4b-it
