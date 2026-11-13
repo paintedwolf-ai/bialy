@@ -25,9 +25,8 @@ def merge(original, repaired):
             raise ValueError('worker identity differs: ' + field)
     if original['host'] != 'worker' or original['partial']:
         raise ValueError('only complete worker requests can be repaired')
-    for field in ('requests', 'guides'):
-        if original['labels'].get(field) != repaired['labels'].get(field):
-            raise ValueError('unrelated labels differ: ' + field)
+    if original['labels'].get('requests') != repaired['labels'].get('requests'):
+        raise ValueError('unrelated labels differ: requests')
     old_second = original['labels'].get('second_scores', {})
     new_second = repaired['labels'].get('second_scores', {})
     if old_second.get('requests') != new_second.get('requests'):

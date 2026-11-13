@@ -34,17 +34,14 @@ def receipt_requests(receipts, corpus):
             continue
         decision = json.loads(receipt['decisions_json'])['turn']
         questions = {}
-        for kind, key in [('tool', 'tools'), ('guide', 'guides')]:
-            if key == 'guides' and corpus.spec['tools'].get('independent'):
-                continue
-            spec = corpus.spec[key]
-            options = {c['id']: ' '.join(c['description'].split()[:spec['option_words']]).rstrip(',;:')
-                       for c in decision['candidates'] if c['kind'] == kind}
-            if options:
-                questions[key] = {'type': 'multi', 'instructions': spec['question'],
+        spec = corpus.spec['tools']
+        options = {c['id']: ' '.join(c['description'].split()[:spec['option_words']]).rstrip(',;:')
+                   for c in decision['candidates']}
+        if options:
+            questions['tools'] = {'type': 'multi', 'instructions': spec['question'],
                                   'options': dict(sorted(options.items()))}
-                if spec.get('independent'):
-                    questions[key]['independent'] = True
+            if spec.get('independent'):
+                questions['tools']['independent'] = True
         if not corpus.spec['tools'].get('independent'):
             questions['kind'] = corpus.kind_question()
         yield str(receipt['id']), {'method': 'decide', 'head': 'turn-load',

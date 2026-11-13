@@ -1,9 +1,9 @@
 """Train the heads on this machine: the trainer from the pinned checkout in a venv the
 run makes, over the accelerator it finds, under a time budget.
 
-Recipes are the released ones, named as scripts/bialy/README.md names them: B5 and
-B7G for the turn heads, E4 for unit-rank over the judged rows and the skill
-requests, and code-rank over the site dumps.
+Recipes are the released ones, named as scripts/bialy/README.md names them: B5 for
+turn-load, E4 for unit-rank over the judged rows and the skill requests, and
+code-rank over the site dumps.
 """
 import json
 import os
@@ -26,7 +26,6 @@ RANK_ARGS = ["--families", "skills,requests", "--skill-scored", "8", "--skill-ze
 RETENTION_ARGS = ["--families", "retention", "--seed", "11", "--batch-size", "64", "--epochs", "45", "--patience", "8"]
 RECIPES = {
     "B5": {"head": "turn-load", "kind": "turn", "families": "tools"},
-    "B7G": {"head": "guide-load", "kind": "turn", "families": "guides"},
     "E4": {"head": "unit-rank", "kind": "rank"},
     "code-rank": {"head": "code-rank", "kind": "rerank"},
     # R1: the context retention head, over the retention rows the same sessions wrote.
@@ -211,12 +210,17 @@ def train(recipe, inputs, checkout, root, settings, heads_dir, label, budget_sec
         args = [str(python), "scripts/bialy/train.py", "--corpus", str(inputs["corpus"]), "--train", str(mixed),
                 "--val", str(inputs.get("skillreq_eval") or inputs["val"]), *RANK_ARGS, "--label", label, "--out", str(out)]
     else:
-        dumps = sorted(Path(inputs["dumps"]).glob("*.jsonl")) if inputs.get("dumps") else []
+        # A campaign names the dumps of each partition; a run trains on every dump it wrote.
+        dumps = inputs.get("dumps_train") or (sorted(Path(inputs["dumps"]).glob("*.jsonl")) if inputs.get("dumps") else [])
         if not dumps:
             return {"skipped": "code-rank needs site dumps; the coderank stage did not run"}
         args = [str(python), "scripts/bialy/rerank/train_rerank.py", "--out", str(out), "--label", label, "--seed", "7"]
         for dump in dumps:
             args += ["--dump", str(dump)]
+        for dump in inputs.get("dumps_val") or ():
+            args += ["--val-dump", str(dump)]
+        if inputs.get("dumps_val"):
+            args += ["--metrics", str(out.with_suffix(".metrics.json"))]
     args = with_epochs(args, settings.get("epochs"))
     try:
         run(args, cwd=str(checkout), env=env, timeout=budget_seconds, log=log)

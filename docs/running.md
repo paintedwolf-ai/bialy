@@ -105,6 +105,18 @@ adapter result, and drives paired host evaluations with thinking off. Its result
 separates pipeline completion from behavioral success and never qualifies a model
 for promotion. The multi-turn probe does not establish long-context behavior.
 
+A full campaign trains its decision heads before it collects student episodes.
+The selector stage fits the turn-load, unit-rank and code-rank heads with the
+existing recipes on the shared training split, and the host's calibration sets
+the thresholds it calibrates from the validation split. The host's replay then
+measures the heads on development against the bars in
+`config/campaign/selector.yaml`. The result, `P0`, binds the heads, backbone,
+catalog, decision contract and every threshold, and is whole or absent: one head
+short of its bar ends the stage as `selector_unqualified`, and collection runs on
+the conservative reference instead. Under `P0`, one training variant in ten is
+collected with the engine off as a planned fallback, and the evaluation plan
+records the rate.
+
 Session and response reviewers receive explicit JSON schemas whose evidence
 references are restricted to the supplied receipts. Returned references are
 validated again before admission. Unexpected stage failures retain private
@@ -269,8 +281,7 @@ characters) under the 1,600-character budget. Done-when criteria stay out.
 
 ## Models
 
-The driver sets every label a judge does not: guides, kind, the skill a turn
-read, and the tools a `request_tools` need went on to use. On coordinator
+The driver sets every label a judge does not: kind, the skill a turn read, and the tools a `request_tools` need went on to use. On coordinator
 turns:
 
 | Driver | Loadable calls per turn | Needs whose tools were used | Turns reading a skill |
@@ -336,9 +347,8 @@ real ambiguity between tools that do the same job.
   two-skill, and no-skill requests for every skill, and the rubric scores a
   generic procedure likely only when the request asks for that step. Measure
   discovery with `skill_discovery.py` by band of training support.
-- Checkpoints are chosen by tool plus guide validation loss, so selection
-  mostly follows guides. More worker rows of the right kinds, not heavier
-  ones, is the worker fix.
+- Checkpoints are chosen by tool validation loss. More worker rows of the
+  right kinds, not heavier ones, is the worker fix.
 - Retention rows capture later use as positive observational evidence. Missing use
   is not a negative label. R1 qualification requires verified task truth or an
   independent judge for every held-out label; unverified hindsight cannot qualify

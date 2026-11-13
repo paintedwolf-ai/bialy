@@ -104,7 +104,7 @@ run:
     bootstrap: 500                 # resampled rows behind every interval the verdict reads
     min_rows: 20                   # held-out rows under which no interval is trusted
   train:
-    recipes: [B5, B7G, E4, code-rank]   # retention is an explicit R1 experiment
+    recipes: [B5, E4, code-rank]   # retention is an explicit R1 experiment
     device: auto                   # cuda (including ROCm builds of torch), mps, or cpu
     max_hours: 24                  # for all recipes of one training stage together
     torch_index: null              # a torch wheel index; detected from the accelerator when null

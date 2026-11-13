@@ -230,11 +230,11 @@ def test_pilot_env_names_the_heads_the_pilot_carries(tmp_path):
     assert fleet.pilot_env(None) == {"LYCAON_DECIDE_DISABLED": "1"}
     (tmp_path / "heads").mkdir()
     (tmp_path / "heads/turn-load.safetensors").write_bytes(b"h")
-    (tmp_path / "heads/guide-load.safetensors").write_bytes(b"h")
+    (tmp_path / "heads/unit-rank.safetensors").write_bytes(b"h")
     env = fleet.pilot_env(tmp_path)
     assert env["LYCAON_DECIDE_BINARY"] == "/opt/decide/bialy" and env["LYCAON_DECIDE_MODEL_DIR"] == "/opt/decide/model"
     assert env["LYCAON_DECIDE_DEVICE"] == "cpu"
-    assert env["LYCAON_DECIDE_HEADS"] == "guide-load=/opt/decide/heads/guide-load.safetensors,turn-load=/opt/decide/heads/turn-load.safetensors"
+    assert env["LYCAON_DECIDE_HEADS"] == "turn-load=/opt/decide/heads/turn-load.safetensors,unit-rank=/opt/decide/heads/unit-rank.safetensors"
     with pytest.raises(ValueError):
         fleet.pilot_env(tmp_path / "empty")
 

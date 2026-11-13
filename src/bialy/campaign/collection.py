@@ -7,6 +7,7 @@ from ..provenance import file_sha256
 from .execution import Executor
 from .grading import reviewed
 from .journal import CampaignFault, digest
+from .selector import stratum
 
 
 class Collection:
@@ -38,17 +39,19 @@ class Collection:
             # The policy's first route for the focus collects it.
             teacher = teachers[inputs['teachers']['focuses'][task['focus']][0]['teacher_id']]
             for repetition in range(3):
-                trial = {'host': inputs['host'], 'selector': inputs['selector'], 'task': task,
+                drawn = stratum(inputs['selector'], task['id'], repetition)
+                selector = inputs['host']['conservative_reference'] if drawn == 'planned_fallback' else inputs['selector']
+                trial = {'host': inputs['host'], 'selector': selector, 'task': task,
                          'repetition': repetition, 'actor': teacher}
                 # Pilot and full collection share completed attempts from the same task bank.
                 name = 'collection_trial_' + digest({'task': task['id'], 'teacher': teacher['id'], 'repetition': repetition,
-                                                    'selector': inputs['selector']})
+                                                    'selector': selector})
                 result = self.executor.run(name, trial)
                 evidence.append({'stage': name, 'sha256': digest(result)})
                 if result['status'] != 'passed':
                     raise CampaignFault('collection_episode_incomplete', details={'stage': name, 'fault': result['fault']})
                 episode = {'stage': name, 'task_id': task['id'], 'partition': partition, 'focus': task['focus'],
-                           'repetition': repetition, 'episode_sha256': result['output']['verdict']['episode_sha256'],
+                           'repetition': repetition, 'stratum': drawn, 'episode_sha256': result['output']['verdict']['episode_sha256'],
                            'admitted': False, 'exports': None}
                 episodes.append(episode)
                 reviewable = self.review is not None and reviewed(result['output']) == 'split'
