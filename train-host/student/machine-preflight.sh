@@ -13,13 +13,15 @@ missing() {
   for tool in "${!package[@]}"; do command -v "$tool" >/dev/null || echo "$tool"; done | sort
 }
 if [ "$mode" = install ] && [ "$(id -u)" = 0 ] && command -v apt-get >/dev/null; then
-  mapfile -t absent < <(missing)
-  if [ ${#absent[@]} -gt 0 ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  # The dead-man switch may be installing its own client at boot and holding the package lock.
+  for _ in 1 2 3 4 5 6; do
+    mapfile -t absent < <(missing)
+    [ ${#absent[@]} -gt 0 ] || break
     packages=(ca-certificates)
     for tool in "${absent[@]}"; do packages+=("${package[$tool]}"); done
-    export DEBIAN_FRONTEND=noninteractive
-    { apt-get update -q && apt-get install -y -q --no-install-recommends "${packages[@]}"; } >&2 || true
-  fi
+    { apt-get update -q && apt-get -o DPkg::Lock::Timeout=300 install -y -q --no-install-recommends "${packages[@]}"; } >&2 || sleep 10
+  done
   if [ ! -x "$uv" ] && command -v curl >/dev/null; then
     curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_UNMANAGED_INSTALL="$(dirname "$uv")" sh >&2 || true
   fi
