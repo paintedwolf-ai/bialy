@@ -132,6 +132,18 @@ def test_cleanup_reaps_remote_leases_once(tmp_path):
     assert output['reaped'] is True and calls == [(str(remote), True)]
 
 
+def test_cleanup_does_not_pass_while_a_lease_is_unconfirmed(tmp_path):
+    remote = tmp_path / 'machine.json'
+    remote.write_text('{}')
+    leases = [{'token': 'gone', 'state': 'released'}, {'token': 'kept', 'state': 'cleanup_unconfirmed'}]
+    handler = Cleanup({'full_training': 'remote', 'remote': str(remote)}, reap=lambda path, once: leases)
+    with pytest.raises(CampaignFault, match='training_resources_unreleased') as caught:
+        handler.execute({}, 'a')
+    assert caught.value.details == {'leases': ['kept']}
+    leases.pop()
+    assert handler.execute({}, 'a')['reaped'] is True
+
+
 def test_the_head_row_pass_reports_its_split_assignment(tmp_path):
     run = SimpleNamespace(name='heads', path=lambda *parts: tmp_path.joinpath(*parts))
     def stages(run, until):

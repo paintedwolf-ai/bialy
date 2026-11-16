@@ -426,10 +426,10 @@ examples or hosted judgments were used in this final control experiment.
 The student host trains and exports every student declared in
 `config/students.json` (E4B, 12B, and 26B-A4B) using the pinned Painted Wolf
 Code trainer. That file is the only student list: it declares each model
-revision, the pinned chat template, one training recipe, the machine each tier
-needs, and one context policy for pilots, full training, and serving: 65,536
-tokens, thinking disabled, and no token truncation. `docs/running.md` gives the
-reasoning behind the recipe and the machine sizes. Adding
+revision, the pinned chat template, one training recipe, and one context policy
+for pilots, full training, and serving: 65,536 tokens, thinking disabled, and no
+token truncation. `docs/running.md` gives the reasoning behind the recipe and
+the machine each tier needs. Adding
 a student is a new entry there; collection, datasets, training, export, and
 evaluation follow it. Student-specific dataset directories
 contain `train.jsonl`, `val.jsonl`, `holdout.jsonl`, and an authenticated
@@ -447,15 +447,24 @@ be clean. SSH credentials come from the deployment environment. Instance provisi
 | `pilot.sh SPLITS` | Training host | Create unique jobs for each student from `SPLITS/<student>`, train, resume typed pauses, and export |
 | `sft-remote.sh SPLITS` | Training host | Train and export each student on the configured machine and return verified training artifacts, checkpoints, and the three exports |
 
-Use `student/machine.example.json` for an existing SSH-accessible machine or
-`student/provisioned-machine.example.json` to provision an instance. Both use the
-same remote job protocol. Configure the SSH user, port, key path, workspace,
-`uv` executable, and device; remote machines need Git, Python, rsync, uv, CMake,
-a C++ compiler, and the accelerator driver installed. Set `llama_commit` to
-`LLAMA_COMMIT` from `student/pins.env`. Jobs use separate workspace directories.
-A remote job reads the machine's GPU memory, host memory and free disk first and
-refuses one smaller than its student declares: 12B and 26B-A4B need a 140 GiB
-GPU, and 26B-A4B needs 300 GiB of disk.
+Use `student/machine.example.json` for an existing SSH-accessible machine, or
+`student/provisioned-machine.example.json` (Scaleway) or
+`student/vastai-machine.example.json` (Vast.ai) to rent one. All use the same
+remote job protocol. Configure the SSH user, port, key path, workspace, `uv`
+executable, and device. Set `llama_commit` to `LLAMA_COMMIT` from
+`student/pins.env`. Jobs use separate workspace directories.
+
+A job measures its machine against the tier's entry in
+`config/student-requirements.json` before any work starts. An existing machine
+must already have Git, Python, rsync, uv, CMake, a C++ compiler, curl and the
+accelerator driver; a rented one is reached as root and has them installed. A
+rented machine declares `rental: on-demand`, a `lifetime_hours` bound, and the
+GPU memory, system memory and disk it offers; check a configuration before
+using it:
+
+```bash
+python -m bialy.student_host preflight --configuration MACHINE.json --student 26b-a4b
+```
 
 A remote job exports on the machine that trained it, before the machine is
 released. The host merge loads the base model in float32, so its peak memory is
@@ -485,7 +494,10 @@ replace an intact generation.
 The independent reaper must be healthy before allocation. Leases identify exact
 allocated servers, volumes, and addresses. Cleanup remains unconfirmed when the
 provider cannot establish deletion, including an allocation whose response was
-lost. The reaper keeps reconciling those records. Returned adapters are accepted
+lost. The reaper keeps reconciling those records, and each rented machine ends
+its own rental when the controller stops extending its deadline;
+`docs/running.md` ("Rented training machines") has the timings and what each
+provider still bills. Returned adapters are accepted
 only after dataset, model, context, and terminal receipts match the job plan.
 Export separately checks merged weights, GGUF checksums, and a successful load
 receipt; that receipt does not establish behavioral qualification.

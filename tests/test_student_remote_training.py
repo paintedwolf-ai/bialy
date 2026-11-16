@@ -2,120 +2,186 @@ import json
 import shlex
 
 import pytest
+from rental_accounts import ACCOUNTS, Died, Machine, configuration
 
-from bialy.student_host import remote_training
+from bialy.student_host import machines, remote_training, resources
 from bialy.student_host.jobs import JobError, tree
-from bialy.student_host.resources import write
-from bialy.student_host.specification import identity, load
+from bialy.student_host.resources import Resources, write
+from bialy.student_host.specification import identity
 
 
-def test_restart_observes_existing_worker_without_launching_again(tmp_path, monkeypatch):
-    config = {
-              'host_repository': 'https://example.invalid/host.git', 'host_commit': 'a' * 40,
-              'bialy_repository': 'https://example.invalid/bialy.git', 'bialy_commit': 'b' * 40,
-            'llama_repository': 'https://example.invalid/llama.cpp.git', 'llama_commit': 'c' * 40,
-              'host_checkout': str(tmp_path / 'host'), 'models': str(tmp_path / 'models'),
-              'machine': {'user': 'user', 'workspace': '/workspace/jobs', 'uv': '/home/user/.local/bin/uv'},
-              'provisioning': {'provider': 'scaleway', 'registry': str(tmp_path / 'registry'), 'profile': 'test',
-                               'project': 'project', 'zone': 'zone',
-                               'specification': {'type': 'gpu', 'image': 'image', 'root_volume': 'volume'}}}
+def job(tmp_path, provider='scaleway'):
+    config = configuration(tmp_path, provider)
+    if provider is None:
+        config.pop('provisioning')
+        config['machine'] = {'host': 'training.example.org', 'user': 'user', 'workspace': '/workspace/jobs', 'uv': '/home/user/.local/bin/uv'}
+    else:
+        # The larger tiers need more than the example card.
+        config['provisioning']['specification']['gpu_memory_gib'] = 140
     config_path = tmp_path / 'configuration.json'
     write(config_path, config)
     splits = tmp_path / 'splits'
     splits.mkdir()
     (splits / 'train.jsonl').write_text('fixture')
-    directory = tmp_path / 'instance'
-    directory.mkdir()
-    write(directory / 'binding.json', {'configuration': identity(config), 'student': 'e4b', 'splits': tree(splits), 'pilot': False})
-    write(directory / 'resource.json', {'token': 'owned'})
-    write(directory / 'outcome.json', {'status': 'running', 'token': 'owned'})
-    write(directory / 'remote.json', {'directory': '/scratch/runs/owned'})
+    return config, config_path, splits
+
+
+class Worker(Machine):
+    """A rented machine whose training worker reports the given execution states in turn."""
+    states = [{'status': 'failed'}]
     actions = []
-    class Resources:
-        def __init__(self, *args):
-            pass
-        def recover(self, token, seconds):
-            actions.append(('recover', token))
-            return {'server': {'public_ip': {'address': '192.0.2.1'}}}
-        def release(self, token):
-            actions.append(('release', token))
-    class Remote:
-        def __init__(self, address, machine):
-            pass
-        def command(self, args, **kwargs):
-            if args == ['true']:
-                return ''
-            assert args[:2] == ['python3', '-c']
-            return json.dumps({'execution': {'status': 'failed', 'failure': {'code': 'out_of_memory'}}, 'heartbeat_age': 0})
-        def receive(self, source, destination, **kwargs):
-            actions.append(('receive', source))
-    monkeypatch.setattr(remote_training.machines, 'provider', lambda config: None)
-    monkeypatch.setattr(remote_training.machines, 'Resources', Resources)
-    monkeypatch.setattr(remote_training, 'Remote', Remote)
+
+    def command(self, args, **kwargs):
+        if args[:2] == ['python3', '-c']:
+            state = type(self).states.pop(0) if len(type(self).states) > 1 else type(self).states[0]
+            if callable(state):
+                state()
+            if isinstance(state, Exception):
+                raise state
+            return json.dumps({'execution': state, 'heartbeat_age': 0})
+        if 'create' in args:
+            type(self).actions.append(('create', '--pilot' in args))
+            return json.dumps({'directory': '/workspace/runs/job'})
+        return super().command(args, **kwargs)
+
+    def upload(self, *args):
+        pass
+
+    def receive(self, source, destination, **kwargs):
+        type(self).actions.append(('receive', source))
+
+
+@pytest.fixture
+def rented(tmp_path, monkeypatch):
+    """A provider account and worker behind `remote_training.train`, with a healthy reaper."""
+    def account(provider):
+        account = ACCOUNTS[provider]()
+        monkeypatch.setattr(machines, 'provider', lambda provision: account.client())
+        Resources(tmp_path / 'registry', account.client()).reap()
+        return account
+    Worker.states, Worker.actions = [{'status': 'failed'}], []
+    monkeypatch.setattr(remote_training, 'Remote', Worker)
+    monkeypatch.setattr(remote_training, 'bootstrap', lambda *args: None)
     monkeypatch.setattr(remote_training, 'collect_checkpoint', lambda *args: [])
+    return account
+
+
+def test_restart_observes_existing_worker_without_launching_or_renting_again(tmp_path, rented, monkeypatch):
+    account = rented('vastai')
+    config, config_path, splits = job(tmp_path, 'vastai')
+    ledger_write = resources.write
+
+    def killed():
+        # A killed controller neither reaches the provider nor writes its ledger again.
+        account.dead = True
+        monkeypatch.setattr(resources, 'write', lambda path, value: (_ for _ in ()).throw(Died()))
+        raise Died()
+    Worker.states = [killed]
+    with pytest.raises(Died):
+        remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path / 'instances', sleep=lambda _: None)
+    directory = next((tmp_path / 'instances').iterdir())
+    assert json.loads((directory / 'outcome.json').read_text())['status'] == 'running'
+    assert len(account.owned()) == 1 and Worker.actions == [('create', False)]
+    account.heal()
+    monkeypatch.setattr(resources, 'write', ledger_write)
+    Worker.states = [{'status': 'failed', 'failure': {'code': 'out_of_memory'}}]
     with pytest.raises(JobError, match='did not complete'):
-        remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path, resume=directory, sleep=lambda _: None)
-    assert actions == [('recover', 'owned'), ('receive', '/scratch/runs/owned/'), ('release', 'owned')]
+        remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path / 'instances', resume=directory, sleep=lambda _: None)
+    outcome = json.loads((directory / 'outcome.json').read_text())
+    assert Worker.actions == [('create', False), ('receive', '/workspace/runs/job/')]
+    assert outcome['status'] == 'failed' and outcome['cleanup'] == 'confirmed'
+    assert account.created == 1 and account.owned() == []
+
+
+def test_a_failed_job_releases_its_machine_and_stays_terminal(tmp_path, rented):
+    account = rented('scaleway')
+    config, config_path, splits = job(tmp_path)
+    with pytest.raises(JobError, match='did not complete'):
+        remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path / 'instances', sleep=lambda _: None)
+    directory = next((tmp_path / 'instances').iterdir())
     outcome = json.loads((directory / 'outcome.json').read_text())
     assert outcome['status'] == 'failed' and outcome['cleanup'] == 'confirmed'
+    assert account.created == 1 and account.owned() == []
+    assert Worker.actions == [('create', False), ('receive', '/workspace/runs/job/')]
+    with pytest.raises(JobError, match='terminal outcome'):
+        remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path / 'instances', resume=directory, sleep=lambda _: None)
+    assert account.created == 1
+
+
+@pytest.mark.parametrize('status', ['complete', 'failed'])
+def test_resume_settles_a_release_the_provider_had_not_confirmed(tmp_path, rented, monkeypatch, status):
+    account = rented('vastai')
+    config, config_path, splits = job(tmp_path, 'vastai')
+    directory = tmp_path / 'instance'
+    directory.mkdir()
+    resources = Resources(tmp_path / 'registry', account.client())
+    record = resources.intent(config['provisioning']['specification'], 300, 3600)
+    resources.allocate(record['token'], 'startup')
+    write(directory / 'resource.json', record)
+    write(directory / 'binding.json', {'configuration': identity(config), 'student': 'e4b', 'splits': tree(splits), 'pilot': False})
+    write(directory / 'outcome.json', {'status': status, 'cleanup': 'unconfirmed'})
+    monkeypatch.setattr(remote_training, 'validate_inputs', lambda plan: None)
+    monkeypatch.setattr(remote_training, 'validate_result', lambda plan: None)
+    write_plan = directory / 'job'
+    write_plan.mkdir()
+    write(write_plan / 'plan.json', {})
+    account.fail(len(account.calls), 'outage')
+    with pytest.raises(JobError, match='terminal outcome'):
+        remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path, resume=directory, sleep=lambda _: None)
+    assert len(account.owned()) == 1 and json.loads((directory / 'outcome.json').read_text())['cleanup'] == 'unconfirmed'
+    account.heal()
+    if status == 'complete':
+        result = remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path, resume=directory, sleep=lambda _: None)
+        assert result['status'] == 'complete' and result['cleanup'] == 'confirmed'
+    else:
+        with pytest.raises(JobError, match='terminal outcome'):
+            remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path, resume=directory, sleep=lambda _: None)
+        assert json.loads((directory / 'outcome.json').read_text())['cleanup'] == 'confirmed'
+    assert account.owned() == [] and account.created == 1
+
+
+def test_a_machine_the_provider_took_away_is_reported_as_lost_and_released(tmp_path, rented):
+    account = rented('vastai')
+    config, config_path, splits = job(tmp_path, 'vastai')
+    Worker.states = [JobError('ssh')]
+    answer = account.answer
+
+    def exited(command):
+        rows = answer(command)
+        if command[2:4] == ['show', 'instances'] and any('--onstart-cmd' in call for call in account.calls) and len(Worker.actions) > 0:
+            for row in rows:
+                row['actual_status'] = 'exited'
+        return rows
+    account.answer = exited
+    with pytest.raises(JobError, match='did not complete'):
+        remote_training.train(config_path, 'e4b', splits, 'unused', tmp_path / 'instances', sleep=lambda _: None)
+    outcome = json.loads((next((tmp_path / 'instances').iterdir()) / 'outcome.json').read_text())
+    assert outcome['failure']['diagnostic'] == 'rented machine was lost: the provider reports it exited'
+    assert outcome['cleanup'] == 'confirmed' and account.owned() == []
+
+
+def test_a_specification_too_small_for_the_tier_rents_nothing(tmp_path, rented):
+    account = rented('vastai')
+    config, config_path, splits = job(tmp_path, 'vastai')
+    config['provisioning']['specification']['disk_gib'] = 250
+    write(config_path, config)
+    with pytest.raises(JobError, match='cannot hold student 26b-a4b: disk_gib is 250'):
+        remote_training.train(config_path, '26b-a4b', splits, 'unused', tmp_path / 'instances', sleep=lambda _: None)
+    assert account.calls == [] and not (tmp_path / 'instances').exists()
 
 
 @pytest.mark.parametrize('pilot', [False, True])
-@pytest.mark.parametrize('provision', [False, True])
-def test_remote_job_creation_preserves_pilot_mode(tmp_path, monkeypatch, pilot, provision):
-    config = {
-              'host_repository': 'https://example.invalid/host.git', 'host_commit': 'a' * 40,
-              'bialy_repository': 'https://example.invalid/bialy.git', 'bialy_commit': 'b' * 40,
-            'llama_repository': 'https://example.invalid/llama.cpp.git', 'llama_commit': 'c' * 40,
-              'host_checkout': str(tmp_path / 'host'), 'models': str(tmp_path / 'models'),
-              'machine': {'user': 'user', 'workspace': '/workspace/jobs', 'uv': '/home/user/.local/bin/uv'},
-              'provisioning': {'provider': 'scaleway', 'registry': str(tmp_path / 'registry'), 'profile': 'test',
-                               'project': 'project', 'zone': 'zone',
-                               'specification': {'type': 'gpu', 'image': 'image', 'root_volume': 'volume'}}}
-    if not provision:
-        config.pop('provisioning')
-        config['machine']['host'] = 'training.example.org'
-    config_path = tmp_path / 'configuration.json'
-    write(config_path, config)
-    splits = tmp_path / 'splits'
-    splits.mkdir()
-    (splits / 'train.jsonl').write_text('fixture')
-    commands = []
-    class Resources:
-        def __init__(self, *args):
-            assert provision
-        def intent(self, *args):
-            return {'token': 'instance'}
-        def allocate(self, record):
-            return {**record, 'server': {'public_ip': {'address': '192.0.2.1'}}}
-        def release(self, token):
-            assert token == 'instance'
-    class Remote:
-        host = 'fixture'
-        def __init__(self, address, machine):
-            pass
-        def command(self, args, **kwargs):
-            commands.append(args)
-            if 'create' in args:
-                return json.dumps({'directory': '/scratch/runs/job'})
-            if args[:2] == ['python3', '-c']:
-                return json.dumps({'execution': {'status': 'failed'}, 'heartbeat_age': 0})
-            return ''
-        def upload(self, *args):
-            pass
-        def receive(self, *args, **kwargs):
-            pass
-    monkeypatch.setattr(remote_training.machines, 'provider', lambda config: None)
-    monkeypatch.setattr(remote_training.machines, 'Resources', Resources)
-    monkeypatch.setattr(remote_training, 'Remote', Remote)
-    monkeypatch.setattr(remote_training, 'bootstrap', lambda *args: None)
-    monkeypatch.setattr(remote_training, 'collect_checkpoint', lambda *args: [])
+@pytest.mark.parametrize('provider', [None, 'scaleway'])
+def test_remote_job_creation_preserves_pilot_mode(tmp_path, rented, pilot, provider):
+    if provider:
+        rented(provider)
+    config, config_path, splits = job(tmp_path, provider)
     with pytest.raises(JobError, match='did not complete'):
         remote_training.train(config_path, '12b', splits, 'unused', tmp_path / 'instances', pilot=pilot, sleep=lambda _: None)
-    create = next(command for command in commands if 'create' in command)
-    assert ('--pilot' in create) is pilot
-    binding = json.loads(next((tmp_path / 'instances').glob('*/binding.json')).read_text())
-    assert binding['pilot'] is pilot
+    assert Worker.actions[0] == ('create', pilot)
+    directory = next((tmp_path / 'instances').iterdir())
+    assert json.loads((directory / 'binding.json').read_text())['pilot'] is pilot
+    assert json.loads((directory / 'outcome.json').read_text())['cleanup'] == ('confirmed' if provider else 'not_applicable')
 
 
 class ExportMachine:
@@ -163,48 +229,6 @@ def test_export_launches_once_on_the_training_machine(tmp_path, monkeypatch):
     resumed = ExportMachine([{'exit': 0, 'alive': False}])
     remote_training.export_remotely(resumed, config, '/w/job', '/w/job/runs/one', destination, lambda: None, lambda _: None)
     assert not any(args[:2] == ['bash', '-lc'] for args in resumed.commands)
-
-
-class Machine:
-    """Records bootstrap commands and answers the capacity probe with `capacity`."""
-
-    def __init__(self, capacity):
-        self.capacity, self.commands = capacity, []
-
-    def command(self, args, **kwargs):
-        self.commands.append(args)
-        if args[:2] == ['python3', '-c']:
-            if self.capacity is None:
-                raise JobError('no nvidia-smi')
-            return json.dumps(self.capacity)
-        return ''
-
-
-BOOTSTRAP = {'machine': {'uv': '/opt/uv/bin/uv'}, 'llama_repository': 'l', 'llama_commit': 'c',
-             **{name + suffix: name for name in ('host', 'bialy') for suffix in ('_repository', '_commit')}}
-
-
-def test_bootstrap_prepares_the_training_and_conversion_projects(tmp_path):
-    model = load()['models']['26b-a4b']
-    # An "80 GB" card reports slightly under its name; the declared sizes allow for that.
-    remote = Machine({'gpu_memory_gib': model['machine']['gpu_memory_gib'] - 0.4, 'memory_gib': 240.0, 'disk_gib': 900.0})
-    remote_training.bootstrap(remote, BOOTSTRAP, '/w/job', '26b-a4b', model)
-    synced = [args[args.index('--project') + 1] for args in remote.commands if 'sync' in args]
-    assert synced == ['/w/job/bialy', '/w/job/host/scripts/bialy/custom_model', '/w/job/host/scripts/generation']
-    build = next(args for args in remote.commands if '--target' in args)
-    assert 'llama-server' in build and 'llama-quantize' in build and 'llama-completion' not in build
-
-
-@pytest.mark.parametrize('capacity, message', [
-    ({'gpu_memory_gib': 79.6, 'memory_gib': 240.0, 'disk_gib': 900.0}, 'smaller than the student declares.*gpu_memory_gib'),
-    ({'gpu_memory_gib': 140.4, 'memory_gib': 64.0, 'disk_gib': 900.0}, 'smaller than the student declares.*memory_gib'),
-    ({'gpu_memory_gib': 140.4, 'memory_gib': 240.0, 'disk_gib': 230.0}, 'smaller than the student declares.*disk_gib'),
-    (None, 'capacity could not be read')])
-def test_a_machine_smaller_than_the_student_declares_is_refused_before_any_download(tmp_path, capacity, message):
-    remote = Machine(capacity)
-    with pytest.raises(JobError, match=message):
-        remote_training.bootstrap(remote, BOOTSTRAP, '/w/job', '26b-a4b', load()['models']['26b-a4b'])
-    assert not any('clone' in args or 'sync' in args for args in remote.commands)
 
 
 @pytest.mark.parametrize('observations, message', [

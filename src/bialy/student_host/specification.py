@@ -5,16 +5,16 @@ import re
 from pathlib import Path
 
 DEFAULT = Path(__file__).resolve().parents[3] / 'config/students.json'
+REQUIREMENTS = DEFAULT.with_name('student-requirements.json')
 GIB = 1 << 30
 # Recipe values by the trainer flag that carries each, with the type the trainer records.
 RECIPE = {'targets': str, 'rank': int, 'lora_alpha': int, 'lora_dropout': float, 'epochs': int, 'seed': int,
           'learning_rate': float, 'warmup_ratio': float, 'final_learning_rate_ratio': float, 'accumulation': int,
           'weight_decay': float, 'max_grad_norm': float}
 ARCHITECTURE = ('parameters', 'layers', 'hidden_size', 'mlp_width', 'vocabulary')
-MACHINE = ('gpu_memory_gib', 'memory_gib', 'disk_gib')
 # Longest completion the memory estimate allows for, in tokens.
 COMPLETION_TOKENS = 2048
-# Share of a GPU's memory the estimate may reach.
+# Share of the required GPU memory the estimate may reach.
 HEADROOM = 0.85
 
 
@@ -22,8 +22,9 @@ def positive_integers(value, names):
     return isinstance(value, dict) and set(value) == set(names) and all(type(value[name]) is int and value[name] > 0 for name in names)
 
 
-def load(path=DEFAULT):
+def load(path=DEFAULT, requirements=REQUIREMENTS):
     spec = json.loads(Path(path).read_text())
+    machines = json.loads(Path(requirements).read_text())['tiers']
     models = spec.get('models')
     # Names become stage names, provider ids, and directory components.
     if (spec.get('schema') != 'pw-students/2' or not isinstance(models, dict) or not models
@@ -51,11 +52,11 @@ def load(path=DEFAULT):
         if (not re.fullmatch(r'[0-9a-f]{40}', model['revision']) or not model['repository'].startswith('google/gemma-4-')
                 or not re.fullmatch(r'[a-zA-Z0-9._-]+', model['directory'])
                 or type(model.get('adapted_modules')) is not int or model['adapted_modules'] < 1
-                or not positive_integers(model.get('architecture'), ARCHITECTURE)
-                or not positive_integers(model.get('machine'), MACHINE)):
+                or not positive_integers(model.get('architecture'), ARCHITECTURE)):
             raise ValueError('invalid student model identity')
-        if training_memory(spec, name) > HEADROOM * model['machine']['gpu_memory_gib'] * GIB:
-            raise ValueError('student %s does not fit the GPU it declares at the declared sequence length' % name)
+        # A tier absent from the requirements is refused where a machine is chosen for it.
+        if name in machines and training_memory(spec, name) > HEADROOM * machines[name]['gpu_memory_gib'] * GIB:
+            raise ValueError('student %s does not fit the GPU memory required for it at the declared sequence length' % name)
     return spec
 
 

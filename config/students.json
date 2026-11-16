@@ -27,24 +27,21 @@
       "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2",
       "directory": "gemma-4-E4B-it",
       "adapted_modules": 168,
-      "architecture": {"parameters": 7996157418, "layers": 42, "hidden_size": 2560, "mlp_width": 10240, "vocabulary": 262144},
-      "machine": {"gpu_memory_gib": 80, "memory_gib": 64, "disk_gib": 120}
+      "architecture": {"parameters": 7996157418, "layers": 42, "hidden_size": 2560, "mlp_width": 10240, "vocabulary": 262144}
     },
     "12b": {
       "repository": "google/gemma-4-12B-it",
       "revision": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
       "directory": "gemma-4-12B-it",
       "adapted_modules": 184,
-      "architecture": {"parameters": 11959730224, "layers": 48, "hidden_size": 3840, "mlp_width": 15360, "vocabulary": 262144},
-      "machine": {"gpu_memory_gib": 140, "memory_gib": 96, "disk_gib": 160}
+      "architecture": {"parameters": 11959730224, "layers": 48, "hidden_size": 3840, "mlp_width": 15360, "vocabulary": 262144}
     },
     "26b-a4b": {
       "repository": "google/gemma-4-26B-A4B-it",
       "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
       "directory": "gemma-4-26B-A4B-it",
       "adapted_modules": 115,
-      "architecture": {"parameters": 25805936206, "layers": 30, "hidden_size": 2816, "mlp_width": 7744, "vocabulary": 262144},
-      "machine": {"gpu_memory_gib": 140, "memory_gib": 160, "disk_gib": 300}
+      "architecture": {"parameters": 25805936206, "layers": 30, "hidden_size": 2816, "mlp_width": 7744, "vocabulary": 262144}
     }
   }
 }

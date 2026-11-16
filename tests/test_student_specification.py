@@ -3,7 +3,7 @@ import json
 import pytest
 
 from bialy.student_host import __main__ as cli
-from bialy.student_host.specification import GIB, HEADROOM, arguments, load, students, training_config, training_memory
+from bialy.student_host.specification import GIB, HEADROOM, REQUIREMENTS, arguments, load, students, training_config, training_memory
 
 
 def test_every_student_uses_identical_context_in_pilot_and_full_training():
@@ -88,18 +88,15 @@ def test_an_incomplete_recipe_or_rendering_profile_is_refused(tmp_path, change):
         load(path)
 
 
-def test_each_tier_fits_the_gpu_it_declares_at_the_declared_sequence_length(tmp_path):
+def test_each_tier_fits_the_gpu_memory_required_for_it_at_the_declared_sequence_length(tmp_path):
     spec = load()
+    required = json.loads(REQUIREMENTS.read_text())
     estimates = {student: training_memory(spec, student) / GIB for student in students(spec)}
     assert 50 < estimates['e4b'] < 55 and 69 < estimates['12b'] < 73 and 79 < estimates['26b-a4b'] < 83
     for student, estimate in estimates.items():
-        assert estimate <= HEADROOM * spec['models'][student]['machine']['gpu_memory_gib']
-    spec['models']['26b-a4b']['machine']['gpu_memory_gib'] = 80
-    path = tmp_path / 'students.json'
-    path.write_text(json.dumps(spec))
-    with pytest.raises(ValueError, match='26b-a4b does not fit the GPU it declares'):
-        load(path)
-    spec['models']['26b-a4b']['machine'] = {'gpu_memory_gib': 140}
-    path.write_text(json.dumps(spec))
-    with pytest.raises(ValueError, match='model identity'):
-        load(path)
+        assert estimate <= HEADROOM * required['tiers'][student]['gpu_memory_gib']
+    required['tiers']['26b-a4b']['gpu_memory_gib'] = 79
+    path = tmp_path / 'requirements.json'
+    path.write_text(json.dumps(required))
+    with pytest.raises(ValueError, match='26b-a4b does not fit the GPU memory required'):
+        load(requirements=path)

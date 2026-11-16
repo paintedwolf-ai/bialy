@@ -3,7 +3,6 @@ import fcntl
 import json
 import shlex
 import subprocess
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -11,9 +10,10 @@ from pathlib import Path
 from . import exporting, machines
 from .jobs import JobError, tree, validate_inputs, validate_result, validate_training_inputs
 from .resources import write
-from .specification import identity, load
+from .specification import identity
 from .transfer import checkpoints
 
+RELEASED = {'confirmed', 'not_applicable'}
 SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
        '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20', '-o', 'ServerAliveCountMax=3']
 
@@ -33,6 +33,12 @@ class Remote:
             raise JobError('remote operation failed with status %d' % result.returncode)
         return result.stdout
 
+    def script(self, path, args, timeout=600):
+        """Run a local script on the machine through the shell's standard input; nothing needs to be installed there."""
+        result = self.run([*self.ssh, self.host, 'bash -s -- ' + shlex.join(list(map(str, args)))], input=Path(path).read_text(),
+                          capture_output=True, text=True, timeout=timeout)
+        return result.returncode, result.stdout
+
     def upload(self, source, destination):
         self.run(['rsync', '-a', '-e', shlex.join(self.ssh), str(source), self.host + ':' + shlex.quote(destination)], check=True, timeout=600)
 
@@ -49,26 +55,9 @@ def prefix(configuration, workspace):
             'UV_TOOL_DIR=' + workspace + '/tools', 'UV_TOOL_BIN_DIR=' + workspace + '/bin', uv]
 
 
-def capacity(remote, workspace, model):
-    """Refuse a machine smaller than the student declares, before anything is downloaded to it."""
-    probe = ('import json,os,shutil,subprocess; print(json.dumps({'
-             '"gpu_memory_gib": int(subprocess.check_output(["nvidia-smi","--query-gpu=memory.total",'
-             '"--format=csv,noheader,nounits"],text=True).split()[0])/1024, '
-             '"memory_gib": os.sysconf("SC_PAGE_SIZE")*os.sysconf("SC_PHYS_PAGES")/2**30, '
-             '"disk_gib": shutil.disk_usage(' + repr(workspace) + ').free/2**30}))')
-    try:
-        observed = json.loads(remote.command(['python3', '-c', probe], timeout=60))
-    except (JobError, ValueError, subprocess.TimeoutExpired):
-        raise JobError('training machine capacity could not be read') from None
-    # Vendors state sizes in round figures the hardware reports slightly under.
-    short = {name: round(observed[name], 1) for name, needed in model['machine'].items() if observed[name] < 0.97 * needed}
-    if short:
-        raise JobError('training machine is smaller than the student declares: ' + json.dumps(short, sort_keys=True))
-
-
-def bootstrap(remote, configuration, workspace, student, model):
+def bootstrap(remote, configuration, workspace, student, directory):
+    machines.measure(remote, configuration, student, directory)
     remote.command(['mkdir', '-p', workspace])
-    capacity(remote, workspace, model)
     uv = prefix(configuration, workspace)
     remote.command([*uv, '--version'])
     for name in ('host', 'bialy'):
@@ -91,34 +80,6 @@ def bootstrap(remote, configuration, workspace, student, model):
     remote.command([*uv, 'run', '--project', workspace + '/bialy', '--locked',
                     'python', '-m', 'bialy.student_host', 'models', '--root', workspace + '/models',
                     '--student', student], timeout=3600)
-
-
-class Renewal:
-    def __init__(self, resources, token, seconds):
-        self.resources, self.token, self.seconds = resources, token, seconds
-        self.stop = threading.Event()
-        self.error = None
-        self.thread = threading.Thread(target=self.loop, daemon=True)
-
-    def loop(self):
-        while not self.stop.wait(20):
-            try:
-                self.resources.renew(self.token, self.seconds)
-            except Exception as exc:
-                self.error = exc
-                return
-
-    def check(self):
-        if self.error:
-            raise JobError('instance lease renewal failed') from self.error
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, *_):
-        self.stop.set()
-        self.thread.join()
 
 
 def export_remotely(remote, configuration, workspace, remote_directory, destination, check_connection, sleep):
@@ -187,6 +148,9 @@ def collect_checkpoint(remote, remote_directory, destination):
 
 
 def train(configuration_path, student, splits, source_key, out, *, resume=None, pilot=False, sleep=time.sleep):
+    configuration = json.loads(Path(configuration_path).read_text())
+    # Refused here, a machine that cannot run the tier leaves no job directory and rents nothing.
+    machines.preflight(configuration, student)
     destination = Path(resume) if resume else Path(out) / (student + "-" + uuid.uuid4().hex)
     if not resume:
         destination.mkdir(parents=True, exist_ok=False)
@@ -196,48 +160,40 @@ def train(configuration_path, student, splits, source_key, out, *, resume=None, 
         except BlockingIOError as exc:
             raise JobError("another controller holds the remote training lock") from exc
         try:
-            return train_locked(configuration_path, student, splits, source_key, destination, resume, pilot, sleep)
+            return train_locked(configuration, student, splits, source_key, destination, resume, pilot, sleep)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def train_locked(configuration_path, student, splits, source_key, destination, resume, pilot, sleep):
-    configuration = json.loads(Path(configuration_path).read_text())
-    machines.validate(configuration)
+def train_locked(configuration, student, splits, source_key, destination, resume, pilot, sleep):
     binding = {'configuration': identity(configuration), 'student': student, 'splits': tree(splits), 'pilot': pilot}
     if resume:
         if json.loads((destination / 'binding.json').read_text()) != binding:
             raise JobError('remote training restart inputs changed')
         outcome = json.loads((destination / 'outcome.json').read_text())
-        if outcome['status'] == 'complete' and outcome.get('cleanup') in {'confirmed', 'not_applicable'}:
+        if outcome['status'] != 'running':
+            # The work is settled; only a release the provider had not confirmed is still open.
+            if outcome.get('cleanup') not in RELEASED:
+                outcome['cleanup'] = machines.release(configuration, destination, sleep)
+                write(destination / 'outcome.json', outcome)
+            if outcome['status'] != 'complete' or outcome['cleanup'] not in RELEASED:
+                raise JobError('remote training has a terminal outcome; evidence: ' + str(destination))
             plan = json.loads((destination / 'job/plan.json').read_text())
             validate_inputs(plan)
             validate_result(plan)
             return {'directory': str(destination), **outcome}
-        if outcome['status'] != 'running':
-            raise JobError('remote training has a terminal outcome')
     else:
         write(destination / 'binding.json', binding)
         outcome = {'schema': 'pw-remote-training/1', 'student': student, 'status': 'running'}
         write(destination / 'outcome.json', outcome)
     try:
-        with machines.connect(configuration, destination, resume, Remote, Renewal) as (remote, check_connection):
-            ready = False
-            for _ in range(60):
-                check_connection()
-                try:
-                    remote.command(['true'], timeout=30)
-                    ready = True
-                    break
-                except (JobError, subprocess.TimeoutExpired):
-                    sleep(10)
-            if not ready:
-                raise JobError('training machine did not become reachable')
+        with machines.connect(configuration, destination, resume, Remote, sleep) as (remote, supervisor):
+            check_connection = supervisor.check
             workspace = configuration['machine']['workspace'].rstrip('/') + '/' + destination.name
             if resume:
                 remote_directory = json.loads((destination / 'remote.json').read_text())['directory']
             else:
-                bootstrap(remote, configuration, workspace, student, load()['models'][student])
+                bootstrap(remote, configuration, workspace, student, destination)
                 check_connection()
                 remote.command(['mkdir', '-p', *[workspace + '/' + name for name in ('data', 'private', 'runs', 'spool')]])
                 remote.upload(str(Path(splits)) + '/', workspace + '/data/')
@@ -279,7 +235,8 @@ def train_locked(configuration_path, student, splits, source_key, destination, r
                 except (JobError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
                     transport_failures += 1
                     if transport_failures > 2:
-                        raise JobError('remote training observation unavailable') from None
+                        lost = supervisor.lost()
+                        raise JobError('rented machine was lost: ' + lost if lost else 'remote training observation unavailable') from None
                     sleep(20)
                     continue
                 if state['status'] in {'complete', 'failed'}:
@@ -306,6 +263,6 @@ def train_locked(configuration_path, student, splits, source_key, destination, r
         cleanup = destination / 'cleanup.json'
         outcome['cleanup'] = json.loads(cleanup.read_text())['status'] if cleanup.exists() else 'unconfirmed'
         write(destination / 'outcome.json', outcome)
-    if outcome['status'] != 'complete' or outcome['cleanup'] not in {'confirmed', 'not_applicable'}:
+    if outcome['status'] != 'complete' or outcome['cleanup'] not in RELEASED:
         raise JobError('remote training did not complete; evidence: ' + str(destination))
     return {'directory': str(destination), **outcome}
