@@ -212,3 +212,19 @@ def test_a_scenario_sample_is_seeded_and_bounded():
     first, again, other = many.sample(10, 7), many.sample(10, 7), many.sample(10, 8)
     assert len(first.variants) == 10 and first == again and first != other
     assert many.sample(30, 7) is many and many.sample(40, 7) is many
+
+
+def test_scenario_variants_keep_their_text_where_generated_requests_gain_a_reference(factory, tmp_path):
+    import dataclasses
+    files = ["src/flask/ctx.py"]
+    always = dataclasses.replace(factory, archetypes=[dataclasses.replace(a, reference_rate=1.0) for a in factory.archetypes])
+    written = "The teardown in src/flask/ctx.py runs twice when a request context is popped inside a test client block"
+    raw = [{"prompt": "Find where src/flask/ctx.py pushes the application context and explain the order of the pushes",
+            "follow_ups": [], "archetype": "locate", "lang": "en", "author": "author"}]
+    tasks.finalize(always, always.workspace("flask"), raw, files, tmp_path / "out.jsonl", seed=7,
+                   scenarios=[scenario("double-teardown", [written])])
+    out = [json.loads(line) for line in (tmp_path / "out.jsonl").read_text().splitlines()]
+    [variant] = [t for t in out if t["meta"].get("scenario")]
+    [generated] = [t for t in out if not t["meta"].get("scenario")]
+    assert variant["prompt"] == written
+    assert generated["prompt"] != raw[0]["prompt"] and generated["prompt"].startswith(raw[0]["prompt"])
