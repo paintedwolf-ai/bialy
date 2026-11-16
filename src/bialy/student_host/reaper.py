@@ -1,5 +1,9 @@
 """Independent cleanup service for expired training resource leases."""
 import json
+import os
+import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -9,29 +13,24 @@ from .vastai import VastAI
 
 
 def provider(configuration):
-    if configuration.get('provider') == 'vastai':
+    if configuration['provider'] == 'vastai':
         return VastAI(configuration.get('api_key_file'))
     return Scaleway(configuration['profile'], configuration['project'], configuration['zone'])
 
 
-def reap(configuration_path, once=False):
+def reap(configuration_path, once=False, sleep=time.sleep):
     configuration = json.loads(Path(configuration_path).read_text()).get('provisioning')
     if configuration is None:
-        return
+        return None
     resources = Resources(configuration['registry'], provider(configuration))
     while True:
-        resources.reap()
+        results = resources.reap()
         if once:
-            return
-        time.sleep(20)
+            return results
+        sleep(20)
 
 
-def install(configuration_path, run=None):
-    import os
-    import shutil
-    import subprocess
-    import tempfile
-    run = run or subprocess.run
+def install(configuration_path, run=subprocess.run):
     configuration_path = Path(configuration_path).resolve(strict=True)
     configuration = json.loads(configuration_path.read_text()).get('provisioning')
     if configuration is None:

@@ -8,19 +8,23 @@
   "host_checkout": "/scratch/paintedwolf-training/src/host",
   "models": "/scratch/paintedwolf-training/models",
   "provisioning": {
-    "registry": "/var/lib/paintedwolf-training/resources",
     "provider": "vastai",
+    "registry": "/var/lib/paintedwolf-training/resources",
+    "rental": "on-demand",
+    "lifetime_hours": 72,
     "specification": {
       "gpu_name": "H100_SXM",
-      "num_gpus": "1",
-      "image": "pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel",
-      "disk": "250",
-      "bid_price": "1.10"
+      "num_gpus": 1,
+      "gpu_memory_gib": 79,
+      "memory_gib": 128,
+      "disk_gib": 320,
+      "image": "nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04",
+      "max_price": 3.5
     }
   },
   "machine": {
     "user": "root",
-    "workspace": "/scratch/training",
+    "workspace": "/workspace/training",
     "uv": "/root/.local/bin/uv"
   }
 }

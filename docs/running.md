@@ -367,7 +367,13 @@ Recovery:
   not retried. Change the tier's hardware or recipe and plan a new directory.
 - **A rented machine outlives its run.** The installed reaper releases expired
   leases; to sweep at once, run
-  `python -m bialy.student_host reap --configuration MACHINE.json --once`.
+  `python -m bialy.student_host reap --configuration MACHINE.json --once`. A
+  machine whose controller host is gone ends its own rental; see
+  [Rented training machines](#rented-training-machines).
+- **Cleanup unconfirmed.** The work is settled but the provider has not confirmed
+  the machine gone. Resume: it releases again and passes once the provider
+  confirms. The campaign's cleanup stage fails with
+  `training_resources_unreleased` until every lease is released.
 - **A changed plan.** Planned files are read-only, and a run refuses a plan whose
   files changed. Plan a new directory instead of editing one.
 
@@ -591,6 +597,86 @@ rows:
 
 Devices diverge slightly epoch to epoch, so small differences are noise until
 repeated. Code-rank does not precompute: about 13 minutes an epoch on an H100.
+
+## Rented training machines
+
+A student job can rent its machine from Vast.ai or Scaleway
+(`provisioning` in the machine configuration). Two things can go wrong with a
+rental: an instance nobody is watching bills until someone notices, and a lost
+machine takes the run with it. The defaults follow from those.
+
+**On demand only.** `rental` must be `on-demand`, and the Vast.ai client never
+sends a bid. An interruptible instance costs less, but the
+provider can stop it at any moment, and a run does not move to another machine:
+its job directory, merge and export live on the instance, and only LoRA
+checkpoints are replicated. One preemption late in a 26B-A4B run costs more
+than the discount saves. `max_price` caps the hourly price of the offer taken.
+An instance the provider reports as interruptible is refused and destroyed.
+
+**One requirement per tier.** `config/student-requirements.json` states the GPU
+memory, system memory and free disk each tier needs. `python -m
+bialy.student_host preflight --configuration MACHINE.json --student TIER`
+compares a machine configuration with it offline; a remote job runs the same
+check before it rents, then measures the machine itself
+(`train-host/student/machine-preflight.sh`) before any work starts. Disk is the
+sum of what one job leaves on the machine:
+
+| GiB | E4B | 12B | 26B-A4B |
+|---|---|---|---|
+| Base checkpoint (bf16, measured) | 15 | 22 | 48 |
+| Merged checkpoint (fp32) | 30 | 45 | 96 |
+| F16 GGUF | 15 | 22 | 48 |
+| Q4_K_M GGUF and MLX | 9 | 14 | 28 |
+| Three locked environments, llama.cpp build, data, checkpoints | 36 | 36 | 36 |
+| Sum | 105 | 139 | 256 |
+| Required | 110 | 150 | 280 |
+
+System memory covers the fp32 merge, about four bytes per parameter (30, 45
+and 96 GiB) with room for the converter. GPU memory is a floor taken from the
+weights; the rehearsal measures the real peak at the declared context, and the
+figure for a tier is raised when a rehearsal shows it short. An 80 GB card
+reports 79 GiB, so the examples declare 79.
+
+**Images.** The image needs nothing preinstalled beyond `bash` and `apt-get`.
+On a rented machine the preflight installs Git, Python, rsync, CMake, a C++
+compiler, curl and the pinned uv, then verifies them; on an existing machine it
+only verifies and reports what is missing. The Vast.ai example image is checked
+by `tests/test_student_machine_image.py`, which runs where Docker already holds
+the image.
+
+**Ledger.** Every rental is a lease in the registry, written with its ownership
+token before the provider is asked for anything. The token is the instance
+label (Vast.ai) or name and tag (Scaleway), so the ledger alone finds whatever
+exists, in any state. A release destroys by identity, then requires the
+provider to list nothing owned. A listing can omit a new instance, so for 15
+minutes after a creation an empty listing is not proof: a creation whose answer
+was lost, or a destroy the provider did not acknowledge, stays
+`cleanup_unconfirmed` and is retried by the reaper until acknowledged or the 15
+minutes pass. A released lease is watched for the same time. The reaper never
+creates, and an unknown creation is never retried, so one lease is at most one
+instance.
+
+**Two deadlines.** The controller renews a 5-minute lease every 20 seconds; the
+reaper on the controller host destroys the instance when the lease lapses.
+Resuming a stopped controller therefore has to happen within 5 minutes, or the
+reaper has already released the machine and the job ends failed. If the
+controller host itself is gone, the reaper is gone with it, so each instance
+also carries a dead-man switch (`train-host/student/deadman.sh`), installed as
+its startup command and armed at first boot. The controller's heartbeat moves
+its deadline 15 minutes ahead; the first deadline is 30 minutes after boot; and
+no heartbeat moves it past `lifetime_hours`, which also bounds the lease. A job
+does not start on a machine whose switch is not armed.
+
+At the deadline a Vast.ai instance destroys itself with the instance-scoped key
+the provider injects, which can only start, stop or destroy that instance. If
+the provider cannot be reached it asks to be stopped, kills every process, and
+keeps trying: a stopped instance still bills for its disk, and one that can do
+neither bills in full until the reaper or a person destroys it. Scaleway offers
+no credential scoped to one instance, so none is placed there: the instance
+powers itself off. That stops the work but not the rental. Treat the server,
+its volumes and its address as billed until the reaper deletes them, and check
+the console if the controller host was lost. The account key never leaves the
+controller host on either provider.
 
 ## Shutting down a GPU host
 

@@ -196,7 +196,7 @@ class Adoption:
 
 
 class Cleanup:
-    """Reap every training resource lease the campaign's remote jobs registered."""
+    """Reap every training resource lease that is due, and refuse to pass while the provider has not confirmed one gone."""
 
     def __init__(self, configuration, reap=None):
         self.configuration, self.reap = configuration, reap
@@ -206,7 +206,9 @@ class Cleanup:
         if self.configuration['full_training'] != 'remote' or not remote:
             return {'reaped': False, 'reason': 'local_training'}
         from ..student_host import reaper
-        (self.reap or reaper.reap)(remote, once=True)
+        unreleased = [lease['token'] for lease in (self.reap or reaper.reap)(remote, once=True) or [] if lease['state'] != 'released']
+        if unreleased:
+            raise CampaignFault('training_resources_unreleased', details={'leases': unreleased})
         return {'reaped': True, 'configuration_sha256': file_sha256(remote)}
 
     def reconcile(self, inputs, attempt):
