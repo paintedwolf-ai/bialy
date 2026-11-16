@@ -15,6 +15,9 @@ def job(tmp_path, provider='scaleway'):
     if provider is None:
         config.pop('provisioning')
         config['machine'] = {'host': 'training.example.org', 'user': 'user', 'workspace': '/workspace/jobs', 'uv': '/home/user/.local/bin/uv'}
+    else:
+        # The larger tiers need more than the example card.
+        config['provisioning']['specification']['gpu_memory_gib'] = 140
     config_path = tmp_path / 'configuration.json'
     write(config_path, config)
     splits = tmp_path / 'splits'

@@ -29,16 +29,22 @@
     "lycaon-debug eval training-bundle": ["capture", "captures", "session", "project", "out"]
   },
   "scripts": {
-    "train.py": ["corpus", "train", "val", "families", "tool-truth", "tool-weight", "tool-negatives", "lr", "pos-weight", "seed", "batch-size", "epochs", "patience", "skill-scored", "skill-zeros", "rank-levels", "label", "out"],
-    "rerank/train_rerank.py": ["dump", "val-dump", "metrics", "out", "label", "seed", "epochs"],
-    "calibrate.py": ["corpus", "examples", "engine"],
-    "replay_eval.py": ["corpus", "examples", "engine", "tool-truth", "json"],
-    "parity_probe.py": ["model", "head", "examples", "engine", "corpus", "n", "tolerance"],
-    "preload.py": ["corpus", "model"]
+    "scripts/bialy/train.py": ["corpus", "train", "val", "families", "tool-truth", "tool-weight", "tool-negatives", "lr", "pos-weight", "seed", "batch-size", "epochs", "patience", "skill-scored", "skill-zeros", "rank-levels", "label", "out"],
+    "scripts/bialy/rerank/train_rerank.py": ["dump", "val-dump", "metrics", "out", "label", "seed", "epochs"],
+    "scripts/bialy/calibrate.py": ["corpus", "examples", "engine"],
+    "scripts/bialy/replay_eval.py": ["corpus", "examples", "engine", "tool-truth", "json"],
+    "scripts/bialy/parity_probe.py": ["model", "head", "examples", "engine", "corpus", "n", "tolerance"],
+    "scripts/bialy/preload.py": ["corpus", "model"],
+    "scripts/bialy/custom_model/base_checkpoint.py": ["model", "out"],
+    "scripts/bialy/custom_model/export.py": ["model", "run", "out", "resume"],
+    "scripts/bialy/custom_model/gguf_export.py": ["merge", "llama-cpp", "revision", "quantizer", "server", "out", "resume"],
+    "scripts/bialy/custom_model/serving_check.py": ["url", "revision", "out"],
+    "scripts/bialy/custom_model/train.py": ["model", "train", "validation", "holdout", "out", "checkpoint-every", "checkpoint-mirror", "mode", "device", "max-length", "adapted-modules", "targets", "rank", "lora-alpha", "lora-dropout", "epochs", "seed", "learning-rate", "warmup-ratio", "final-learning-rate-ratio", "accumulation", "weight-decay", "max-grad-norm", "max-updates", "resume"],
+    "scripts/generation/convert_mlx.py": ["source", "output", "source-sha256"]
   },
   "schemas": [
     "pw-candidate-export/1",
-    "pw-custom-gguf/1",
+    "pw-custom-gguf/2",
     "pw-decide-row/2",
     "pw-request-row/1",
     "pw-retention-row/1",

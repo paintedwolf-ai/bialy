@@ -1,8 +1,8 @@
 {
   "schema": "pw-student-requirements/1",
   "tiers": {
-    "e4b": {"gpu_memory_gib": 24, "memory_gib": 48, "disk_gib": 110},
-    "12b": {"gpu_memory_gib": 48, "memory_gib": 64, "disk_gib": 150},
-    "26b-a4b": {"gpu_memory_gib": 76, "memory_gib": 128, "disk_gib": 280}
+    "e4b": {"gpu_memory_gib": 61, "memory_gib": 48, "disk_gib": 110},
+    "12b": {"gpu_memory_gib": 84, "memory_gib": 64, "disk_gib": 150},
+    "26b-a4b": {"gpu_memory_gib": 96, "memory_gib": 128, "disk_gib": 280}
   }
 }

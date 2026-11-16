@@ -69,7 +69,7 @@ def test_code_rank_trains_on_the_named_train_dumps_and_selects_on_the_validation
     inputs = {"dumps_train": [tmp_path / "dumps/train/a.jsonl", tmp_path / "dumps/train/b.jsonl"], "dumps_val": [tmp_path / "dumps/validation/c.jsonl"]}
     out = training.train("code-rank", inputs, "/co", tmp_path, {}, tmp_path / "heads", "lbl", 99)
     args = seen["args"]
-    assert out["head"].endswith("code-rank.safetensors") and args[:2] == ["/py", "scripts/bialy/rerank/train_rerank.py"]
+    assert out["head"].endswith("code-rank.safetensors") and args[:2] == ["/py", "/co/scripts/bialy/rerank/train_rerank.py"]
     assert [args[i + 1] for i, a in enumerate(args) if a == "--dump"] == [str(p) for p in inputs["dumps_train"]]
     assert [args[i + 1] for i, a in enumerate(args) if a == "--val-dump"] == [str(p) for p in inputs["dumps_val"]]
     assert args[args.index("--metrics") + 1].endswith("code-rank.metrics.json") and str(stray) not in args
@@ -96,5 +96,5 @@ def test_turn_recipe_trains_on_the_hosts_exported_corpus(tmp_path, monkeypatch):
     out = training.train("B5", inputs, "/co", tmp_path, {"epochs": 1}, tmp_path / "heads", "lbl", 99)
     assert out["head"].endswith("turn-load.safetensors") and seen["cwd"] == "/co" and seen["timeout"] == 99
     args = seen["args"]
-    assert args[:2] == ["/py", "scripts/bialy/train.py"] and "--families" in args and args[args.index("--families") + 1] == "tools"
+    assert args[:2] == ["/py", "/co/scripts/bialy/train.py"] and "--families" in args and args[args.index("--families") + 1] == "tools"
     assert args[args.index("--epochs") + 1] == "1" and args[args.index("--corpus") + 1] == "c"

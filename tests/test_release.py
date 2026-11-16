@@ -238,7 +238,7 @@ def test_the_heads_audit_replays_as_the_release_was_measured(tmp_path, anchors, 
     monkeypatch.setattr("subprocess.run", replay)
     report = audit.heads(out, tmp_path / "dataset", "/lycaon", "/engine/bialy", "/model")
     args = seen["args"]
-    assert args[1] == "scripts/bialy/replay_eval.py" and seen["cwd"] == "/lycaon" and args[args.index("--tool-truth") + 1] == "called"
+    assert args[1] == "/lycaon/scripts/bialy/replay_eval.py" and seen["cwd"] == "/lycaon" and args[args.index("--tool-truth") + 1] == "called"
     assert args[args.index("--corpus") + 1] == str(out / "corpus.json") and args[args.index("--examples") + 1] == str(tmp_path / "dataset" / "holdout.jsonl")
     assert "/engine/bialy serve --model /model" in seen["launcher"] and "--head-max-len 512" in seen["launcher"]
     assert "--head turn-load=%s" % (out / "turn-load.safetensors") in seen["launcher"]

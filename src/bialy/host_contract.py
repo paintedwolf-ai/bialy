@@ -3,7 +3,8 @@ host checkout.
 
 `config/host-contract.json` records every environment variable, subcommand, flag,
 row schema and workflow version the runner and the fleet rely on, and every flag the
-factory passes the scripts it runs from the checkout's scripts/bialy/. `check` holds this
+factory and the student path pass the host's trainer, calibration, probe, export and
+conversion scripts. `check` holds this
 repository to the record: the names its sources pass must be recorded. `verify` holds
 the record to a host checkout: that checkout's sources must declare each one. A name
 the host stopped reading, or never read, therefore fails before a container starts.
@@ -23,14 +24,14 @@ BINARIES = "/opt/bialy/bin/"
 # Row and receipt shapes this factory defines itself; every other pw-*/N id in its
 # sources is one the host emits and the record names.
 FACTORY_SCHEMAS = frozenset((
-    "pw-base-checkpoint/1", "pw-campaign-plan/1", "pw-campaign-run/1", "pw-campaign-source-preflight/2", "pw-campaign-waiting/1",
+    "pw-campaign-plan/1", "pw-campaign-run/1", "pw-campaign-source-preflight/2", "pw-campaign-waiting/1",
     "pw-custom-run/2", "pw-data-report/1", "pw-decide-anchor/1", "pw-episode-verdict/2", "pw-evaluation-policy/1",
     "pw-human-review-decision/1", "pw-load-probe/1", "pw-remote-training/1", "pw-resource-lease/2", "pw-review-finished/1",
     "pw-review-item/1", "pw-review-queue/1", "pw-runner-preflight/1", "pw-selector-holdout/2", "pw-selector-policy/2",
     "pw-selector-qualification/1",
-    "pw-student-artifact/2", "pw-student-export/1", "pw-student-job/1", "pw-student-release/1", "pw-student-requirements/1",
+    "pw-student-artifact/3", "pw-student-export/2", "pw-student-job/1", "pw-student-release/1", "pw-student-requirements/1",
     "pw-student-source/1",
-    "pw-students/1", "pw-teacher-policy/1", "pw-tier-decision/1", "pw-training-campaign-result/2",
+    "pw-students/2", "pw-teacher-policy/1", "pw-tier-decision/1", "pw-training-campaign-result/2",
     "pw-training-campaign-status/1", "pw-training-rows/1"))
 
 ENVIRONMENT = re.compile(r"\b(?:LYCAON|PW)_[A-Z][A-Z0-9_]*\b")
@@ -43,8 +44,6 @@ FLAG_DEFINITION = re.compile(r'\.(?:String|Int|Int64|Uint|Uint64|Float64|Bool|Du
 SHELL_COMMAND = re.compile(re.escape(BINARIES) + r"(lycaon(?:-debug)?)((?:[ \t]+[a-z][a-z-]*)+)")
 PYTHON_COMMAND = re.compile(r"""["']""" + re.escape(BINARIES) + r"""(lycaon(?:-debug)?)["']((?:\s*,\s*["'][a-z][a-z-]*["'])+)""")
 WORD = re.compile(r"[a-z][a-z-]*")
-SCRIPTS = "scripts/bialy"
-SCRIPT_ARGUMENT = re.compile(r'add_argument\(\s*"--([a-z][a-z0-9-]*)"')
 SCRIPT_IMPORT = re.compile(r"^(?:import|from)\s+(\w+)", re.M)
 
 
@@ -81,32 +80,29 @@ def arguments(binary, command, record=None, **flags):
     return out
 
 
-def script(python, name, arguments, record=None):
-    """The command line of one recorded host script, run from the checkout's root:
-    [python, its path, *arguments]. An unrecorded script or flag is refused."""
-    known = (record or load())["scripts"].get(name)
+def script(checkout, path, arguments, record=None):
+    """The argument list that runs one recorded host script with `arguments`: its path in
+    the checkout, then the arguments. An unrecorded script or flag is refused, so every
+    flag the factory passes a trainer or export script is one `verify` holds the host to."""
+    record = record or load()
+    known = record["scripts"].get(path)
     if known is None:
-        raise HostContractError("host_script_unrecorded", [name])
-    unrecorded = sorted({str(a) for a in arguments if str(a).startswith("--")} - {"--" + flag for flag in known})
-    if unrecorded:
-        raise HostContractError("host_flag_unrecorded", ["%s %s" % (name, flag) for flag in unrecorded])
-    return [str(python), "%s/%s" % (SCRIPTS, name), *(str(a) for a in arguments)]
+        raise HostContractError("host_script_unrecorded", [path])
+    passed = {str(item)[2:] for item in arguments if str(item).startswith("--")}
+    if passed - set(known):
+        raise HostContractError("host_flag_unrecorded", ["%s --%s" % (path, flag) for flag in sorted(passed - set(known))])
+    return [str(Path(checkout) / path), *map(str, arguments)]
 
 
-def script_flags(checkout, name):
-    """The flags a host script's parser declares: its own add_argument calls and those of
-    the modules beside it that it imports, which may declare arguments for it. None when
-    the checkout has no such script."""
-    path = Path(checkout) / SCRIPTS / name
-    if not path.is_file():
+def script_source(checkout, path):
+    """A host script's text with that of the modules beside it that it imports, which may
+    declare arguments for it. None when the checkout has no such script."""
+    source = Path(checkout) / path
+    if not source.is_file():
         return None
-    text = path.read_text(encoding="utf-8")
-    flags = set(SCRIPT_ARGUMENT.findall(text))
-    for module in SCRIPT_IMPORT.findall(text):
-        beside = path.with_name(module + ".py")
-        if beside.is_file():
-            flags.update(SCRIPT_ARGUMENT.findall(beside.read_text(encoding="utf-8")))
-    return flags
+    text = source.read_text(encoding="utf-8")
+    beside = [source.with_name(module + ".py") for module in SCRIPT_IMPORT.findall(text)]
+    return text + "".join(module.read_text(encoding="utf-8") for module in beside if module.is_file())
 
 
 def shell_commands(text):
@@ -235,15 +231,16 @@ def verify(checkout, record=None):
             missing += ["flag %s --%s" % (name, flag) for flag in sorted(set(flags) - host["flag_sets"][name])]
         elif flags or not set(command) <= host["words"].get(binary, set()):
             missing.append("command %s" % name)
-    for name, flags in sorted(record["scripts"].items()):
-        found = script_flags(checkout, name)
-        if found is None:
-            missing.append("script %s" % name)
-            continue
-        missing += ["flag %s --%s" % (name, flag) for flag in sorted(set(flags) - found)]
     for name, version in sorted(record["workflows"].items()):
         if host["workflows"].get(name) != version:
             missing.append("workflow %s@%s (the checkout serves %s live)" % (name, version, host["workflows"].get(name)))
+    for path, flags in sorted(record["scripts"].items()):
+        text = script_source(checkout, path)
+        if text is None:
+            missing.append("script %s" % path)
+            continue
+        # A script names a flag in full or, where it declares several in a loop, bare.
+        missing += ["flag %s --%s" % (path, flag) for flag in flags if not re.search(r"""["'](?:--)?%s["']""" % re.escape(flag), text)]
     if missing:
         raise HostContractError("host_contract_drift", missing)
     return record

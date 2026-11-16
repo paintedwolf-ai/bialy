@@ -102,8 +102,12 @@ class ServedEvaluation:
     def execute(self, inputs, attempt):
         artifact = inputs['artifact']
         model = Path(artifact['directory']) / 'model-Q4_K_M.gguf'
+        template = self.specification['rendering']['template_sha256']
+        if artifact.get('template_sha256') != template:
+            raise CampaignFault('evaluation_artifact_template_mismatch', details={'arm': self.arm})
         server = Serving(self.journal.directory / 'serving' / self.student / self.arm / attempt, self.configuration)
-        with server.session(model, artifact['files']['model-Q4_K_M.gguf'], self.specification['context'], self.actor['model']) as url:
+        with server.session(model, artifact['files']['model-Q4_K_M.gguf'], self.specification['context'], self.actor['model'],
+                            template) as url:
             surface = self.driver.factory_run.factory.run['custom_model']['students'][self.student]
             previous = surface['base_url']
             try:

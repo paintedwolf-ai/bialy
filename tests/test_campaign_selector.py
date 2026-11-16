@@ -261,7 +261,7 @@ def test_the_parity_probe_runs_the_hosts_script_in_the_trainers_environment(fact
     report = bench.parity({'turn-load': '/heads/turn-load.safetensors'}, '/corpus.json', Path('/split/development.jsonl'), tmp_path, 24, 0.001)
     assert report == {'passed': True, 'tolerance': 0.001, 'summary': 'parity: worst gap 0.0004 over 24 turns', 'worst_gap': 0.0004, 'turns': 24}
     args, kw = host.calls[0]
-    assert args[:2] == ['/venv/python', 'scripts/bialy/parity_probe.py'] and kw['cwd'] == str(tmp_path / 'co')
+    assert args[:2] == ['/venv/python', str(tmp_path / 'co/scripts/bialy/parity_probe.py')] and kw['cwd'] == str(tmp_path / 'co')
     assert args[args.index('--model') + 1] == 'convaiinnovations/laya-multilingual' and args[args.index('--n') + 1] == '24'
     assert args[args.index('--examples') + 1] == '/split/development.jsonl' and args[args.index('--head') + 1] == '/heads/turn-load.safetensors'
     launcher = Path(args[args.index('--engine') + 1]).read_text()
@@ -278,11 +278,10 @@ def test_every_host_script_is_called_with_flags_the_host_accepts(factory, tmp_pa
     from bialy import training
     monkeypatch.setattr(training, 'venv_python', lambda root, settings: '/venv/python')
     checkout = Path(__file__).parent / 'fixtures' / 'host-checkout'
-    declared = {script: host_contract.script_flags(checkout, script) for script in host_contract.load()['scripts']}
     answers = {'calibrate.py': 'turn:\n  tools:\n    load_at: 0.55\n', 'preload.py': json.dumps(PRELOAD), 'parity_probe.py': '', 'replay_eval.py': ''}
 
     def answer(args):
-        script = args[1][len('scripts/bialy/'):]
+        script = Path(args[1]).name
         if '--json' in args:
             Path(args[args.index('--json') + 1]).write_text(json.dumps({'overall': {}}))
         return (0, answers[script], '')
@@ -291,10 +290,10 @@ def test_every_host_script_is_called_with_flags_the_host_accepts(factory, tmp_pa
     assert bench.replay('/l.sh', '/corpus.json', Path('/split/development.jsonl'), tmp_path / 'replay.json', truth='called') == {'overall': {}}
     assert bench.preload() == PRELOAD
     bench.parity({'turn-load': '/h'}, '/corpus.json', Path('/split/development.jsonl'), tmp_path, 24, 0.001)
-    assert sorted(args[1] for args, _ in host.calls) == ['scripts/bialy/' + name for name in sorted(answers)]
+    assert sorted(Path(args[1]).name for args, _ in host.calls) == sorted(answers)
     for args, _ in host.calls:
-        script = args[1][len('scripts/bialy/'):]
-        assert {a[2:] for a in args if a.startswith('--')} <= declared[script]
+        source = host_contract.script_source(checkout, 'scripts/bialy/' + Path(args[1]).name)
+        assert all('"%s"' % flag in source for flag in args if flag.startswith('--'))
     preload = next(args for args, _ in host.calls if args[1].endswith('preload.py'))
     assert preload[preload.index('--corpus') + 1] == str(run.path('corpus.json')) and preload[preload.index('--model') + 1] == str(tmp_path / 'model')
     _, failing, _ = real_bench(factory, tmp_path / 'f', monkeypatch, lambda args: (2, '', 'usage: replay_eval.py: error: unrecognized arguments'))

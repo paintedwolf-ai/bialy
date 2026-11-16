@@ -179,7 +179,8 @@ class Workbench:
 
     def host(self, script, arguments, python=sys.executable, accept=(0,), **environment):
         from .. import host_contract, training
-        result = self.process(host_contract.script(python, script, arguments), cwd=str(self.run.checkout), capture_output=True, text=True,
+        command = host_contract.script(self.run.checkout, 'scripts/bialy/' + script, arguments)
+        result = self.process([str(python), *command], cwd=str(self.run.checkout), capture_output=True, text=True,
                               env={**training.environment(self.run.factory.root, self.settings()), **environment})
         if result.returncode not in accept:
             raise CampaignFault('selector_host_script_failed', details={'script': script, 'stderr': result.stderr[-2000:]})

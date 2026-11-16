@@ -185,8 +185,8 @@ def train(recipe, inputs, checkout, root, settings, heads_dir, label, budget_sec
     log = heads_dir / (recipe + ".log")
     started = time.time()
     try:
-        run(host_contract.script(python, script, with_epochs(args, settings.get("epochs"))), cwd=str(checkout), env=env,
-            timeout=budget_seconds, log=log)
+        command = host_contract.script(checkout, "scripts/bialy/" + script, with_epochs(args, settings.get("epochs")))
+        run([str(python), *command], cwd=str(checkout), env=env, timeout=budget_seconds, log=log)
     except subprocess.TimeoutExpired as exc:
         raise TrainingError("%s exceeded the training budget; see %s" % (recipe, log)) from exc
     if not out.exists():

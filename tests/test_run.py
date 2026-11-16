@@ -247,7 +247,7 @@ def test_check_refuses_part_of_a_policy_and_a_checkout_that_dropped_a_flag(facto
     run = make_run(factory, tmp_path, train={"recipes": ["B5", "E4"]}, lycaon_checkout=str(tmp_path / "co"))
     with pytest.raises(runmod.RunError) as exc:
         runmod.stage_check(run)
-    assert "a selector policy is whole or absent" in str(exc.value) and "flag replay_eval.py --tool-truth" in str(exc.value)
+    assert "a selector policy is whole or absent" in str(exc.value) and "replay_eval.py --tool-truth" in str(exc.value)
 
 
 def test_report_lists_publish_commands_without_pushing(factory, tmp_path):

@@ -217,9 +217,9 @@ def heads(release, dataset_release, lycaon, engine_bin, model, tolerance=0.01):
         out = Path(tmp) / "replay.json"
         launcher = build.launcher(engine_bin, model, {name: release / (name + ".safetensors") for name in policy["heads"]},
                                   Path(tmp) / "launcher.sh", release / "corpus.json")
-        subprocess.run(host_contract.script(sys.executable, "replay_eval.py", [
+        subprocess.run([sys.executable, *host_contract.script(lycaon, "scripts/bialy/replay_eval.py", [
             "--corpus", release / "corpus.json", "--examples", dataset_release / "holdout.jsonl", "--engine", launcher,
-            "--tool-truth", "called", "--json", out]), cwd=str(lycaon), check=True, stdout=subprocess.DEVNULL)
+            "--tool-truth", "called", "--json", out])], cwd=str(lycaon), check=True, stdout=subprocess.DEVNULL)
         replayed = json.loads(out.read_text(encoding="utf-8"))["overall"]
     diffs = {}
     for family, metric in METRICS:

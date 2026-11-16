@@ -40,12 +40,30 @@ def test_every_declared_student_has_a_machine_requirement():
         machines.requirement('undeclared')
 
 
-@pytest.mark.parametrize('name', ['machine.example.json', 'provisioned-machine.example.json', 'vastai-machine.example.json'])
-def test_every_example_machine_passes_the_offline_preflight_for_every_student(name):
-    for student in students():
-        report = machines.preflight(example(name), student)
-        assert report['requirement'] == machines.requirement(student)
-        assert (report['declared'] is None) is (name == 'machine.example.json')
+# A card that holds every tier; the example specifications declare one that holds E4B.
+ROOMY = 140
+
+
+# The tiers each shipped example is for. An existing machine declares nothing and is measured instead.
+EXAMPLE_TIERS = {'machine.example.json': ('e4b', '12b', '26b-a4b'), 'provisioned-machine.example.json': ('e4b',),
+            'vastai-machine.example.json': ('e4b',), 'vastai-large-machine.example.json': ('12b', '26b-a4b')}
+
+
+def test_every_shipped_example_passes_the_offline_preflight_for_the_tiers_it_is_for():
+    assert {path.name for path in EXAMPLES.glob('*machine.example.json')} == set(EXAMPLE_TIERS)
+    assert {student for tiers in EXAMPLE_TIERS.values() for student in tiers} == set(students())
+    for name, tiers in EXAMPLE_TIERS.items():
+        for student in tiers:
+            report = machines.preflight(example(name), student)
+            assert report['requirement'] == machines.requirement(student)
+            assert (report['declared'] is None) is (name == 'machine.example.json')
+
+
+@pytest.mark.parametrize('name', ['provisioned-machine.example.json', 'vastai-machine.example.json'])
+def test_an_80_gb_example_refuses_the_tiers_its_card_cannot_hold(name):
+    for student in ('12b', '26b-a4b'):
+        with pytest.raises(JobError, match='cannot hold student %s: gpu_memory_gib is 79' % student):
+            machines.preflight(example(name), student)
 
 
 @pytest.mark.parametrize('provider', ['scaleway', 'vastai'])
@@ -53,11 +71,11 @@ def test_every_example_machine_passes_the_offline_preflight_for_every_student(na
 def test_a_specification_that_cannot_hold_the_tier_is_refused_before_renting(tmp_path, monkeypatch, provider, field):
     largest = max(students(), key=lambda student: machines.requirement(student)['disk_gib'])
     short = machines.requirement(largest)[field] - 1
-    config = configuration(tmp_path, provider, **{field: short})
+    config = configuration(tmp_path, provider, **{'gpu_memory_gib': ROOMY, field: short})
     monkeypatch.setattr(machines, 'provider', lambda provision: pytest.fail('a provider was contacted'))
     with pytest.raises(JobError, match='%s is %d, the tier needs %d' % (field, short, short + 1)):
         machines.preflight(config, largest)
-    machines.preflight(configuration(tmp_path, provider), largest)
+    machines.preflight(configuration(tmp_path, provider, gpu_memory_gib=ROOMY), largest)
 
 
 @pytest.mark.parametrize('change', [
@@ -203,7 +221,7 @@ def test_bootstrap_scopes_sources_tools_and_models_to_the_job_workspace(tmp_path
     assert ['git', '-C', llama, 'checkout', '--detach', 'c' * 40] in calls
     configure, build = [args for args in calls if args[0] == 'cmake']
     assert '-DGGML_CUDA=OFF' in configure
-    assert build[:3] == ['cmake', '--build', llama + '/build'] and {'llama-quantize', 'llama-completion'} <= set(build)
+    assert build[:3] == ['cmake', '--build', llama + '/build'] and {'llama-quantize', 'llama-server'} <= set(build)
     synced = [args[args.index('--project') + 1] for args in calls if 'sync' in args]
     assert synced == [prefix + suffix for prefix in ['/srv/training/job/'] for suffix in ('bialy', 'host/scripts/bialy/custom_model', 'host/scripts/generation')]
 
