@@ -2,6 +2,7 @@
 import json
 import time
 
+from . import evaluation_policy
 from .execution import Executor, atomic_json
 from .grading import behavioral_result, effective_attempts, reviewed
 from .journal import CampaignFault, digest
@@ -9,30 +10,37 @@ from .selector import plan_record
 
 
 class EvaluationPlan:
-    def __init__(self, journal, lineage, repetitions=3, bootstrap_samples=10000, seed=7, collection_episodes=None):
+    """The locked tasks and attempts each tier is evaluated on, with the behavioral policy
+    frozen beside them before any student result exists."""
+
+    def __init__(self, journal, lineage, policy=None, collection_episodes=None):
         self.journal, self.lineage = journal, lineage
-        self.repetitions, self.bootstrap_samples, self.seed = repetitions, bootstrap_samples, seed
+        self.policy = policy or evaluation_policy.load()
         self.collection_episodes = collection_episodes
 
     def build(self, inputs):
+        policy = self.policy
         tasks = [dict(row) for row in self.journal.db.execute(
-            "SELECT id,focus,spec_hash FROM tasks WHERE partition='system_test' AND parent IS NULL ORDER BY id")]
-        if (type(self.repetitions) is not int or self.repetitions < 2
-                or type(self.bootstrap_samples) is not int or self.bootstrap_samples < 1000
-                or any(sum(task['focus'] == focus for task in tasks) < 3 for focus in self.lineage.focuses)):
+            "SELECT id,focus,spec_hash,partition FROM tasks WHERE partition IN (?,?) AND parent IS NULL ORDER BY partition,id",
+            (policy['decides'], policy['diagnostic']))]
+        deciding = [task for task in tasks if task['partition'] == policy['decides']]
+        if any(sum(task['focus'] == focus for task in deciding) < 3 for focus in self.lineage.focuses):
             raise CampaignFault('insufficient_independent_evaluation_tasks')
         collection = self.collection_episodes or {row[0]: row[1] for row in self.journal.db.execute(
             "SELECT partition,COUNT(*) FROM tasks WHERE parent IS NULL AND partition!='development' GROUP BY partition")}
         if (set(collection) != {'train', 'validation', 'system_test'}
                 or any(type(count) is not int or count < len(self.lineage.focuses) for count in collection.values())):
             raise CampaignFault('collection_episode_requirements_invalid')
-        return {'collection_episodes': collection, 'tasks': tasks, 'focuses': list(self.lineage.focuses), 'attempts_per_task': self.repetitions, 'bootstrap_samples': self.bootstrap_samples,
-                'bootstrap_seed': self.seed, 'lineage_sha256': self.lineage.freeze(),
+        design = policy['design']
+        return {'collection_episodes': collection, 'tasks': tasks, 'focuses': list(self.lineage.focuses),
+                'attempts_per_task': design['attempts_per_task'], 'bootstrap_samples': design['bootstrap_samples'],
+                'bootstrap_seed': design['bootstrap_seed'], 'lineage_sha256': self.lineage.freeze(),
                 'measurements_sha256': digest(inputs['measurements']), 'selector': plan_record(inputs['selector']),
-                'planned_attempts_per_arm': len(tasks) * self.repetitions}
+                'policy_sha256': digest(policy), 'planned_attempts_per_arm': len(tasks) * design['attempts_per_task']}
 
     def execute(self, inputs, attempt):
         result = self.build(inputs)
+        evaluation_policy.freeze(self.journal.directory, self.policy)
         atomic_json(self.journal.directory / 'evaluation-plan.json', result)
         return result
 
@@ -45,6 +53,7 @@ class EvaluationPlan:
     def validate(self, inputs, output):
         if self.build(inputs) != output:
             raise CampaignFault('evaluation_plan_changed')
+        evaluation_policy.frozen(self.journal.directory, output)
 
 
 class Evaluation:
@@ -57,9 +66,10 @@ class Evaluation:
         plan = inputs['plan']
         if plan['lineage_sha256'] != self.lineage.freeze():
             raise CampaignFault('evaluation_lineage_changed')
+        evaluation_policy.frozen(self.journal.directory, plan)
         attempts = []
         for task in plan['tasks']:
-            registered = self.lineage.admit(task['id'], 'system_test', task['spec_hash'])
+            registered = self.lineage.admit(task['id'], task['partition'], task['spec_hash'])
             for repetition in range(plan['attempts_per_task']):
                 trial = {**inputs, 'task': json.loads(registered['spec']), 'repetition': repetition,
                          'arm': self.arm, 'student': self.student, 'actor': self.actor}
@@ -106,11 +116,15 @@ class Evaluation:
 
 
 class Comparison:
-    """Grade base against trained, applying any human evaluation decisions."""
+    """Grade base against trained under the frozen policy, applying any human evaluation decisions."""
+    def __init__(self, journal):
+        self.journal = journal
+
     def execute(self, inputs, attempt):
+        policy = evaluation_policy.frozen(self.journal.directory, inputs['plan'])
         decisions = inputs['review']['decisions'] if inputs['review'] else {}
         attempts = effective_attempts(inputs['base']['attempts'] + inputs['trained']['attempts'], decisions)
-        return behavioral_result(inputs['plan'], attempts, inputs['student'])
+        return behavioral_result(inputs['plan'], policy, attempts, inputs['student'])
 
     def reconcile(self, inputs, attempt):
         return self.execute(inputs, attempt)

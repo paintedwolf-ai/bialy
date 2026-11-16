@@ -145,9 +145,10 @@ def compose(journal, cfg):
     teachers = [{'id': name, 'family': factory.model(name).family, 'kind': 'teacher'} for name in cfg['teachers']]
     corpus = Path(cfg['corpus'])
     exports = Exports(factory, cfg['checkout'], identity, file_sha256(corpus))
-    def assemble(manifests, decisions, destination, minimum):
+    measure = dataset.Measurement(cfg['checkout'], cfg['models'], specification)
+    def assemble(manifests, decisions, destination, minimum, selector, strata):
         return dataset.assemble(journal, lineage, manifests, decisions, cfg['checkout'], cfg['host_commit'], specification,
-                                destination, minimum)
+                                destination, minimum, selector, strata, measure)
     review = Review(journal.directory) if cfg.get('human_review', False) else None
     command = shlex.join(['bialy', 'review', '--run', str(journal.directory.resolve())])
     collection_review = CollectionGate(review, 'collection_pilot', command) if review else None

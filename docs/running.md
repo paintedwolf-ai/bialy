@@ -117,6 +117,28 @@ the conservative reference instead. Under `P0`, one training variant in ten is
 collected with the engine off as a planned fallback, and the evaluation plan
 records the rate.
 
+Every student's dataset comes from the one student collection. Before any split
+is written, each row is measured with that student's pinned tokenizer and the
+host's encoder; a sequence over 65,536 tokens is refused whole. Assembly also
+refuses changed capture or target hashes, rows from more than one catalog or
+epoch, and any group that crosses a split. A focus short of its episodes ends
+the stage as `data_incomplete` with each student's exact deficit.
+`data-report.json` and `data-report.md` record, per student and partition,
+independent groups, repositories and episodes against encodings, admission
+categories, compaction and worker exercise, selector strata (including runtime
+fallback), exclusions, infrastructure faults and token distributions. They hold
+counts and digests only, and the same sealed inputs write the same report.
+
+The evaluation plan freezes `config/campaign/evaluation-policy.yaml` into
+`evaluation-policy.json`: the behavioral thresholds, the paired task-clustered
+bootstrap and the planned attempts. No student result is read while that file
+is absent or differs from the plan. Each tier runs fresh base and trained
+sessions on the locked development and held-out tasks with thinking off.
+Held-out results decide its behavioral status and development is reported
+beside them. The campaign result reports `execution_status`, `data_status` and
+each tier's artifact, execution and behavioral status separately, so one tier's
+failure never hides another tier's artifact.
+
 Session and response reviewers receive explicit JSON schemas whose evidence
 references are restricted to the supplied receipts. Returned references are
 validated again before admission. Unexpected stage failures retain private

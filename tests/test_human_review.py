@@ -3,6 +3,7 @@ import json
 import pytest
 from conftest import FOCUSES, register_bank
 
+from bialy.campaign import evaluation_policy
 from bialy.campaign.dataset import Assembly
 from bialy.campaign.evaluation import Comparison
 from bialy.campaign.execution import Executor
@@ -181,27 +182,32 @@ def test_human_decisions_change_evaluation_grades_but_not_failed_checks(review_c
         effective_attempts([{**attempts[2], 'episode_sha256': 'x'}], decisions)
 
 
-def test_comparison_grades_with_frozen_evaluation_decisions(monkeypatch):
+def test_comparison_grades_with_frozen_evaluation_decisions(monkeypatch, tmp_path):
     seen = []
-    monkeypatch.setattr('bialy.campaign.evaluation.behavioral_result', lambda plan, attempts, student: seen.append(attempts) or {})
+    monkeypatch.setattr('bialy.campaign.evaluation.behavioral_result', lambda plan, policy, attempts, student: seen.append(attempts) or {})
     attempt = {'episode_sha256': 'x', 'review': 'split', 'success': False, 'unsupported_completion_claims': 1}
     decision = {'dimensions': dict.fromkeys(DIMENSIONS, 'pass')}
-    inputs = {'plan': {}, 'student': 'e4b', 'base': {'attempts': [attempt]}, 'trained': {'attempts': []}}
-    Comparison().execute({**inputs, 'review': {'decisions': {'x': decision}}}, None)
-    Comparison().execute({**inputs, 'review': None}, None)
+    journal = Journal(tmp_path / 'campaign', {})
+    plan = {'policy_sha256': evaluation_policy.freeze(journal.directory, evaluation_policy.load())}
+    inputs = {'plan': plan, 'student': 'e4b', 'base': {'attempts': [attempt]}, 'trained': {'attempts': []}}
+    Comparison(journal).execute({**inputs, 'review': {'decisions': {'x': decision}}}, None)
+    Comparison(journal).execute({**inputs, 'review': None}, None)
+    with pytest.raises(CampaignFault, match='evaluation_policy_unfrozen'):
+        Comparison(journal).execute({**inputs, 'plan': {'policy_sha256': 'other'}, 'review': None}, None)
+    journal.close()
     assert seen[0][0]['success'] is True and seen[1][0]['success'] is False
 
 
 def collected(task, repetition, admitted, rows=3):
     exports = {'e4b': {'manifest': f'{task}-{repetition}', 'manifest_sha256': '', 'rows': rows}}
     return {'stage': f'{task}-{repetition}', 'task_id': task, 'repetition': repetition, 'admitted': admitted,
-            'episode_sha256': f'{task}-{repetition}', 'exports': exports}
+            'episode_sha256': f'{task}-{repetition}', 'exports': exports, 'stratum': 'conservative'}
 
 
 def test_assembly_applies_human_decisions_before_choosing_each_task(tmp_path):
     journal = Journal(tmp_path, {})
     seen = {}
-    def assemble(manifests, decisions, directory, minimum):
+    def assemble(manifests, decisions, directory, minimum, selector, strata):
         seen.update(manifests=manifests, decisions=decisions)
         return {'students': {'e4b': {'directory': str(directory), 'files': {}}}}
     episodes = [collected('a', 0, False), collected('a', 1, True), collected('b', 0, True), collected('c', 0, False, rows=0),
@@ -210,7 +216,7 @@ def test_assembly_applies_human_decisions_before_choosing_each_task(tmp_path):
     review = {'decisions': {'a-0': {'dimensions': passed}, 'b-0': {'dimensions': failed},
                             'c-0': {'dimensions': passed}, 'd-0': {'dimensions': passed}}}
     stage = Assembly(journal, ['e4b'], assemble)
-    inputs = {'collection': {'episodes': episodes, 'minimum': {}}, 'review': review}
+    inputs = {'collection': {'episodes': episodes, 'minimum': {}}, 'review': review, 'selector': {}}
     output = stage.execute(inputs, 'attempt')
     stage.validate(inputs, output)
     assert output['episodes'] == ['a-0'] and seen['manifests'] == {'e4b': ['a-0']}
