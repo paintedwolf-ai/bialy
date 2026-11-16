@@ -37,11 +37,14 @@ uv run bialy audit dataset --release dataset-v1
 - **Statistics.** Rows, hosts, languages, partial turns, prompt groups, and
   workspaces per split, compared with `PROVENANCE.json` and the card.
 - **No leakage.** No prompt group (a request and its near-duplicates) appears
-  in two splits, and every held-out workspace (a repository, or a greenfield
-  stack) appears only in the test split, so validation and test numbers
-  measure requests, codebases, and toolchains the heads never saw. The
-  held-out workspaces come from the anchor, and `PROVENANCE.json` must name
-  the same ones.
+  in two splits, every held-out workspace (a repository, or a greenfield
+  stack) appears only in the test split, and every row sits in the partition
+  its task holds in the release's `ancestry.json`, whose hash
+  `PROVENANCE.json` names. Validation and test numbers therefore measure
+  requests, codebases, and toolchains the heads never saw. The held-out
+  workspaces come from the anchor, and `PROVENANCE.json` must name the same
+  ones. Releases cut before `ancestry.json` existed carry no development split
+  and are checked without it.
 - **Tasks.** Every row comes from a task `tasks.jsonl` lists, and the task
   outcomes match `PROVENANCE.json`; `tasks.jsonl` is what a rebuild drives.
 - **Judge agreement.** The quadratic-weighted kappa between the two judge

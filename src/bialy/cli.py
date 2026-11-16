@@ -44,6 +44,7 @@ from pathlib import Path
 
 from . import audit, coderank, config, custom_quality, dpo, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
 from . import run as runmod
+from .campaign import ancestry
 from .review import cli as review_cli
 
 
@@ -99,14 +100,15 @@ def main(argv=None):
     p.add_argument("--families", default="clear=4,nearmiss=2,multi=2", help="families per skill of each kind")
     p.add_argument("--none-families", type=int, default=40)
     p.add_argument("--per-family", type=int, default=5)
-    p.add_argument("--eval-fraction", type=float, default=0.2)
     p.add_argument("--skill", action="append", default=[], help="only these skills (a pilot)")
     p.add_argument("--workspace", action="append", default=[], help="only these repositories or stacks")
-    p.add_argument("--split", help="put every row in this split instead of dividing train and eval")
+    p.add_argument("--ancestry", help="the run's ancestry.json: every family's rows take its partition")
+    p.add_argument("--split", help="put every row in this partition instead (an acceptance set)")
     p.add_argument("--offered-from", help="a rows file whose first coordinator turn's candidates every row offers, so its tools can be judged")
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--workers", type=int, default=16)
     p = sub.add_parser("split")
+    p.add_argument("--ancestry", required=True, help="the run's ancestry.json")
     p.add_argument("--out", required=True)
     p.add_argument("rows", nargs="+")
     p = sub.add_parser("release")
@@ -116,6 +118,7 @@ def main(argv=None):
     p.add_argument("--agreement", action="append", default=[], help="a judge pass's <rows>.agreement.jsonl second-judge sample; every pass the rows went through")
     p.add_argument("--schema", required=True, help="row.schema.json from the Painted Wolf Code commit that exported the rows")
     p.add_argument("--corpus", required=True, help="corpus.json from the same build")
+    p.add_argument("--ancestry", required=True, help="the run's ancestry.json the split was made by")
     p.add_argument("--code-ref", required=True, help="the tag of this repository the release names, such as v1")
     p.add_argument("--coderank", help="the code-rank pairs directory (bialy coderank pairs)")
     p.add_argument("--stage", action="append", default=[], help="a stage's provenance.json, read into the release's recipe")
@@ -414,9 +417,12 @@ def main(argv=None):
         with open(args.corpus, encoding="utf-8") as fh:
             corpus = json.load(fh)
         families = {k: int(v) for k, v in (kv.split("=") for kv in args.families.split(","))}
+        if bool(args.ancestry) == bool(args.split):
+            ap.error("skillreq needs --ancestry or --split")
         report = skillreq.write(factory, corpus, args.out, args.writer, families, args.none_families, args.per_family, seed=args.seed,
-                                eval_fraction=args.eval_fraction, only=tuple(args.skill), workers=args.workers, workspaces=tuple(args.workspace),
-                                split=args.split, offered=skillreq.offered_from(args.offered_from) if args.offered_from else None)
+                                only=tuple(args.skill), workers=args.workers, workspaces=tuple(args.workspace),
+                                assignment=ancestry.load(args.ancestry) if args.ancestry else None, split=args.split,
+                                offered=skillreq.offered_from(args.offered_from) if args.offered_from else None)
         report["provenance"] = provenance.record(factory, args.out + ".provenance.json", "skillreq", uses_engine=False, writer=args.writer,
                                                  families=families, none_families=args.none_families, per_family=args.per_family,
                                                  seed=args.seed, corpus_revision=corpus["catalog_revision"], workspaces=args.workspace, split=args.split)["at"]
@@ -434,11 +440,11 @@ def main(argv=None):
             json.dump(report, fh, indent=2)
         return 0
     if args.cmd == "split":
-        print(json.dumps(split.split(factory, args.rows, args.out), indent=2))
+        print(json.dumps(split.split(ancestry.load(args.ancestry), args.rows, args.out), indent=2))
         return 0
     if args.cmd == "release":
-        print(release.build(factory, args.split, args.version, args.out, args.schema, args.corpus, args.code_ref, args.agreement,
-                            args.stage, driven=args.driven, coderank=args.coderank, stopping=args.stopping))
+        print(release.build(factory, args.split, args.version, args.out, args.schema, args.corpus, args.code_ref, args.ancestry,
+                            args.agreement, args.stage, driven=args.driven, coderank=args.coderank, stopping=args.stopping))
         return 0
     return 2
 

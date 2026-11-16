@@ -145,11 +145,14 @@ def compose(journal, cfg):
         raise CampaignFault('pilot_runner_image_name_mismatch')
     identity = custom_model_run.binding(run)
     tasks = pilot_bank.build(journal.directory / 'bank')
+    assignment = pilot_bank.assignment(tasks, cfg['epoch'])
+    assignment.save(journal.directory / 'ancestry.json')
     lineage = Lineage(journal)
     if not journal.db.execute('SELECT 1 FROM lineage_freeze').fetchone():
-        lineage.roots(tasks)
+        lineage.roots(tasks, assignment)
+    partition = {task['id']: lineage.task(task['id'])['partition'] for task in tasks}
     for task in tasks:
-        lineage.admit(task['id'], task['partition'], digest(task))
+        lineage.admit(task['id'], partition[task['id']], digest(task))
     frozen = lineage.freeze()
     reviewers = Reviewers(journal, factory, cfg['reviewers'])
     driver = EpisodeDriver(journal, lineage, run, reviewers, journal.directory / 'bank')
@@ -168,7 +171,7 @@ def compose(journal, cfg):
                                                minimum={'train': 8, 'validation': 8, 'system_test': 8}, review=collection_review),
                 'dataset_pilot': Assembly(journal, tuple(specification['models']), assemble)}
     plan = {'tasks': [{'id': task['id'], 'family': task['family'], 'spec_hash': digest(task)}
-                      for task in tasks if task['partition'] == 'system_test'], 'attempts_per_task': 1,
+                      for task in tasks if partition[task['id']] == 'system_test'], 'attempts_per_task': 1,
             'lineage_sha256': frozen, 'scope': 'mechanical_pilot', 'promotion_qualified': False}
     atomic_json(journal.directory / 'evaluation-plan.json', plan)
     training = {**cfg, 'specification': str(Path(__file__).resolve().parents[3] / 'config/students.json'), 'full_training': 'local'}

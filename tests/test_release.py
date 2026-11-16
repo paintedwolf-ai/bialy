@@ -2,7 +2,7 @@ import json
 import shutil
 
 import pytest
-from conftest import FIXTURES
+from conftest import FIXTURES, layout_ancestry
 
 from bialy import anchor, audit, heads, hub, release
 
@@ -21,7 +21,8 @@ def retention_split(tmp_path):
 
 
 def test_a_release_carries_the_retention_rows_it_was_given(factory, split_dir, corpus_file, tmp_path, driven_file):
-    out = release.build(factory, split_dir, "v0r", tmp_path / "dist-retention", FIXTURES / "row.schema.json", corpus_file, "v0", driven=[driven_file],
+    out = release.build(factory, split_dir, "v0r", tmp_path / "dist-retention", FIXTURES / "row.schema.json", corpus_file, "v0",
+                        layout_ancestry(tmp_path / "ancestry.json"), driven=[driven_file],
                         retention=retention_split(tmp_path), retention_schema=FIXTURES / "row.schema.json")
     provenance = json.loads((out / "PROVENANCE.json").read_text())
     assert provenance["retention_rows"] == {"train": 2, "validation": 1}
@@ -38,7 +39,7 @@ def build_release(factory, split_dir, corpus_file, tmp_path, pairs=((3, 3), (0, 
                                              "second_judge": "b", "first_score": x, "second_score": y}) + "\n" for i, (x, y) in enumerate(pairs)))
     if driven is None:
         driven = tmp_path / "tasks-driven.jsonl"
-        driven.write_text("".join(json.dumps({"id": "t%d" % n, "prompt": "p", "outcome": {"status": "settled", "run": "r"}}) + "\n" for n in range(1, 6)))
+        driven.write_text("".join(json.dumps({"id": "t%d" % n, "prompt": "p", "outcome": {"status": "settled", "run": "r"}}) + "\n" for n in range(1, 7)))
     stage = tmp_path / "fleet-provenance.json"
     stage.write_text(json.dumps({"stage": "fleet", "at": "2026-01-01T00:00:00Z", "platform": "Linux-x86_64",
                                  "factory": {"git_commit": "abc", "dirty": False}, "engine": {"lycaon_commit": "def"},
@@ -46,7 +47,8 @@ def build_release(factory, split_dir, corpus_file, tmp_path, pairs=((3, 3), (0, 
     coderank = tmp_path / "coderank"
     coderank.mkdir(exist_ok=True)
     (coderank / "model-flask.jsonl").write_text(json.dumps({"repo": "flask", "file": "a.py", "line": 1, "symbol": "f", "task": "t"}) + "\n")
-    return release.build(factory, split_dir, "v0", tmp_path / "dist", FIXTURES / "row.schema.json", corpus_file, "v0", [agreement],
+    return release.build(factory, split_dir, "v0", tmp_path / "dist", FIXTURES / "row.schema.json", corpus_file, "v0",
+                         layout_ancestry(tmp_path / "ancestry.json"), [agreement],
                          [stage], driven=[driven], coderank=coderank, stopping="Stopped after 5 settled tasks")
 
 
@@ -61,7 +63,9 @@ def test_a_release_passes_its_own_audit(factory, split_dir, corpus_file, tmp_pat
     assert card.startswith("---\nlicense: apache-2.0") and "split: validation, path: val.jsonl" in card and "`train.jsonl`: 3 rows" in card
     report = audit.dataset(out)
     assert report["splits"]["train"]["rows"] == 3 and report["judge_agreement"]["pairs"] == 3 and report["leakage"] == "none"
-    assert report["tasks"] == {"driven": 5, "outcomes": {"settled": 5}} and "Stopped after 5 settled tasks." in card
+    assert report["tasks"] == {"driven": 6, "outcomes": {"settled": 6}} and "Stopped after 5 settled tasks." in card
+    assert "split: development, path: development.jsonl" in card and report["splits"]["development"]["rows"] == 1
+    assert json.loads((out / "PROVENANCE.json").read_text())["ancestry_sha256"] == json.loads((out / "ancestry.json").read_text())["assignment_sha256"]
     assert (out / "coderank" / "model-flask.jsonl").exists() and "Painted Wolf Code at commit def" in card
 
 
@@ -90,6 +94,15 @@ def test_audit_catches_a_leaked_prompt_group(factory, split_dir, corpus_file, tm
     val.write_text(json.dumps(leaked) + "\n")
     out = build_release(factory, split_dir, corpus_file, tmp_path)
     with pytest.raises(audit.AuditError, match="prompt groups"):
+        audit.dataset(out)
+
+
+def test_audit_catches_a_row_outside_its_tasks_partition(factory, split_dir, corpus_file, tmp_path):
+    moved = (split_dir / "val.jsonl").read_text()
+    (split_dir / "val.jsonl").write_text("")
+    (split_dir / "development.jsonl").write_text((split_dir / "development.jsonl").read_text() + moved)
+    out = build_release(factory, split_dir, corpus_file, tmp_path)
+    with pytest.raises(audit.AuditError, match="the ancestry puts in validation"):
         audit.dataset(out)
 
 

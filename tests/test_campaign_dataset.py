@@ -1,13 +1,15 @@
 import json
 
 import pytest
+from conftest import register_bank
 from host_bundles import write_episode
 
+from bialy.campaign.ancestry import PARTITIONS
 from bialy.campaign.dataset import assemble
 from bialy.campaign.episodes import Episodes
 from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal, digest
-from bialy.campaign.lineage import FAMILIES, PARTITIONS, Lineage
+from bialy.campaign.lineage import FAMILIES, Lineage
 from bialy.provenance import file_sha256
 from bialy.student_host.specification import load, students
 
@@ -18,7 +20,7 @@ def bank(tmp_path, monkeypatch):
     specifications = [{'id': partition + family, 'partition': partition, 'family': family,
                        'source_class': 'synthetic', 'required_checks': ['outcome']}
                       for partition in sorted(PARTITIONS) for family in FAMILIES]
-    lineage.roots(specifications)
+    register_bank(lineage, specifications)
     lineage.freeze()
     rows, bundles = [], {}
     for task in specifications:
