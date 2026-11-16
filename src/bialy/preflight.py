@@ -127,9 +127,10 @@ def verify_student_receipts(run, shard, pass_name, contract_sha256, name, servin
     if result.returncode:
         raise faults.RunFault("preflight_receipt_export_failed", shard.name)
     counts = json.loads((destination / "manifest.json").read_text())["counts"]
-    if not counts.get("accepted_candidates") or any(key.startswith("excluded:") and value for key, value in counts.items()):
+    if not counts.get("candidates") or any(value and (key == "host_excluded" or key.startswith("unbuildable:"))
+                                           for key, value in counts.items()):
         raise faults.RunFault("preflight_receipt_not_accepted", shard.name)
-    return counts["accepted_candidates"]
+    return counts["candidates"]
 
 
 def qualify(run, pass_name, pilot=None):
