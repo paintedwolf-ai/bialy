@@ -23,9 +23,10 @@ BINARIES = "/opt/bialy/bin/"
 FACTORY_SCHEMAS = frozenset((
     "pw-base-checkpoint/1", "pw-campaign-plan/1", "pw-campaign-run/1", "pw-campaign-source-preflight/2", "pw-campaign-waiting/1",
     "pw-custom-run/2", "pw-data-report/1", "pw-decide-anchor/1", "pw-episode-verdict/2", "pw-evaluation-policy/1",
-    "pw-human-review-decision/1", "pw-load-probe/1", "pw-remote-training/1", "pw-resource-lease/1", "pw-review-finished/1",
+    "pw-human-review-decision/1", "pw-load-probe/1", "pw-remote-training/1", "pw-resource-lease/2", "pw-review-finished/1",
     "pw-review-item/1", "pw-review-queue/1", "pw-runner-preflight/1", "pw-selector-holdout/1", "pw-selector-policy/1",
-    "pw-student-artifact/2", "pw-student-export/1", "pw-student-job/1", "pw-student-release/1", "pw-student-source/1",
+    "pw-student-artifact/2", "pw-student-export/1", "pw-student-job/1", "pw-student-release/1", "pw-student-requirements/1",
+    "pw-student-source/1",
     "pw-students/1", "pw-teacher-policy/1", "pw-tier-decision/1", "pw-training-campaign-result/2",
     "pw-training-campaign-status/1", "pw-training-rows/1"))
 
