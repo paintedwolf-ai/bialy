@@ -12,8 +12,8 @@ RECIPES = ('dry_run', 'pilot', 'full')
 PARTITIONS = ('train', 'validation', 'system_test')
 
 
-def load(name, path=CONFIG):
-    profiles = yaml.safe_load(Path(path).read_text())['profiles']
+def load(name, path=None):
+    profiles = yaml.safe_load(Path(path or CONFIG).read_text())['profiles']
     if name not in profiles:
         raise CampaignFault('campaign_profile_unknown', details={'profile': name})
     profile = dict(profiles[name], name=name)
