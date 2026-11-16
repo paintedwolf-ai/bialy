@@ -72,21 +72,23 @@ slightly; a large gap is worth a *Data problem* report.
 
 ## 4. The heads' results reproduce (CPU)
 
-The heads release ships the replay reports behind its model card in `eval/`.
-Replay the heads over the dataset's test split through the Painted Wolf Code
-engine and compare:
+The heads release ships its selector policy (`policy.json`), the catalog with the
+policy's thresholds (`corpus.json`), and in `eval/` the qualification record and
+the replay reports behind its model card. Replay the heads over the dataset's
+test split through the Painted Wolf Code engine and compare:
 
 ```bash
 uv run bialy fetch heads --version v1 --out heads-v1
-# In a Painted Wolf Code checkout at the heads' engine_commit (in their PROVENANCE.json):
-#   build bialy (scripts/build-decide.sh) and write a launcher that runs
-#   bialy serve --model <laya-multilingual checkpoint> --model-id convaiinnovations/laya-multilingual \
-#     --device cpu --head-max-len 512 --head turn-load=heads-v1/turn-load.safetensors --head unit-rank=heads-v1/unit-rank.safetensors \
-#     --head code-rank=heads-v1/code-rank.safetensors
-uv run bialy audit heads --release heads-v1 --dataset dataset-v1 --lycaon <checkout> --engine <launcher>
+# In a Painted Wolf Code checkout at the heads' engine_commit (in their PROVENANCE.json),
+# build the engine: scripts/build-decide.sh <dir>/bialy
+uv run bialy audit heads --release heads-v1 --dataset dataset-v1 --lycaon <checkout> \
+  --engine-bin <dir>/bialy --checkpoint <installed laya-multilingual checkpoint>
 ```
 
-Every headline metric (tool precision, recall, F1, kind accuracy) must match the shipped report within 0.01; the engine is
+The audit starts the engine with the release's three heads and the head budget
+the release's catalog declares, and replays with that catalog's thresholds, so
+it measures what the release measured. Every headline metric (tool precision,
+recall, F1) must match the shipped report within 0.01; the engine is
 deterministic, and the tolerance absorbs floating-point differences between
 CPU and the GPU or Apple silicon the report was made on.
 

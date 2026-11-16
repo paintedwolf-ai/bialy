@@ -12,19 +12,18 @@
   bialy fleet salvage --run NAME --into NAME --tasks DIR --out DIR
   bialy coderank harvest --decide-rerank BIN --out DIR
   bialy coderank pairs --units DIR --out DIR [--per-repo N --seed N]
-  bialy coderank dumps --decide-rerank BIN --units DIR --pairs DIR --out DIR
+  bialy coderank dumps --decide-rerank BIN --units DIR --pairs DIR --ancestry FILE --out DIR
   bialy collect --run NAME --pass NAME --tasks DIR
   bialy judge --corpus FILE --rows FILE --out FILE [--unit skills|tools|requests ...]
   bialy split --out DIR ROWS...
   bialy release --split DIR --version V --code-ref REF --out DIR --schema FILE --corpus FILE --driven FILE ...
                    [--agreement FILE ...] [--coderank DIR] [--stage FILE ...] [--stopping TEXT]
-  bialy release-heads --heads DIR --version V --dataset-version V --engine-commit SHA --out DIR --eval SET=FILE ...
-                         [--baseline SET=FILE ... --baseline-label TEXT] [--rerank NAME=FILE ...]
+  bialy release-heads --selector DIR --version V --dataset-version V --engine-commit SHA --out DIR
   bialy publish dataset|heads --release DIR --version V [--push]
   bialy fetch dataset|heads --version V --out DIR
   bialy verify dataset|heads --release DIR [--unanchored]
   bialy audit dataset --release DIR [--unanchored] [--rejudge N --endpoint URL --model ID]
-  bialy audit heads --release DIR --dataset DIR --lycaon CHECKOUT --engine LAUNCHER
+  bialy audit heads --release DIR --dataset DIR --lycaon CHECKOUT --engine-bin BIALY --checkpoint DIR
   bialy check
   bialy run --run NAME [--until STAGE] [--from STAGE] [--redo STAGE ...] [--dry-run] [--push] [--rebuild-image]
             [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
@@ -99,6 +98,7 @@ def main(argv=None):
     p.add_argument("--decide-rerank", help="the decide-rerank binary, built from the engine commit the runners carry")
     p.add_argument("--units")
     p.add_argument("--pairs")
+    p.add_argument("--ancestry", help="dumps: the run's ancestry.json; only its train and validation repositories are dumped")
     p.add_argument("--out", required=True)
     p.add_argument("--per-repo", type=int, default=1500, help="pairs: generated pairs per repository")
     p.add_argument("--seed", type=int, default=7)
@@ -145,15 +145,11 @@ def main(argv=None):
     p.add_argument("--driven", action="append", default=[], required=True, help="a run's tasks-driven.jsonl; every run the rows came from")
     p.add_argument("--stopping", default="", help="why generation stopped where it did, when it stopped before the plan ended")
     p = sub.add_parser("release-heads")
-    p.add_argument("--heads", required=True, help="directory of trained .safetensors heads")
+    p.add_argument("--selector", required=True, help="a selector directory holding a qualified policy: a run's selector/, or a campaign's")
     p.add_argument("--version", required=True)
     p.add_argument("--dataset-version", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--engine-commit", required=True, help="the Painted Wolf Code commit the heads were trained and replayed with")
-    p.add_argument("--eval", action="append", default=[], help="SET=replay_eval JSON for these heads")
-    p.add_argument("--baseline", action="append", default=[], help="SET=replay_eval JSON for a baseline a reader can reproduce")
-    p.add_argument("--baseline-label", default="base checkpoint", help="what the baseline rows are called on the card")
-    p.add_argument("--rerank", action="append", default=[], help="NAME=decide-rerank eval JSON for the code-rank head")
     p = sub.add_parser("publish")
     p.add_argument("kind", choices=sorted(hub.KINDS))
     p.add_argument("--release", required=True)
@@ -179,7 +175,8 @@ def main(argv=None):
     p.add_argument("--rejudge", type=int, default=0, help="score this many released rows again through --endpoint")
     p.add_argument("--endpoint", help="OpenAI-compatible base URL serving --model")
     p.add_argument("--model", help="the pinned judge the endpoint serves, as rows name it")
-    p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
+    p.add_argument("--engine-bin", help="heads: a bialy engine built from the --lycaon checkout")
+    p.add_argument("--checkpoint", help="heads: the installed backbone checkpoint directory the engine loads")
     sub.add_parser("check", help="validate the configuration and pins, offline")
     p = sub.add_parser("campaign", help="plan and drive a training campaign; plan is offline")
     p.add_argument("action", choices=("plan", "run", "resume", "status", "report", "decide", "record"))
@@ -204,13 +201,13 @@ def main(argv=None):
     p.add_argument("--rebuild-image", action="store_true")
     p.add_argument("--task-cap", type=int, help="at most this many tasks per archetype per workspace")
     p.add_argument("--task-share", type=float, help="this fraction of every archetype's tasks, keeping the configured mix")
-    p.add_argument("--heads", help="released head .safetensors directory: drive only the engine-on pass with these heads")
+    p.add_argument("--heads", help="directory of the released heads the checkout's decision release pins: drive only the engine-on pass with them")
     p.add_argument("--workspace", action="append", help="only these repositories or stacks (repeatable)")
     p.add_argument("--runners", type=int)
     p.add_argument("--epochs", type=int, help="cap every recipe's epochs, for a short check of the training stages")
-    p.add_argument("--no-engine-on", action="store_true", help="skip the second pass that drives with the pilot heads")
-    p.add_argument("--recipes", help="comma-separated training recipes for this run, such as R1 for a retention-only pilot")
-    p.add_argument("--no-judge", action="store_true", help="pass rows through unjudged; unverified retention observations cannot qualify a head")
+    p.add_argument("--no-engine-on", action="store_true", help="skip the second pass that drives with the pilot policy")
+    p.add_argument("--recipes", help="comma-separated training recipes for this run: the selector policy's three, or none for a collection-only run")
+    p.add_argument("--no-judge", action="store_true", help="pass rows through unjudged, for a run that only collects observations")
     p.add_argument("--follow-up-rate", type=float, help="override every archetype's follow-up rate; 1.0 keeps every follow-up, each a retention decision")
     p.add_argument("--follow-ups", type=int, help="override the follow-ups a task may carry; longer sessions reach the compaction watermark")
     p.add_argument("--spend-ceiling", type=float, help="stop the run when metered spend passes this many dollars")
@@ -239,7 +236,7 @@ def main(argv=None):
         overrides = {} if args.cmd == "run-status" else {"task_cap": args.task_cap, "task_share": args.task_share, "workspaces": args.workspace, "runners": args.runners,
                                                           "engine_on.heads": args.heads,
                                                           "train.epochs": args.epochs, "engine_on.enabled": False if args.no_engine_on else None,
-                                                          "train.recipes": [r for r in args.recipes.split(",") if r] if args.recipes else None,
+                                                          "train.recipes": [r for r in args.recipes.split(",") if r] if args.recipes is not None else None,
                                                           "judge.enabled": False if args.no_judge else None,
                                                           "retention.follow_up_rate": args.follow_up_rate, "retention.follow_ups": args.follow_ups,
                                                           "spend_ceiling_usd": args.spend_ceiling}
@@ -275,9 +272,10 @@ def main(argv=None):
             len(factory.scenarios), sum(len(s.variants) for s in factory.scenarios), config.hub()["dataset_repo"], config.hub()["model_repo"]))
         return 0
     if args.cmd == "release-heads":
-        pairs = lambda items: dict(item.split("=", 1) for item in items)  # noqa: E731
-        print(heads.build(args.heads, args.version, args.dataset_version, args.engine_commit, pairs(args.eval), pairs(args.baseline),
-                          args.baseline_label, pairs(args.rerank), args.out))
+        try:
+            print(heads.build(args.selector, args.version, args.dataset_version, args.engine_commit, args.out))
+        except heads.ReleaseError as exc:
+            ap.error(str(exc))
         return 0
     if args.cmd == "fetch":
         print(hub.fetch(args.kind, args.version, args.out, args.repo))
@@ -288,9 +286,9 @@ def main(argv=None):
             args.kind, len(names), "; not checked against an anchor" if args.unanchored else ", which matches its anchor in releases/"))
         return 0
     if args.cmd == "audit" and args.kind == "heads":
-        if not (args.dataset and args.lycaon and args.engine):
-            ap.error("audit heads needs --dataset, --lycaon, and --engine")
-        print(json.dumps(audit.heads(args.release, args.dataset, args.lycaon, args.engine), indent=2))
+        if not (args.dataset and args.lycaon and args.engine_bin and args.checkpoint):
+            ap.error("audit heads needs --dataset, --lycaon, --engine-bin, and --checkpoint")
+        print(json.dumps(audit.heads(args.release, args.dataset, args.lycaon, args.engine_bin, args.checkpoint), indent=2))
         return 0
     if args.cmd == "audit":
         report = audit.dataset(args.release, anchored=not args.unanchored)
@@ -337,7 +335,10 @@ def main(argv=None):
         elif args.action == "pairs":
             counts = coderank.pairs(factory, args.units, out, args.per_repo, args.seed)
         else:
-            counts = coderank.dumps(factory, args.decide_rerank, args.units, args.pairs, out)
+            if not args.ancestry:
+                ap.error("coderank dumps needs --ancestry")
+            written = coderank.dumps(factory, args.decide_rerank, args.units, args.pairs, out, ancestry.load(args.ancestry))
+            counts = {partition: len(paths) for partition, paths in written.items()}
         provenance.record(factory, out / "provenance.json", "coderank-" + args.action, uses_engine=args.action != "pairs",
                           bin_dir=os.path.dirname(os.path.abspath(args.decide_rerank)) if args.decide_rerank else None,
                           counts=counts, per_repo=args.per_repo, seed=args.seed, units=args.units, pairs=args.pairs,

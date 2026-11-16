@@ -1,18 +1,20 @@
-"""Train the heads on this machine: the trainer from the pinned checkout in a venv the
+"""Train one head on this machine: the trainer from the pinned checkout in a venv the
 run makes, over the accelerator it finds, under a time budget.
 
-Recipes are the released ones, named as scripts/bialy/README.md names them: B5 for
-turn-load, E4 for unit-rank over the judged rows and the skill requests, and
-code-rank over the site dumps.
+Recipes are named as scripts/bialy/README.md names them: B5 for turn-load, E4 for
+unit-rank over the judged rows and the skill requests, and code-rank over the site
+dumps of the train and validation repositories.
 """
+import hashlib
 import json
 import os
 import platform
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
+
+from . import host_scripts
 
 BACKBONE = ("convaiinnovations/laya-multilingual", "e4e9ddf21a7b1903b7acffd8814ad4307bf63a67")
 TRAIN_HOST = Path(__file__).resolve().parents[2] / "train-host"
@@ -21,15 +23,11 @@ TURN_ARGS = ["--tool-truth", "consensus", "--tool-weight", "none", "--tool-negat
              "--seed", "11", "--batch-size", "64", "--epochs", "45", "--patience", "8"]
 RANK_ARGS = ["--families", "skills,requests", "--skill-scored", "8", "--skill-zeros", "12", "--seed", "11", "--batch-size", "32",
              "--rank-levels", "skills-blended"]
-# The retention recipe's fixed arguments; the learning rate, positive weight, and label
-# rule come from the search grid (retention.search_grid).
-RETENTION_ARGS = ["--families", "retention", "--seed", "11", "--batch-size", "64", "--epochs", "45", "--patience", "8"]
+RERANK_ARGS = ["--seed", "7"]
 RECIPES = {
     "B5": {"head": "turn-load", "kind": "turn", "families": "tools"},
     "E4": {"head": "unit-rank", "kind": "rank"},
     "code-rank": {"head": "code-rank", "kind": "rerank"},
-    # R1: the context retention head, over the retention rows the same sessions wrote.
-    "R1": {"head": "retention", "kind": "retention"},
 }
 
 
@@ -58,7 +56,7 @@ def venv_python(root, settings):
     python = venv / "bin" / "python"
     if python.exists():
         return python
-    requirements = Path(settings.get("requirements") or TRAIN_HOST / "requirements-cuda.txt")
+    requirements = Path(settings.get("requirements") or TRAIN_HOST / "requirements.txt")
     run(["uv", "venv", "-p", str(settings.get("python", "3.12")), str(venv)])
     install = ["uv", "pip", "install", "-r", str(requirements)]
     index = torch_index(settings)
@@ -104,15 +102,21 @@ def environment(root, settings):
     return env
 
 
-def independent_corpus(checkout, corpus, out):
-    out = Path(out)
-    if not out.exists():
-        run([sys.executable, str(TRAIN_HOST / "independent_corpus.py"), str(corpus), str(out)], cwd=str(checkout))
-    return out
-
-
 def mixed_rows(out, fraction, seed, *rows):
-    run([sys.executable, str(TRAIN_HOST / "mix.py"), str(out), str(fraction), str(seed)] + [str(r) for r in rows])
+    """The row files concatenated into `out`: every session row, and the generated
+    skill-request rows of a seeded `fraction` of the training families."""
+    with open(out, "w", encoding="utf-8") as dst:
+        for path in rows:
+            with open(path, encoding="utf-8") as src:
+                for line in src:
+                    if not line.strip():
+                        continue
+                    meta = json.loads(line).get("meta") or {}
+                    if meta.get("source") == "skillreq":
+                        draw = int(hashlib.sha256(("%s%s" % (seed, meta["family"])).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+                        if meta.get("split") != "train" or draw >= fraction:
+                            continue
+                    dst.write(line if line.endswith("\n") else line + "\n")
     return out
 
 
@@ -124,37 +128,6 @@ def skillreq_partition(judged, partition, out):
             if line.strip() and (json.loads(line).get("meta") or {}).get("split") == partition:
                 dst.write(line if line.endswith("\n") else line + "\n")
     return out
-
-
-def train_retention_search(python, env, inputs, checkout, settings, heads_dir, label, budget_seconds, started):
-    """Every point of the retention search grid into heads_dir/search/retention-<point>.safetensors,
-    within the budget. The run's evaluate stage replays each, fits its policy, and
-    promotes the best to heads_dir/retention.safetensors; a point already trained is
-    kept, so a resumed run continues the grid."""
-    from . import retention
-    search_dir = Path(heads_dir) / "search"
-    search_dir.mkdir(parents=True, exist_ok=True)
-    trained = {}
-    for name, point_args in retention.search_grid(settings.get("retention") or {}):
-        out = search_dir / ("retention-%s.safetensors" % name)
-        if out.exists():
-            trained[name] = {"head": str(out), "reused": True}
-            continue
-        remaining = budget_seconds - (time.time() - started)
-        if remaining <= 0:
-            raise TrainingError("the training budget ran out before retention point %s" % name)
-        log = search_dir / ("retention-%s.log" % name)
-        args = with_epochs([str(python), "scripts/bialy/train.py", "--corpus", str(inputs["corpus"]), "--train", str(inputs["retention_train"]),
-                            "--val", str(inputs["retention_val"]), *RETENTION_ARGS, *point_args, "--label", "%s-%s" % (label, name), "--out", str(out)],
-                           settings.get("epochs"))
-        try:
-            run(args, cwd=str(checkout), env=env, timeout=remaining, log=log)
-        except subprocess.TimeoutExpired as exc:
-            raise TrainingError("retention point %s exceeded the training budget; see %s" % (name, log)) from exc
-        if not out.exists():
-            raise TrainingError("retention point %s wrote no head; see %s" % (name, log))
-        trained[name] = {"head": str(out), "log": str(log), "seconds": round(time.time() - started)}
-    return {"search": trained, "device": env.get("LYCAON_DECIDE_DEVICE", accelerator())}
 
 
 def has_rows(path):
@@ -169,7 +142,7 @@ def with_epochs(args, epochs):
     """The trainer arguments with every epoch count replaced, for a short run."""
     if not epochs:
         return args
-    out = list(args)
+    out = [str(a) for a in args]
     if "--epochs" in out:
         out[out.index("--epochs") + 1] = str(epochs)
     else:
@@ -178,52 +151,42 @@ def with_epochs(args, epochs):
 
 
 def train(recipe, inputs, checkout, root, settings, heads_dir, label, budget_seconds):
-    """One recipe into heads_dir/<head>.safetensors. inputs: corpus, independent_corpus,
-    train, val, skillreq_train, skillreq_eval, dumps (a directory), retention_train,
-    retention_val."""
+    """One recipe into heads_dir/<head>.safetensors. inputs: corpus, train, val,
+    skillreq_train, skillreq_eval, and dumps_train and dumps_val (the site dumps of the
+    train and validation repositories)."""
     spec = RECIPES[recipe]
     heads_dir = Path(heads_dir)
     heads_dir.mkdir(parents=True, exist_ok=True)
     out = heads_dir / (spec["head"] + ".safetensors")
-    if spec["kind"] == "retention":
-        # The final retention head is the search's winner, promoted by the evaluate
-        # stage; one left by an earlier run never stands in for the search.
-        if not has_rows(inputs.get("retention_train")) or not has_rows(inputs.get("retention_val")):
-            return {"skipped": "R1 needs retention rows in both splits; the sessions wrote none"}
-        python = venv_python(root, settings)
-        backbone(root)
-        return train_retention_search(python, environment(root, settings), inputs, checkout, settings, heads_dir, label, budget_seconds, time.time())
     if out.exists():
         return {"head": str(out), "reused": True}
+    if spec["kind"] == "turn":
+        script = "train.py"
+        args = ["--corpus", inputs["corpus"], "--train", inputs["train"], "--val", inputs["val"], "--families", spec["families"],
+                *TURN_ARGS, "--label", label, "--out", out]
+    elif spec["kind"] == "rank":
+        if not inputs.get("skillreq_train") or not inputs.get("skillreq_eval"):
+            return {"skipped": "E4 needs judged skill requests in the train and validation partitions"}
+        script = "train.py"
+        mixed = mixed_rows(heads_dir / "e4-train.jsonl", 0.5, 7, inputs["train"], inputs["skillreq_train"])
+        args = ["--corpus", inputs["corpus"], "--train", mixed, "--val", inputs["skillreq_eval"], *RANK_ARGS, "--label", label, "--out", out]
+    else:
+        if not inputs.get("dumps_train") or not inputs.get("dumps_val"):
+            return {"skipped": "code-rank needs site dumps of train and validation repositories"}
+        script = "rerank/train_rerank.py"
+        args = ["--out", out, "--label", label, *RERANK_ARGS, "--metrics", out.with_suffix(".metrics.json")]
+        for dump in inputs["dumps_train"]:
+            args += ["--dump", dump]
+        for dump in inputs["dumps_val"]:
+            args += ["--val-dump", dump]
     python = venv_python(root, settings)
     env = environment(root, settings)
     backbone(root)
     log = heads_dir / (recipe + ".log")
     started = time.time()
-    if spec["kind"] == "turn":
-        args = [str(python), "scripts/bialy/train.py", "--corpus", str(inputs["independent_corpus"]), "--train", str(inputs["train"]),
-                "--val", str(inputs["val"]), "--families", spec["families"], *TURN_ARGS, "--label", label, "--out", str(out)]
-    elif spec["kind"] == "rank":
-        if not inputs.get("skillreq_train"):
-            return {"skipped": "E4 needs judged skill requests; the skillreq stages did not run"}
-        mixed = mixed_rows(heads_dir / "e4-train.jsonl", 0.5, 7, inputs["train"], inputs["skillreq_train"])
-        args = [str(python), "scripts/bialy/train.py", "--corpus", str(inputs["corpus"]), "--train", str(mixed),
-                "--val", str(inputs.get("skillreq_eval") or inputs["val"]), *RANK_ARGS, "--label", label, "--out", str(out)]
-    else:
-        # A campaign names the dumps of each partition; a run trains on every dump it wrote.
-        dumps = inputs.get("dumps_train") or (sorted(Path(inputs["dumps"]).glob("*.jsonl")) if inputs.get("dumps") else [])
-        if not dumps:
-            return {"skipped": "code-rank needs site dumps; the coderank stage did not run"}
-        args = [str(python), "scripts/bialy/rerank/train_rerank.py", "--out", str(out), "--label", label, "--seed", "7"]
-        for dump in dumps:
-            args += ["--dump", str(dump)]
-        for dump in inputs.get("dumps_val") or ():
-            args += ["--val-dump", str(dump)]
-        if inputs.get("dumps_val"):
-            args += ["--metrics", str(out.with_suffix(".metrics.json"))]
-    args = with_epochs(args, settings.get("epochs"))
     try:
-        run(args, cwd=str(checkout), env=env, timeout=budget_seconds, log=log)
+        run(host_scripts.command(python, script, with_epochs(args, settings.get("epochs"))), cwd=str(checkout), env=env,
+            timeout=budget_seconds, log=log)
     except subprocess.TimeoutExpired as exc:
         raise TrainingError("%s exceeded the training budget; see %s" % (recipe, log)) from exc
     if not out.exists():

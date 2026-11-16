@@ -1,8 +1,8 @@
-# The selector policy P0: the three decision heads a campaign trains on its shared
-# splits, the thresholds it binds, the bars the heads must clear together on the
-# development split, and the share of student episodes deliberately run with the
-# engine off. P0 is whole or absent: one head short of its bar ends the stage as
-# selector_unqualified, and no threshold moves to rescue it.
+# The selector policy P0: the three decision heads trained on a run's shared
+# splits, the thresholds it binds, the parity probe and the bars the heads must
+# clear together on the development split, and the share of student episodes
+# deliberately run with the engine off. P0 is whole or absent: one head short of
+# its bar ends the stage as selector_unqualified, and no threshold moves to rescue it.
 
 version: 1
 decisions: lycaon/config/packs/painted-wolf/platform/host/decisions.yaml
@@ -20,8 +20,16 @@ bound:
   turn.skills: [margin]
   lookup: [read_at, margin]
   tool_event: [read_at, pointer_at, margin]
-# Measures from the development replay (turn-load, unit-rank) and the code-rank
-# head's validation-partition measures, each with its floor.
+# The host's parity probe of the turn-load head on development turns: the trainer's
+# forward and the engine must agree on every tool probability within the tolerance.
+parity:
+  turns: 24
+  tolerance: 0.001
+# Floors each head must clear on the development partition, which neither trains a
+# head nor selects its epoch or thresholds: the host's replay for turn-load and
+# unit-rank, and for code-rank the host's rerank measure over the development
+# repositories, where mrr_gain is the blended order's mean reciprocal rank less the
+# text-match order's.
 bars:
   turn-load:
     - {metric: overall.tools._all.recall, at_least: 0.85}
@@ -29,7 +37,8 @@ bars:
   unit-rank:
     - {metric: overall.requests.wanted.top1, at_least: 0.5}
   code-rank:
-    - {metric: val_acc, at_least: 0.6}
+    - {metric: pairs, at_least: 100}
+    - {metric: mrr_gain, at_least: 0.01}
 # One training variant in ten is collected with the engine off, so the student sees
 # the conservative surface; frozen with the evaluation plan.
 fallback_rate: 0.1

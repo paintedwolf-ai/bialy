@@ -1,5 +1,5 @@
 """The host adoption boundary: the student segment runs only on a host commit whose
-decision release and thresholds are P0's."""
+decision release, option vocabulary and thresholds are P0's."""
 import json
 import subprocess
 
@@ -18,13 +18,30 @@ def show(checkout, commit, path, process=subprocess.run):
     return result.stdout
 
 
+def vocabulary_differences(expected, found):
+    """Where a release's preload block is not the policy's: each setting, and each tool
+    whose option text differs or is on one side only."""
+    found = found if isinstance(found, dict) else {}
+    out = [{'preload': key, 'expected': expected[key], 'found': found.get(key)}
+           for key in sorted(set(expected) | set(found)) if key != 'options' and expected.get(key) != found.get(key)]
+    ours, theirs = expected['options'], found.get('options') or {}
+    changed = sorted(name for name in set(ours) | set(theirs) if ours.get(name) != theirs.get(name))
+    if changed:
+        out.append({'preload': 'options', 'tools': changed})
+    return out
+
+
 def differences(policy, release, decisions):
-    """Every pin and threshold of the adopted commit that is not P0's."""
+    """Every pin, vocabulary entry and threshold of the adopted commit that is not P0's."""
     out = []
     for head, pinned in policy['heads'].items():
         found = (release.get('heads') or {}).get(head, {}).get('sha256')
         if found != pinned['sha256']:
             out.append({'head': head, 'expected': pinned['sha256'], 'found': found})
+    backbone = {key: policy['backbone'][key] for key in ('model', 'revision')}
+    if release.get('backbone') != backbone:
+        out.append({'backbone': backbone, 'found': release.get('backbone')})
+    out += vocabulary_differences(policy['preload'], release.get('preload'))
     for name, value in policy['thresholds'].items():
         found = selector.measure(decisions, name)
         if found != value:

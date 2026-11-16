@@ -120,14 +120,14 @@ class ServedEvaluation:
 
 
 class HeadRows:
-    """The head-row pass on C0: the existing run pipeline through its splits and site dumps."""
+    """The head-row pass on C0: the run pipeline through its site dumps, engines and splits."""
 
     def __init__(self, run, execute=runmod.execute):
         self.run, self.run_stages = run, execute
 
     def execute(self, inputs, attempt):
         try:
-            self.run_stages(self.run, until='coderank')
+            self.run_stages(self.run, until='split')
         except runmod.RunError as exc:
             raise CampaignFault('head_rows_failed', details={'error': str(exc)[-2000:]}) from exc
         return self.facts()

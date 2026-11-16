@@ -7,11 +7,14 @@ run.json there. A rerun skips finished stages; `--from` reruns from a stage,
 the flags that override it for one run.
 
 The pass has two halves. The first drives every task with the decision engine
-off and trains pilot heads on what the judges labelled. The second drives the
-same tasks again with those heads deciding, so the release also holds rows from
-turns the engine shaped, then trains the final heads over both.
+off, and the selector fits a pilot policy on what the judges labelled. The
+second drives the same tasks again with that policy deciding, so the release
+also holds rows from turns the engine shaped. The selector then fits the final
+policy over the rows of both: the rank families train on every row, and the
+turn-load head on the rows whose turn the engine did not answer, since a tool
+the engine preloaded and the session then called is not an independent label.
+A heads release is cut only from a policy the selector qualified.
 """
-import concurrent.futures
 import dataclasses
 import json
 import os
@@ -19,7 +22,6 @@ import platform
 import random
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -31,6 +33,7 @@ from . import (
     custom_model_run,
     fleet,
     heads,
+    host_scripts,
     judge,
     preflight,
     provenance,
@@ -43,11 +46,12 @@ from . import (
     tasks,
     training,
 )
-from .campaign import ancestry
+from .campaign import ancestry, selector
+from .campaign.journal import CampaignFault
 
 STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "ancestry", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
-          "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on",
-          "split", "coderank", "release", "train", "evaluate", "release_heads", "report")
+          "judge_skillreq", "coderank", "engine", "split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on",
+          "compare", "judge_on", "split", "release", "train", "evaluate", "release_heads", "report")
 ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on")
 
 
@@ -223,8 +227,9 @@ def scaled_factory(run):
 
 CHECKOUT_FILES = ("lycaon/cmd/lycaon", "lycaon/cmd/lycaon-debug", "lycaon/cmd/decide-rerank", "lycaon/cmd/opengrep-artifact",
                   "lycaon/internal/decide/native/Cargo.toml", "lycaon/config/gitengine/pin.yaml", "rust-toolchain.toml", "schemas",
-                  "scripts/bialy/train.py", "scripts/bialy/row.schema.json", "scripts/bialy/replay_eval.py", "scripts/bialy/rerank/train_rerank.py",
-                  "scripts/bialy/retention-row.schema.json", "scripts/bialy/retention_eval.py")
+                  "scripts/decide-features.sh", "scripts/build-decide.sh", "scripts/bialy/row.schema.json",
+                  "scripts/bialy/retention-row.schema.json", "lycaon/config/" + build.RELEASE,
+                  *("scripts/bialy/" + script for script in host_scripts.FLAGS))
 
 
 def stage_check(run):
@@ -300,10 +305,15 @@ def stage_check(run):
     except RunError as exc:
         scanner = None
         faults.append(str(exc))
+    faults += host_scripts.verify(run.checkout)
     recipes = run.setting("train", {}).get("recipes") or []
     for recipe in recipes:
         if recipe not in training.RECIPES:
             faults.append("unknown training recipe %s; known: %s" % (recipe, ", ".join(sorted(training.RECIPES))))
+    policy_recipes = set(selector.load()["heads"].values())
+    if policy_recipes & set(recipes) and not policy_recipes <= set(recipes):
+        faults.append("run.train.recipes names some of %s; a selector policy is whole or absent, so name all of them or none"
+                      % ", ".join(sorted(policy_recipes)))
     ceiling = float(run.setting("spend_ceiling_usd") or 0)
     priced = [m.id for m in used if (m.hosted or {}).get("price_per_million")]
     if ceiling > 0 and not priced:
@@ -314,7 +324,7 @@ def stage_check(run):
             "writer": writer_model(run).id, "repositories": len(scaled.repos), "stacks": len(scaled.stacks),
             "runners": int(run.setting("runners") or f.fleet["runners"]), "engine_on": run.engine_on, "recipes": recipes,
             "scanner": run.setting("scanner") if scanner else "none",
-            "accelerator": training.accelerator(), "go": "host" if shutil.which("go") else build.GO_IMAGE,
+            "accelerator": training.accelerator(), "go": "host" if shutil.which("go") else build.go_image(run.checkout),
             "cargo": "rustup" if shutil.which("rustup") else build.rust_image(run.checkout), "priced_models": priced,
             "spend_note": "usage is checked between stages; spend_ceiling_usd is not a hard provider spending cap"}
 
@@ -507,7 +517,7 @@ def model_dir(run):
     return build.model_dir(training.backbone(run.factory.root), run.path("build", "model"))
 
 
-JUDGE_SUFFIXES = ("", ".partial.jsonl", ".manifest.json", ".agreement.jsonl", ".agreement.json", ".provenance.json")
+JUDGE_SUFFIXES = ("", ".partial.jsonl", ".manifest.json", ".qualification.json", ".agreement.jsonl", ".agreement.json", ".provenance.json")
 
 
 def judge_rows(run, rows_in, out, units=judge.UNITS):
@@ -541,7 +551,7 @@ def stage_preflight(run):
 
 
 def stage_preflight_on(run):
-    return engine_on_or_skip(run) or preflight.qualify(dataclasses.replace(run, factory=scaled_factory(run)), "on", run.path("build", "pilot"))
+    return engine_on_or_skip(run) or preflight.qualify(dataclasses.replace(run, factory=scaled_factory(run)), "on", pilot_mount(run))
 
 
 def stage_plan(run):
@@ -600,54 +610,65 @@ def stage_split_pilot(run):
 
 
 def stage_train_pilot(run):
-    return engine_on_or_skip(run) or engine_off_or_skip(run) or train_heads(run, run.path("split-pilot"), run.path("pilot-heads"), "pilot")
+    return engine_on_or_skip(run) or engine_off_or_skip(run) or fit_heads(run, run.path("split-pilot"), run.path("pilot-policy"), "pilot")
 
 
-def pilot_heads_dir(run):
-    """The heads the engine-on runners decide with: released heads when configured, else this run's pilot."""
-    heads = run.setting("engine_on", {}).get("heads")
-    if not heads:
-        return run.path("pilot-heads")
-    path = Path(heads)
-    if not path.is_dir() or not any(path.glob("*.safetensors")):
-        raise RunError("run.engine_on.heads must be a directory of released head .safetensors files: %s" % heads)
-    return path
+def released_heads(run):
+    """The released head files run.engine_on.heads names. They must be the heads the
+    checkout's decision release pins, because the runners serve that release's option
+    vocabulary and thresholds from the checkout's own config."""
+    directory = Path(run.setting("engine_on", {}).get("heads"))
+    release = json.loads((run.checkout / "lycaon/config" / build.RELEASE).read_text(encoding="utf-8"))
+    found = {name: directory / (name + ".safetensors") for name in release["heads"]}
+    wrong = sorted(name for name, path in found.items() if not path.is_file() or provenance.file_sha256(path) != release["heads"][name]["sha256"])
+    if wrong:
+        raise RunError("run.engine_on.heads must hold the heads the checkout's decision release %s pins; %s differ or are missing in %s"
+                       % (release.get("release"), ", ".join(wrong), directory))
+    return found
 
 
 def stage_engine(run):
-    """The decision engine for this host, and for the runners when they differ."""
+    """The decision engine for this host, and the CPU engine a pilot carries into the runners."""
     out = {"host": build.host_engine(run.checkout, run.path("build", "host-engine"), run.cache_root)}
-    if run.engine_on and not build.host_is_runner_platform():
+    if run.engine_on or trains_policy(run):
         out["runner"] = build.runner_engine(run.checkout, run.path("build", "runner-engine"), run.cache_root)
     return out
 
 
 def stage_pilot(run):
+    """The mount the engine-on runners decide from: the pilot policy with its thresholds
+    and option vocabulary, or released heads under the checkout's own release."""
     if not run.engine_on:
         return {"skipped": "run.engine_on is off"}
-    # The pilot retention head is chosen here, once the host engine exists to replay
-    # the search on the pilot split; the engine-on pass then drives with it.
-    pilot_search = sorted(run.path("pilot-heads", "search").glob("retention-*.safetensors"))
-    retained = retention_select(run, pilot_search, run.path("split-pilot"), run.path("pilot-heads"), run.path("eval", "retention-pilot")) if pilot_search else {}
-    engine_bin = run.path("build", "runner-engine", "bialy") if not build.host_is_runner_platform() else run.path("build", "host-engine", "bialy")
-    report = build.pilot(engine_bin, model_dir(run), pilot_heads_dir(run), run.path("build", "pilot"))
-    if retained:
-        report["retention"] = {k: retained.get(k) for k in ("chosen", "fitted", "facts")}
+    policy = run.outputs("train_pilot").get("selector")
+    if run.engine_on_only:
+        mount = run.path("build", "pilot")
+        report = build.pilot(run.path("build", "runner-engine", "bialy"), model_dir(run), released_heads(run), mount)
+    elif policy:
+        mount = Path(policy["pilot"])
+        report = {"heads": sorted(policy["heads"]), "policy": policy["policy"]["identity"]}
+    else:
+        raise RunError("the engine-on pass has no policy to serve: name the selector's recipes in run.train.recipes, "
+                       "give released heads, or turn run.engine_on off")
     deadline = int(run.setting("engine_on", {}).get("deadline_ms") or 0)
     tag = run.image("on")
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
     if not present or run.rebuild_image:
         fleet.build_image(run.factory, run.bin_dir, run.engine_dir, tag, deadline, run.checkout / "lycaon/config", scanner=run.scanner,
                           context_window=run.collection_window)
-    return dict(report, pilot=str(run.path("build", "pilot")), image=tag)
+    return dict(report, pilot=str(mount), image=tag)
+
+
+def pilot_mount(run):
+    return Path(run.outputs("pilot")["pilot"])
 
 
 def stage_plan_on(run):
-    return engine_on_or_skip(run) or plan_pass(run, "on", run.path("build", "pilot"))
+    return engine_on_or_skip(run) or plan_pass(run, "on", pilot_mount(run))
 
 
 def stage_drive_on(run):
-    return engine_on_or_skip(run) or drive_pass(run, "on", run.path("build", "pilot"))
+    return engine_on_or_skip(run) or drive_pass(run, "on", pilot_mount(run))
 
 
 def stage_collect_on(run):
@@ -689,9 +710,10 @@ def stage_split(run):
 # ---- code-rank pairs -----------------------------------------------------------
 
 def stage_coderank(run):
-    """Units, request pairs, and site dumps for the code-rank head, through this host's
-    decide-rerank build and the writer model."""
-    if "code-rank" not in (run.setting("train", {}).get("recipes") or []):
+    """Units and request pairs for every repository, and site dumps for the repositories
+    the ancestry puts in train and validation, through this host's decide-rerank build
+    and the writer model."""
+    if "code-rank" not in recipes(run):
         return {"skipped": "code-rank is not in run.train.recipes"}
     scaled = scaled_factory(run)
     if not scaled.repos:
@@ -707,11 +729,8 @@ def stage_coderank(run):
     pairs = coderank.pairs(scaled, base / "units", base / "pairs", per_repo, seed=int(run.setting("seed", 7)), writer=writer_model(run))
     provenance.record(run.factory, base / "pairs.provenance.json", "coderank-pairs", bin_dir=run.host_bin_dir, counts=pairs, per_repo=per_repo,
                       seed=int(run.setting("seed", 7)), decide_rerank=provenance.file_sha256(binary))
-    coderank.dumps(scaled, binary, base / "units", base / "pairs", base / "dumps")
-    dumps = sorted(p.name for p in (base / "dumps").glob("*.jsonl"))
-    if not dumps:
-        raise RunError("decide-rerank wrote no dumps")
-    return {"units": units, "pairs": pairs, "dumps": len(dumps)}
+    dumps = coderank.dumps(scaled, binary, base / "units", base / "pairs", base / "dumps", ancestry_of(run))
+    return {"units": units, "pairs": pairs, "dumps": {partition: len(paths) for partition, paths in dumps.items()}}
 
 
 # ---- releases ------------------------------------------------------------------
@@ -736,175 +755,60 @@ def stage_release(run):
     return {"release": str(out), "version": version, "anchor": str(anchor.path("dataset", version))}
 
 
-def train_heads(run, split_dir, heads_dir, label):
-    """Every recipe in run.train.recipes over `split_dir`, into `heads_dir`, within the budget."""
-    settings = dict(run.setting("train", {}), retention=run.setting("retention", {}))
-    recipes = settings.get("recipes") or []
-    if not recipes:
-        return {"skipped": "run.train.recipes is empty"}
-    judged_skillreq = run.path("skillreq", "judged.jsonl")
-    inputs = {"corpus": run.path("corpus.json"),
-              "independent_corpus": training.independent_corpus(run.checkout, run.path("corpus.json"), run.path("independent-corpus.json")),
-              "train": split_dir / "train.jsonl", "val": split_dir / "val.jsonl",
-              "skillreq_train": training.skillreq_partition(judged_skillreq, "train", run.path("skillreq", "train.jsonl")) if judged_skillreq.exists() else None,
-              "skillreq_eval": training.skillreq_partition(judged_skillreq, "validation", run.path("skillreq", "validation.jsonl")) if judged_skillreq.exists() else None,
-              "dumps": run.path("coderank", "dumps") if run.path("coderank", "dumps").exists() else None,
-              "retention_train": split_dir / "retention" / "train.jsonl", "retention_val": split_dir / "retention" / "val.jsonl"}
-    budget = float(settings.get("max_hours", 24)) * 3600
-    started = time.time()
-    trained = {}
-    for recipe in recipes:
-        remaining = budget - (time.time() - started)
-        if remaining <= 0:
-            raise RunError("training budget of %s hours spent before %s" % (settings.get("max_hours", 24), recipe))
-        try:
-            trained[recipe] = training.train(recipe, inputs, run.checkout, run.factory.root, settings, heads_dir,
-                                             "%s-%s-%s" % (run.name, label, recipe), remaining)
-        except training.TrainingError as exc:
-            raise RunError(str(exc)) from exc
-    return {"heads": trained, "heads_dir": str(heads_dir)}
+def trains_policy(run):
+    """Whether this run fits a selector policy: its recipes name the policy's three heads."""
+    return set(selector.load()["heads"].values()) <= set(recipes(run))
+
+
+def selector_fault(exc):
+    return RunError("%s: %s" % (exc.code, json.dumps(exc.details)))
+
+
+def fit_heads(run, split_dir, directory, label):
+    """The selector policy over `split_dir`, frozen under `directory`: three heads,
+    calibrated thresholds, and the runner mount that serves them."""
+    if not trains_policy(run):
+        return {"skipped": "run.train.recipes names no selector policy"}
+    try:
+        return {"selector": selector.fit(run, split_dir, directory, selector.Workbench(run), selector.load(), label)}
+    except CampaignFault as exc:
+        raise selector_fault(exc) from exc
+    except training.TrainingError as exc:
+        raise RunError(str(exc)) from exc
 
 
 def stage_train(run):
-    return train_heads(run, run.path("split"), run.path("heads"), "final")
+    return fit_heads(run, run.path("split"), run.path("selector"), "final")
 
 
 def stage_evaluate(run):
-    heads_dir = run.path("heads")
-    search = sorted((heads_dir / "search").glob("retention-*.safetensors")) if heads_dir.exists() else []
-    # The retention head is chosen here, from the search, before the launcher that
-    # carries every final head is written.
-    retained = retention_select(run, search, run.path("split"), heads_dir, run.path("eval", "retention")) if search else \
-        {"viability": {"viable": False, "reasons": ["no retention head was trained"], "numbers": {}}}
-    trained = {p.stem: str(p) for p in heads_dir.glob("*.safetensors")} if heads_dir.exists() else {}
+    """Qualify the final policy on the development split and compare it once on the
+    held-out split. A policy short of the parity probe or a bar fails the stage, and
+    no heads release follows."""
+    directory = run.path("selector")
+    trained = run.outputs("train").get("selector")
     if not trained:
-        return {"skipped": "no heads were trained", "retention": retained}
-    launcher = build.launcher(run.path("build", "host-engine", "bialy"), model_dir(run), trained, run.path("build", "launcher.sh"))
-    limit = int(run.setting("evaluate", {}).get("rows") or 0)
-    evals = {}
-    # The turn replay asks the turn-load and unit-rank heads; without both it has nothing to score.
-    turn_heads = {"turn-load", "unit-rank"} <= set(trained)
-    for name in ("val", "holdout") if turn_heads else ():
-        out = run.path("eval", "%s.json" % name)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        rows, total = sample_rows(run.path("split", "%s.jsonl" % name), run.path("eval", "%s.sample.jsonl" % name), limit,
-                                  "%s:evaluate:%s" % (run.setting("seed", 7), name))
-        args = [sys.executable, "scripts/bialy/replay_eval.py", "--corpus", str(run.path("corpus.json")), "--examples", str(rows),
-                "--engine", str(launcher), "--tool-truth", "consensus", "--json", str(out)]
-        result = subprocess.run(args, cwd=str(run.checkout), capture_output=True, text=True, env=training.environment(run.factory.root, run.setting("train", {})))
-        if result.returncode != 0:
-            raise RunError("replay on %s failed: %s" % (name, result.stderr.strip()[-400:]))
-        evals[name] = {"report": str(out), "rows": min(total, limit) if limit else total, "of": total}
-    if not turn_heads:
-        evals["skipped"] = "turn-load and unit-rank were not both trained; the turn replay has nothing to score"
-    rerank = rerank_evals(run, trained) if "code-rank" in trained else {}
-    return {"evals": evals, "launcher": str(launcher), "rerank": rerank, "retention": retained}
-
-
-def retention_select(run, search, split_dir, heads_dir, out_dir):
-    """Every searched retention head replayed on split_dir's validation rows with its
-    policy fitted there, the best fitted objective promoted to heads_dir/retention.safetensors,
-    that head scored on the held-out rows with an interval, and the verdict read from
-    the held-out score and the pass comparison. Everything the choice rests on is
-    written under out_dir."""
-    settings = run.setting("retention", {})
-    val, holdout = split_dir / "retention" / "val.jsonl", split_dir / "retention" / "holdout.jsonl"
-    if not training.has_rows(val):
-        return {"viability": {"viable": False, "reasons": ["no validation retention rows to fit on"], "numbers": {}}}
-    out_dir.mkdir(parents=True, exist_ok=True)
-    env = training.environment(run.factory.root, run.setting("train", {}))
-    reports = {}
-    for head in search:
-        name = head.stem[len("retention-"):]
-        launcher = build.launcher(run.path("build", "host-engine", "bialy"), model_dir(run), {"retention": str(head)}, out_dir / ("%s.launcher.sh" % name))
-        out = out_dir / ("%s.json" % name)
-        args = [sys.executable, "scripts/bialy/retention_eval.py", "--corpus", str(run.path("corpus.json")), "--examples", str(val), "--fit",
-                "--bootstrap", str(int(settings.get("bootstrap") or 500)), "--seed", str(run.setting("seed", 7)), "--json", str(out),
-                "--dump", str(out_dir / ("%s.candidates.jsonl" % name)), "--engine", str(launcher)]
-        if training.has_rows(holdout):
-            args += ["--holdout", str(holdout)]
-        result = subprocess.run(args, cwd=str(run.checkout), capture_output=True, text=True, env=env)
-        if result.returncode != 0:
-            raise RunError("retention replay of %s failed: %s" % (name, result.stderr.strip()[-400:]))
-        reports[name] = json.loads(out.read_text(encoding="utf-8"))
-    chosen, objective = retention.select(reports)
-    report = reports[chosen]
-    shutil.copy2(heads_dir / "search" / ("retention-%s.safetensors" % chosen), heads_dir / "retention.safetensors")
-    selection = {"chosen": chosen, "validation_objective_tokens": objective, "fitted": {k: report["fitted"][k] for k in ("drop_below", "confidence_floor")},
-                 "recommendation": report.get("recommendation"),
-                 "search": {name: {"validation_objective_tokens": ((r.get("fitted") or {}).get("tally") or {}).get("objective_tokens"),
-                                   "auc": (r.get("overall") or {}).get("auc"),
-                                   "holdout_objective_per_request": ((r.get("holdout") or {}).get("engine") or {}).get("objective_per_request"),
-                                   "holdout_interval": ((r.get("holdout") or {}).get("bootstrap") or {}).get("engine")}
-                            for name, r in sorted(reports.items())}}
-    (out_dir / "selection.json").write_text(json.dumps(selection, indent=2) + "\n", encoding="utf-8")
-    (out_dir / "decisions-fragment.yaml").write_text((report.get("recommendation") or {}).get("fragment", "") + "\n", encoding="utf-8")
-    comparison = (run.outputs("compare") or {}).get("comparison")
-    return {"chosen": chosen, "report": str(out_dir / ("%s.json" % chosen)), "selection": str(out_dir / "selection.json"),
-            "fragment": str(out_dir / "decisions-fragment.yaml"), "fitted": selection["fitted"], "facts": (report.get("recommendation") or {}).get("facts"),
-            "viability": retention.viability(report, comparison, settings)}
-
-
-def sample_rows(rows, out, limit, seed):
-    """The rows a replay measures: all of them, or `limit` drawn with `seed`, kept in file
-    order. Returns the file to replay and how many rows the split holds."""
-    lines = [line for line in Path(rows).read_text(encoding="utf-8").splitlines() if line.strip()]
-    if not limit or len(lines) <= limit:
-        return rows, len(lines)
-    keep = sorted(random.Random(seed).sample(range(len(lines)), limit))
-    Path(out).write_text("".join(lines[i] + "\n" for i in keep), encoding="utf-8")
-    return out, len(lines)
-
-
-RERANK_WORKERS = 4
-
-
-def rerank_evals(run, trained):
-    """The code-rank head measured on the held-out repositories: every site's text-match
-    order against the blend, on the human-written doc pairs, through the host engine."""
-    env = dict(os.environ, LYCAON_DECIDE_BINARY=str(run.path("build", "host-engine", "bialy")), LYCAON_DECIDE_MODEL_DIR=str(model_dir(run)),
-               LYCAON_DECIDE_HEADS="code-rank=" + trained["code-rank"], HF_HUB_OFFLINE="1")
-    binary = str(run.host_bin_dir / "decide-rerank")
-    jobs = []
-    for repo in scaled_factory(run).repos:
-        units = run.path("coderank", "units", repo.name + ".jsonl")
-        pairs = run.path("coderank", "pairs", "docs-%s.jsonl" % repo.name)
-        if repo.split != "holdout" or not units.exists() or not pairs.exists():
-            continue
-        jobs += [(site, repo, units, pairs) for site in coderank.SITES]
-
-    def evaluate(job):
-        site, repo, units, pairs = job
-        out = run.path("eval", "rerank-%s-%s.json" % (site, repo.name))
-        result = subprocess.run([binary, "eval", "--site", site, "--repo", str(run.factory.root / "repos" / repo.name), "--name", repo.name,
-                                 "--units", str(units), "--pairs", str(pairs), "--json", str(out)], env=env, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RunError("decide-rerank eval %s on %s failed: %s" % (site, repo.name, (result.stderr or result.stdout).strip()[-300:]))
-        return "%s-%s" % (site, repo.name), str(out)
-
-    # Each evaluation runs its own engine on a few CPU threads, so the sites of the
-    # held-out repositories run side by side rather than one after another.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=RERANK_WORKERS) as pool:
-        return dict(pool.map(evaluate, jobs))
+        return {"skipped": "this run fitted no selector policy"}
+    try:
+        record = selector.qualify(run, run.path("split"), directory, trained, selector.Workbench(run), selector.load())
+        comparison = selector.holdout(run, run.path("split"), directory, trained, selector.Workbench(run))
+    except CampaignFault as exc:
+        raise selector_fault(exc) from exc
+    return {"policy": record["policy"], "qualification": str(directory / "qualification.json"), "measures": record["measures"],
+            "parity": record["parity"], "holdout": comparison}
 
 
 def stage_release_heads(run):
-    heads_dir = run.path("heads")
-    if not heads_dir.exists() or not any(heads_dir.glob("*.safetensors")):
-        return {"skipped": "no heads were trained"}
+    if not run.outputs("train").get("selector"):
+        return {"skipped": "this run fitted no selector policy"}
     version = run.setting("heads_version") or run.name
     dataset_version = run.setting("dataset_version") or run.name
-    evaluate = run.outputs("evaluate")
-    evals = {name: e["report"] for name, e in (evaluate.get("evals") or {}).items() if isinstance(e, dict) and e.get("report")}
-    rerank = evaluate.get("rerank") or {}
-    retained = evaluate.get("retention") or {}
-    notes = {name: retained[key] for name, key in (("retention", "report"), ("retention-selection", "selection")) if retained.get(key)}
-    if run.path("compare.json").exists():
-        notes["retention-comparison"] = str(run.path("compare.json"))
     commit = (run.outputs("build").get("runner") or {}).get("lycaon_commit") or build.checkout_commit(run.checkout) or "unknown"
     out = run.path("dist", "heads-" + version)
-    heads.build(heads_dir, version, dataset_version, commit, evals, {}, "base checkpoint", rerank, out, notes=notes,
-                retention=retained.get("report"), verdict=retained.get("viability"))
+    try:
+        heads.build(run.path("selector"), version, dataset_version, commit, out)
+    except heads.ReleaseError as exc:
+        raise RunError(str(exc)) from exc
     return {"release": str(out), "version": version, "anchor": str(anchor.path("heads", version))}
 
 
@@ -977,7 +881,6 @@ def stage_report(run, publish=True):
         lines.append("\nIncludes collected runner sidecar usage; live calls can exceed the ceiling before the next stage check.")
     else:
         lines.append("No provider calls were recorded.")
-    lines += retention_report(run)
     dataset = run.outputs("release")
     head_release = run.outputs("release_heads")
     releases = {kind: rel["release"] for kind, rel in (("dataset", dataset), ("heads", head_release)) if rel.get("release")}
@@ -995,44 +898,6 @@ def stage_report(run, publish=True):
         lines.append("Nothing to publish.")
     run.path("REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"report": str(run.path("REPORT.md")), "published": published}
-
-
-def retention_report(run):
-    """The report's retention section: the verdict and every reason, the fitted policy
-    with its held-out interval, each structural fact priced, the pass comparison, and
-    the search table, so the choice can be read without opening the JSON."""
-    retained = run.outputs("evaluate").get("retention") or {}
-    verdict = retained.get("viability")
-    if verdict is None:
-        return []
-    lines = ["", "## Retention head", "", "**%s.**" % ("Viable" if verdict.get("viable") else "Not viable")]
-    lines += ["- " + reason for reason in verdict.get("reasons") or []]
-    numbers = verdict.get("numbers") or {}
-    if retained.get("chosen"):
-        lines += ["", "Chosen `%s`; fitted policy %s; structural facts to release on their own: %s." % (
-            retained["chosen"], json.dumps(retained.get("fitted")), json.dumps(retained.get("facts")))]
-    if numbers:
-        lines += ["", "| Held-out measure | Value |", "|---|---|"]
-        lines += ["| %s | %s |" % (k, json.dumps(v)) for k, v in sorted(numbers.items()) if k != "comparison"]
-    report = json.loads(Path(retained["report"]).read_text(encoding="utf-8")) if retained.get("report") and Path(retained["report"]).exists() else {}
-    structural = ((report.get("holdout") or report.get("overall") or {}).get("structural")) or {}
-    if structural:
-        lines += ["", "| Structural facts | Released | Needed among them | Objective per request |", "|---|---|---|---|"]
-        lines += ["| %s | %s | %s | %s |" % (name, t.get("released"), t.get("needed_released"), t.get("objective_per_request")) for name, t in structural.items()]
-    comparison = numbers.get("comparison") or {}
-    if comparison.get("measures"):
-        lines += ["", "Engine-off against engine-on over %d matched requests (%d with a release):" % (comparison["requests"], comparison.get("released_requests", 0)),
-                  "", "| Per request | Off | On | Delta | Wants |", "|---|---|---|---|---|"]
-        lines += ["| %s | %s | %s | %s | %s |" % (m, v["off"], v["on"], v["delta"], v["wants"]) for m, v in comparison["measures"].items()]
-    selection = json.loads(Path(retained["selection"]).read_text(encoding="utf-8")) if retained.get("selection") and Path(retained["selection"]).exists() else {}
-    if selection.get("search"):
-        lines += ["", "| Search point | Validation objective | AUC | Held-out objective per request | Held-out interval |", "|---|---|---|---|---|"]
-        lines += ["| %s | %s | %s | %s | %s |" % (name, s.get("validation_objective_tokens"), s.get("auc"), s.get("holdout_objective_per_request"), json.dumps(s.get("holdout_interval")))
-                  for name, s in selection["search"].items()]
-    counts = run.outputs("split").get("retention") or {}
-    if counts:
-        lines.append("\nRetention rows by split: %s" % json.dumps({k: v.get("rows") for k, v in counts.items()}))
-    return lines
 
 
 STAGE_FUNCS = {name: globals()["stage_" + name] for name in STAGES}

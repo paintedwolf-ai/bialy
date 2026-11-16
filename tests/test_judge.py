@@ -12,6 +12,18 @@ def factory(factory):
     return dataclasses.replace(factory, run={**factory.run, 'judges': ['glm-5.3-flash', 'deepseek-v4.1-flash']})
 
 
+@pytest.fixture(autouse=True)
+def qualified_slots(request, monkeypatch):
+    """Every configured slot labels rows, except in the tests of qualification itself."""
+    if "real_qualification" not in request.fixturenames:
+        monkeypatch.setattr(judge, "qualify", lambda factory, chats, record_path, controls=None: list(factory.run["judges"]))
+
+
+@pytest.fixture
+def real_qualification():
+    """Requested by the tests of qualification itself."""
+
+
 class FakeChat:
     """Scores a candidate by whether its text mentions a word the request contains."""
 
@@ -273,3 +285,61 @@ def test_account_refusal_stops_pending_rows_without_accepting_partial_consensus(
     assert report['rows'] == 5 and report['failed'] == 0 and report['fatal_error'] is None
     assert len(calls) == 12
     assert saved[0] in out.read_text().splitlines()
+
+
+class ControlChat:
+    """Scores each control card at the edge of what the control expects, except the cards in `wrong`."""
+
+    hosted = False
+
+    def __init__(self, wrong=(), fail=False):
+        self.wrong, self.fail, self.calls = set(wrong), fail, []
+        self.expect = {card["cards"][name]: bounds for card in judge.load_controls()["controls"] for name, bounds in card["expect"].items()}
+
+    def json(self, system, user, **kw):
+        self.calls.append((system, user))
+        if self.fail:
+            raise ValueError("no verdict")
+        out = {}
+        for entry in user.split("\n\nCandidates:\n\n")[1].split("\n\n"):
+            number, text = entry.split(". ", 1)
+            good = self.expect[text].get("at_least", self.expect[text].get("at_most"))
+            out[number] = (2 if text.split(":")[0] in self.wrong else good)
+        return {"scores": out}
+
+
+def test_the_controls_cover_every_unit_with_its_own_prompt(real_qualification):
+    controls = judge.load_controls()
+    chat = ControlChat()
+    assert judge.control_misses(chat, controls["controls"]) == []
+    prompts = {control["unit"]: system for control, (system, _) in zip(controls["controls"], chat.calls, strict=True)}
+    assert prompts == {"skills": judge.SKILL_SYSTEM, "tools": judge.TOOL_SYSTEM, "requests": judge.SYSTEM}
+    assert "Available: read, grep, command" in chat.calls[2][1]
+    assert all(any("at_most" in bounds for bounds in control["expect"].values()) for control in controls["controls"])
+
+
+def test_only_a_slot_that_misses_no_control_labels_rows(factory, tmp_path, real_qualification):
+    first, second = factory.run["judges"]
+    record = tmp_path / "judged.jsonl.qualification.json"
+    chats = {first: [ControlChat(wrong={"logo-design"})], second: [ControlChat()]}
+    assert judge.qualify(factory, chats, record) == [second]
+    written = json.loads(record.read_text())
+    assert [slot["qualified"] for slot in written["slots"]] == [False, True] and written["controls_sha256"] == judge.load_controls()["sha256"]
+    assert written["slots"][0]["misses"] == [{"control": "skill-direct-match", "card": "logo-design", "score": 2, "expected": {"at_most": 1}}]
+    # A resumed run asks a qualified slot nothing and tries the failed one again.
+    again = {first: [ControlChat()], second: [ControlChat(fail=True)]}
+    assert judge.qualify(factory, again, record) == [first, second] and again[second][0].calls == []
+    for chats in ({first: [ControlChat(wrong={"capture_page"})], second: [ControlChat(fail=True)]},):
+        with pytest.raises(judge.JudgeUnqualified):
+            judge.qualify(factory, chats, tmp_path / "other.json")
+
+
+def test_an_unqualified_judge_labels_no_row(factory, tmp_path, monkeypatch, real_qualification):
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"session": "s", "receipt": 1, "root_session": "s", "partial": False, "state": {"user": "commit"},
+                                "offered": {"floor": [], "loadable": []}, "labels": {"requests": []}}) + "\n")
+    monkeypatch.setenv("FIREWORKS_API_KEY", "k")
+    monkeypatch.setattr(llm, "Chat", lambda base_url, model, **kw: ControlChat(wrong={"debugging"}))
+    with pytest.raises(judge.JudgeUnqualified):
+        judge.run(factory, {"skills": [{"name": "debugging", "card": "debugging: fix"}], "tools": []}, rows, tmp_path / "judged.jsonl")
+    assert not (tmp_path / "judged.jsonl").exists() and (tmp_path / "judged.jsonl.qualification.json").exists()

@@ -43,54 +43,58 @@ def test_skill_requests_are_read_by_their_familys_partition(tmp_path):
 def test_recipes_without_their_inputs_are_skipped_not_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(training, "venv_python", lambda root, settings: "/py")
     monkeypatch.setattr(training, "backbone", lambda root: tmp_path)
-    inputs = {"corpus": "c", "independent_corpus": "i", "train": "t", "val": "v", "skillreq_train": None, "dumps": None,
-              "retention_train": tmp_path / "missing.jsonl", "retention_val": tmp_path / "missing.jsonl"}
+    inputs = {"corpus": "c", "train": "t", "val": "v", "skillreq_train": None, "skillreq_eval": None, "dumps_train": [], "dumps_val": []}
     assert "skipped" in training.train("E4", inputs, tmp_path, tmp_path, {}, tmp_path / "heads", "l", 10)
     assert "skipped" in training.train("code-rank", inputs, tmp_path, tmp_path, {}, tmp_path / "heads", "l", 10)
-    assert "skipped" in training.train("R1", inputs, tmp_path, tmp_path, {}, tmp_path / "heads", "l", 10)
-    empty = tmp_path / "empty.jsonl"
-    empty.write_text("\n")
-    inputs["retention_train"] = inputs["retention_val"] = empty
-    assert "skipped" in training.train("R1", inputs, tmp_path, tmp_path, {}, tmp_path / "heads", "l", 10)
+    assert "skipped" in training.train("code-rank", dict(inputs, dumps_train=["a.jsonl"]), tmp_path, tmp_path, {}, tmp_path / "heads", "l", 10)
 
 
-def test_retention_recipe_trains_every_search_point_and_resumes(tmp_path, monkeypatch):
-    seen = []
-    monkeypatch.setattr(training, "venv_python", lambda root, settings: "/py")
-    monkeypatch.setattr(training, "backbone", lambda root: tmp_path)
-
-    def fake_run(args, cwd=None, env=None, timeout=None, log=None):
-        seen.append(args)
-        Path(args[args.index("--out") + 1]).write_bytes(b"h")
-    monkeypatch.setattr(training, "run", fake_run)
-    rows = tmp_path / "retention-train.jsonl"
-    rows.write_text(json.dumps({"schema": "pw-retention-row/1"}) + "\n")
-    inputs = {"corpus": "c", "independent_corpus": "i", "train": "t", "val": "v", "retention_train": rows, "retention_val": rows}
-    settings = {"epochs": 2, "retention": {"search": {"lr": [1e-3, 5e-4], "pos_weight": [6.0], "truth": ["needed"]}}}
-    out = training.train("R1", inputs, "/co", tmp_path, settings, tmp_path / "heads", "lbl", 99)
-    assert sorted(out["search"]) == ["lr0.0005-pw6-needed", "lr0.001-pw6-needed"] and len(seen) == 2
-    args = seen[0]
-    assert args[:2] == ["/py", "scripts/bialy/train.py"] and args[args.index("--families") + 1] == "retention"
-    assert args[args.index("--lr") + 1] == "0.001" and args[args.index("--pos-weight") + 1] == "6.0" and args[args.index("--retention-truth") + 1] == "needed"
-    assert args[args.index("--epochs") + 1] == "2" and args[args.index("--out") + 1].endswith("search/retention-lr0.001-pw6-needed.safetensors")
-    assert "--label" in args and args[args.index("--label") + 1] == "lbl-lr0.001-pw6-needed"
-    # A resumed run keeps the points already trained.
-    again = training.train("R1", inputs, "/co", tmp_path, settings, tmp_path / "heads", "lbl", 99)
-    assert len(seen) == 2 and all(v.get("reused") for v in again["search"].values())
-
-
-def test_turn_recipe_arguments(tmp_path, monkeypatch):
+def recorded(tmp_path, monkeypatch, head):
     seen = {}
     monkeypatch.setattr(training, "venv_python", lambda root, settings: "/py")
     monkeypatch.setattr(training, "backbone", lambda root: tmp_path)
 
     def fake_run(args, cwd=None, env=None, timeout=None, log=None):
         seen.update(args=args, cwd=cwd, timeout=timeout)
-        (tmp_path / "heads/turn-load.safetensors").write_bytes(b"h")
+        (tmp_path / "heads" / head).write_bytes(b"h")
     monkeypatch.setattr(training, "run", fake_run)
-    inputs = {"corpus": "c", "independent_corpus": "i", "train": "t", "val": "v"}
+    return seen
+
+
+def test_code_rank_trains_on_the_named_train_dumps_and_selects_on_the_validation_dumps(tmp_path, monkeypatch):
+    seen = recorded(tmp_path, monkeypatch, "code-rank.safetensors")
+    stray = tmp_path / "dumps" / "holdout.jsonl"
+    stray.parent.mkdir()
+    stray.write_text("{}\n")
+    inputs = {"dumps_train": [tmp_path / "dumps/train/a.jsonl", tmp_path / "dumps/train/b.jsonl"], "dumps_val": [tmp_path / "dumps/validation/c.jsonl"]}
+    out = training.train("code-rank", inputs, "/co", tmp_path, {}, tmp_path / "heads", "lbl", 99)
+    args = seen["args"]
+    assert out["head"].endswith("code-rank.safetensors") and args[:2] == ["/py", "scripts/bialy/rerank/train_rerank.py"]
+    assert [args[i + 1] for i, a in enumerate(args) if a == "--dump"] == [str(p) for p in inputs["dumps_train"]]
+    assert [args[i + 1] for i, a in enumerate(args) if a == "--val-dump"] == [str(p) for p in inputs["dumps_val"]]
+    assert args[args.index("--metrics") + 1].endswith("code-rank.metrics.json") and str(stray) not in args
+
+
+def test_rank_recipe_mixes_training_families_and_validates_on_validation_requests(tmp_path, monkeypatch):
+    seen = recorded(tmp_path, monkeypatch, "unit-rank.safetensors")
+    session = tmp_path / "train.jsonl"
+    session.write_text(json.dumps({"meta": {"task_id": "t1"}}) + "\n")
+    families = tmp_path / "skillreq.jsonl"
+    families.write_text("".join(json.dumps({"meta": {"source": "skillreq", "split": split, "family": "f%d" % n}}) + "\n"
+                                for n in range(40) for split in ("train", "validation")))
+    inputs = {"corpus": "c", "train": session, "val": "v", "skillreq_train": families, "skillreq_eval": tmp_path / "eval.jsonl"}
+    training.train("E4", inputs, "/co", tmp_path, {}, tmp_path / "heads", "lbl", 99)
+    args = seen["args"]
+    mixed = [json.loads(line)["meta"] for line in Path(args[args.index("--train") + 1]).read_text().splitlines()]
+    assert mixed[0] == {"task_id": "t1"} and all(m["split"] == "train" for m in mixed[1:]) and 5 < len(mixed) - 1 < 35
+    assert args[args.index("--val") + 1] == str(tmp_path / "eval.jsonl") and args[args.index("--corpus") + 1] == "c"
+
+
+def test_turn_recipe_trains_on_the_hosts_exported_corpus(tmp_path, monkeypatch):
+    seen = recorded(tmp_path, monkeypatch, "turn-load.safetensors")
+    inputs = {"corpus": "c", "train": "t", "val": "v"}
     out = training.train("B5", inputs, "/co", tmp_path, {"epochs": 1}, tmp_path / "heads", "lbl", 99)
     assert out["head"].endswith("turn-load.safetensors") and seen["cwd"] == "/co" and seen["timeout"] == 99
     args = seen["args"]
     assert args[:2] == ["/py", "scripts/bialy/train.py"] and "--families" in args and args[args.index("--families") + 1] == "tools"
-    assert args[args.index("--epochs") + 1] == "1" and args[args.index("--corpus") + 1] == "i"
+    assert args[args.index("--epochs") + 1] == "1" and args[args.index("--corpus") + 1] == "c"

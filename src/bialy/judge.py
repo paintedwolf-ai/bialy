@@ -10,8 +10,9 @@ orientation calls, and a head trained on them learns the habit.
 Reviewer slots name the models used for scoring. Decoding is greedy with a fixed
 seed, and candidates are shown in an order shuffled per row and unit, recorded on
 the row, so position bias averages out across the set instead of favouring the
-catalog's first cards. Another configured reviewer judges a sample of rows again
-to report agreement.
+catalog's first cards. A slot labels rows only after it scores the versioned controls
+in config/judge-controls.yaml correctly; another qualified slot judges a sample of rows
+again to report agreement.
 """
 
 import concurrent.futures
@@ -21,7 +22,11 @@ import random
 import threading
 from pathlib import Path
 
+import yaml
+
 from .llm import account_failure
+
+CONTROLS = Path(__file__).resolve().parents[2] / "config" / "judge-controls.yaml"
 
 SYSTEM = """You judge which skills and tools a coding assistant will need to carry out a developer's request.
 For each numbered candidate you are given its description. Score relevance from 0 to 4: 0 the request will never need it, 1 unlikely, 2 possible, 3 likely, 4 certain.
@@ -128,15 +133,84 @@ def judge_row(chats, row, skill_cards, tool_cards, judge_model, units=UNITS, len
     return row
 
 
+class JudgeUnqualified(RuntimeError):
+    """No configured reviewer slot scored every control correctly."""
+
+
+def load_controls(path=CONTROLS):
+    """The versioned controls, identified by the digest of their content."""
+    value = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    controls = value["controls"]
+    ids = [control["id"] for control in controls]
+    for control in controls:
+        bounds = [bound for expected in control["expect"].values() for bound in expected]
+        if control["unit"] not in UNITS or set(control["expect"]) != set(control["cards"]) or set(bounds) - {"at_least", "at_most"}:
+            raise ValueError("judge control %s is malformed" % control["id"])
+    if len(ids) != len(set(ids)) or {control["unit"] for control in controls} != set(UNITS):
+        raise ValueError("judge controls need unique ids and at least one control for each of %s" % ", ".join(UNITS))
+    sha256 = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    return {"version": value["version"], "sha256": sha256, "controls": controls}
+
+
+CONTROL_PROMPTS = {"skills": lambda: SKILL_SYSTEM, "tools": lambda: TOOL_SYSTEM, "requests": lambda: SYSTEM}
+
+
+def control_misses(chat, controls):
+    """Every expectation a judge misses on the controls, each asked as its unit is asked
+    of a row; a control the judge cannot answer is a miss."""
+    misses = []
+    for n, control in enumerate(controls):
+        try:
+            scores = attempt(lambda control=control, n=n: score_cards(chat, control["request"], control["cards"], n,
+                                                                      system=CONTROL_PROMPTS[control["unit"]](),
+                                                                      available=control.get("available") or ()))
+        except Exception as exc:
+            if account_failure(exc):
+                raise
+            misses.append({"control": control["id"], "error": str(exc)[:200]})
+            continue
+        for card, expected in control["expect"].items():
+            score = scores.get(card)
+            if score is None or score < expected.get("at_least", 0) or score > expected.get("at_most", 4):
+                misses.append({"control": control["id"], "card": card, "score": score, "expected": expected})
+    return misses
+
+
+def qualify(factory, chats, record_path, controls=None):
+    """The reviewer slots fit to label rows, in slot order: each configured slot is asked
+    the controls with the judge's own prompts and decoding, and labels only when it misses
+    none. The record beside the judged rows keeps every slot's result; a slot already
+    qualified on the same controls is not asked again."""
+    controls = controls or load_controls()
+    slots = factory.run.get("judges") or [m.id for m in factory.models if "judge" in m.roles]
+    record_path = Path(record_path)
+    prior = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else {}
+    kept = {slot["model"]: slot for slot in prior.get("slots", [])} if prior.get("controls_sha256") == controls["sha256"] else {}
+    results = []
+    for number in range(len(slots)):
+        model = factory.reviewer(number)
+        if model.id in kept and kept[model.id]["qualified"]:
+            results.append(dict(kept[model.id], slot=number))
+            continue
+        misses = control_misses(chats[model.id][0], controls["controls"])
+        results.append({"slot": number, "model": model.id, "qualified": not misses, "misses": misses})
+    record = {"controls_version": controls["version"], "controls_sha256": controls["sha256"], "slots": results}
+    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    qualified = [slot["model"] for slot in results if slot["qualified"]]
+    if not qualified:
+        raise JudgeUnqualified("no reviewer slot scored the judge controls correctly; see %s" % record_path)
+    return qualified
+
+
 def signature(factory, corpus, rows_in, units, fraction):
-    """What a run's labels depend on: its inputs, units, judges, and prompts. A checkpoint
-    resumes only under the same signature."""
+    """What a run's labels depend on: its inputs, units, judges, controls, and prompts. A
+    checkpoint resumes only under the same signature."""
     prompts = hashlib.sha256((SYSTEM + SKILL_SYSTEM + TOOL_SYSTEM).encode()).hexdigest()
     with open(rows_in, "rb") as fh:
         inputs = hashlib.sha256(fh.read()).hexdigest()
     judges = [{"id": m.id, "revision": m.revision, "hosted": (m.hosted or {}).get("model")} for m in factory.models if "judge" in m.roles]
     return {"inputs_sha256": inputs, "units": list(units), "judges": judges, "prompts_sha256": prompts,
-            "second_fraction": fraction, "corpus_revision": corpus.get("catalog_revision")}
+            "controls_sha256": load_controls()["sha256"], "second_fraction": fraction, "corpus_revision": corpus.get("catalog_revision")}
 
 
 def row_key(row):
@@ -149,6 +223,9 @@ def run(factory, corpus, rows_in, rows_out, workers=48, second=None, units=UNITS
     per doubly judged card) so the agreement a release reports can be recomputed from
     the release itself. A doubly judged row also carries the second judge's scores
     (labels.second_scores).
+
+    Only reviewer slots that pass the judge controls label rows (`qualify`): the first
+    qualified slot judges every row and the next one the second-judge sample.
 
     Each judged row is appended to <rows_out>.partial.jsonl as it finishes, under a
     manifest (<rows_out>.manifest.json) naming the run's signature; a run stopped part
@@ -175,21 +252,20 @@ def run(factory, corpus, rows_in, rows_out, workers=48, second=None, units=UNITS
                     done[entry["key"]] = entry
     manifest["attempts"] += 1
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    qualified = qualify(factory, chats, str(rows_out) + ".qualification.json")
     stop = threading.Event()
     fatal_error = None
 
     def score_row(row):
-        primary = factory.reviewer().id
+        primary = qualified[0]
         # A pass over some units keeps the others' labels, so it must be the same judge.
         if set(units) != set(UNITS) and (row.get("judge") or {}).get("model", primary) != primary:
             raise ValueError("row %s was judged by %s, not %s" % (row["session"], row["judge"]["model"], primary))
         untouched = json.loads(json.dumps(row))
         out = judge_row(chats, row, skill_cards, tool_cards, primary, units)
         other = None
-        if random.Random(order_seed(row, "second")).random() < fraction:
-            slots = factory.run.get("judges") or [model.id for model in factory.models if "judge" in model.roles]
-            if len(slots) > 1:
-                other = judge_row(chats, untouched, skill_cards, tool_cards, factory.reviewer(1).id, units, lenient=True)
+        if len(qualified) > 1 and random.Random(order_seed(row, "second")).random() < fraction:
+            other = judge_row(chats, untouched, skill_cards, tool_cards, qualified[1], units, lenient=True)
         return out, other
 
     def work(row):
@@ -246,7 +322,7 @@ def run(factory, corpus, rows_in, rows_out, workers=48, second=None, units=UNITS
     manifest.update(completed=failures == 0, rows=len(judged), failed=failures, fatal_error=fatal_error)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return {"rows": len(judged), "failed": failures, "second_judge_pairs": len(pairs), "weighted_kappa": weighted_kappa(pairs),
-            "attempts": manifest["attempts"], "fatal_error": fatal_error}
+            "attempts": manifest["attempts"], "fatal_error": fatal_error, "judges": qualified[:2]}
 
 
 def second_scores(b, units=UNITS):

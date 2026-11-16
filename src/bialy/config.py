@@ -288,13 +288,9 @@ RUN_DEFAULTS = {
     "engine_on": {"enabled": True, "deadline_ms": 60000, "heads": None},
     "skillreq": {"writer": None, "families": {"clear": 2, "nearmiss": 1, "multi": 1}, "none_families": 24, "per_family": 6},
     "coderank": {"per_repo": 40},
-    "evaluate": {"rows": 500},
     "judge": {"enabled": True},
-    # The retention head: how its sessions are shaped, how its head is searched, and how
-    # its verdict is read (src/bialy/retention.py).
-    "retention": {"follow_up_rate": None, "follow_ups": None,
-                  "search": {"lr": [2e-4, 5e-4, 1e-3], "pos_weight": [2.0, 6.0], "truth": ["needed", "later"]},
-                  "bootstrap": 500, "min_rows": 20},
+    # How sessions are shaped for retention observations (src/bialy/retention.py).
+    "retention": {"follow_up_rate": None, "follow_ups": None},
     "train": {"recipes": ["B5", "E4", "code-rank"], "device": "auto", "max_hours": 24, "threads": 8, "python": "3.12",
               "requirements": None, "torch_index": None, "epochs": None},
     "custom_model": {"enabled": False, "epoch": None, "host_commit": None, "students": serving()},
