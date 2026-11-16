@@ -34,6 +34,8 @@
   bialy campaign run --plan DIR
   bialy campaign resume --run DIR [--host-commit SHA --host-image TAG]
   bialy campaign status|report --run DIR
+  bialy campaign decide --run DIR --probes FILE --by NAME
+  bialy campaign record --run DIR --campaign NAME --publications FILE [--ledger DIR]
 
 Runs live under <root>/runs/<name>; the root and everything else come from config/.
 """
@@ -54,7 +56,8 @@ from .review import cli as review_cli
 def campaign_command(ap, args):
     from .campaign import runtime
     from .campaign.journal import CampaignFault
-    needed = {"plan": ("config", "out"), "run": ("plan",), "resume": ("run",), "status": ("run",), "report": ("run",)}[args.action]
+    needed = {"plan": ("config", "out"), "run": ("plan",), "resume": ("run",), "status": ("run",), "report": ("run",),
+              "decide": ("run", "probes", "by"), "record": ("run", "campaign", "publications")}[args.action]
     missing = [name for name in needed if getattr(args, name) is None]
     if missing:
         ap.error("campaign %s needs %s" % (args.action, ", ".join("--" + name for name in missing)))
@@ -179,13 +182,18 @@ def main(argv=None):
     p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
     sub.add_parser("check", help="validate the configuration and pins, offline")
     p = sub.add_parser("campaign", help="plan and drive a training campaign; plan is offline")
-    p.add_argument("action", choices=("plan", "run", "resume", "status", "report"))
+    p.add_argument("action", choices=("plan", "run", "resume", "status", "report", "decide", "record"))
     p.add_argument("--config", type=Path, help="plan: the campaign configuration")
     p.add_argument("--out", type=Path, help="plan: a new plan directory")
     p.add_argument("--plan", type=Path, help="run: the plan directory")
     p.add_argument("--run", type=Path, help="resume, status, report: the run directory under the plan")
     p.add_argument("--host-commit", help="resume: the adopted host commit at the selector boundary")
     p.add_argument("--host-image", help="resume: the runner image built from the adopted commit")
+    p.add_argument("--probes", type=Path, help="decide: JSON list of pw-load-probe/1 receipts from the host's native runtime")
+    p.add_argument("--by", help="decide: who makes the go/no-go decision")
+    p.add_argument("--campaign", help="record: the campaign name the ledger entry is filed under")
+    p.add_argument("--publications", type=Path, help="record: published bundles per tier: revision and manifest_sha256 per bundle")
+    p.add_argument("--ledger", type=Path, default=Path(__file__).resolve().parents[2] / "releases", help="record: the release ledger directory")
     p = sub.add_parser("run", help="drive a whole pass on this machine, resumable; uploads only with --push")
     p.add_argument("--run", required=True)
     p.add_argument("--until", choices=runmod.STAGES, help="stop after this stage")
