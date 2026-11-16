@@ -1,5 +1,5 @@
 """corpus_with.py IN OUT key=value...: a corpus copy with decision thresholds replaced, e.g.
-tools.load_at=0.36 guides.omit_below=0.18 request.max_loads=3 skills.preload_at=3.32."""
+tools.load_at=0.36 request.max_loads=3 skills.preload_at=3.32."""
 import json
 import sys
 

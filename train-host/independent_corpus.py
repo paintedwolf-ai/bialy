@@ -9,7 +9,6 @@ def prepare(corpus):
     out = copy.deepcopy(corpus)
     out['questions']['tools'].pop('options', None)
     out['questions']['tools'].update(independent=True, option_words=60)
-    out['questions']['guides'].update(omittable=[], omit_below=0)
     out['questions']['kind']['veto_tools'] = False
     for tool in out['tools']:
         tool['option'] = ' '.join(tool['description'].split()[:60]).rstrip(',;:')

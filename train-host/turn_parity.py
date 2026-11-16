@@ -1,4 +1,4 @@
-"""Compare saved turn tool-load decisions when guide omission and kind veto are off."""
+"""Compare saved turn tool-load decisions with the kind veto off."""
 import argparse
 import json
 from pathlib import Path
@@ -25,7 +25,7 @@ def compare(left, right, threshold):
     return {'rows': len(left), 'decisions': decisions, 'max_probability_gap': maximum,
             'threshold': threshold, 'flips': flips, 'far_flips': far,
             'passed': decisions > 0 and flips / decisions <= .01 and far == 0,
-            'scope': 'Tool loads only; valid for the release with guides kept and kind veto disabled.'}
+            'scope': 'Tool loads only; valid for a release with the kind veto disabled.'}
 
 
 def main():
