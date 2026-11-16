@@ -13,6 +13,9 @@ from bialy.student_host.resources import write
 from bialy.student_host.specification import load
 
 TEMPLATE = '{{ bos_token }}{% for message in messages %}{{ message.content }}{% endfor %}\n'
+TEMPLATE_SHA256 = hashlib.sha256(TEMPLATE.encode()).hexdigest()
+RENDERING = {'profile': 'gemma4-code-v1', 'template_sha256': TEMPLATE_SHA256}
+AGREED = {'precision': 'Q4_K_M', 'tolerance': 2.0, 'agreed_tokens': [16, 3], 'departures': [{'prompt': 'b', 'step': 3, 'margin': 0.4}]}
 
 
 def safetensors(path, count):
@@ -27,8 +30,9 @@ def safetensors(path, count):
 class Worker:
     """Stands in for export.py, gguf_export.py and convert_mlx.py, writing what each one writes."""
 
-    def __init__(self, probe='passed', template=TEMPLATE, mlx_template=TEMPLATE, interrupt_mlx=False, shards=False):
-        self.probe, self.template, self.mlx_template = probe, template, mlx_template
+    def __init__(self, behavior=AGREED, template=TEMPLATE, mlx_template=TEMPLATE, served=TEMPLATE_SHA256,
+                 merged=TEMPLATE_SHA256, interrupt_mlx=False, shards=False):
+        self.behavior, self.template, self.mlx_template, self.served, self.merged = behavior, template, mlx_template, served, merged
         self.interrupt_mlx, self.shards, self.calls = interrupt_mlx, shards, []
 
     def __call__(self, args, **kwargs):
@@ -47,7 +51,9 @@ class Worker:
         else:
             safetensors(model / 'model.safetensors', 3)
         (model / 'chat_template.jinja').write_text(self.template)
-        write(out / 'manifest.json', {'schema': 'pw-custom-merge/1', 'files': tree(model)})
+        write(out / exporting.REFERENCE, {'schema': 'pw-behavior-reference/1', 'prompts': []})
+        write(out / 'manifest.json', {'schema': 'pw-custom-merge/2', 'files': tree(model), 'rendering_profile': 'gemma4-code-v1',
+                                      'template_sha256': self.merged, 'behavior_sha256': file_sha256(out / exporting.REFERENCE)})
 
     def gguf_export(self, args):
         out = Path(args[args.index('--out') + 1])
@@ -57,9 +63,13 @@ class Worker:
         merge = Path(args[args.index('--merge') + 1])
         quantized = {'sha256': file_sha256(out / exporting.QUANTIZED), 'tensors': {'a': {}, 'b': {}},
                      'metadata': {'tokenizer.chat_template': self.template}}
-        write(out / 'manifest.json', {'schema': 'pw-custom-gguf/1', 'load_probe': self.probe, 'llama_cpp_revision': 'revision',
+        served = {'rendering': {'template_sha256': self.served, 'cases': ['declared tools and parallel calls']},
+                  'behavior': self.behavior}
+        write(out / 'manifest.json', {'schema': 'pw-custom-gguf/2', 'llama_cpp_revision': 'revision',
                                       'merged_manifest_sha256': file_sha256(merge / 'manifest.json'),
-                                      'unquantized': {'sha256': file_sha256(out / exporting.UNQUANTIZED)}, 'quantized': quantized})
+                                      'template_sha256': self.merged, 'behavior_sha256': file_sha256(merge / exporting.REFERENCE),
+                                      'unquantized': {'sha256': file_sha256(out / exporting.UNQUANTIZED)}, 'quantized': quantized,
+                                      'served': {'unquantized': served, 'quantized': served}})
 
     def convert_mlx(self, args):
         out = Path(args[args.index('--output') + 1])
@@ -76,10 +86,7 @@ class Worker:
 
 
 def job(root, monkeypatch):
-    """A trained job whose host checkout carries the training template."""
-    host = root / 'host'
-    (host / exporting.TEMPLATE).parent.mkdir(parents=True)
-    (host / exporting.TEMPLATE).write_text(TEMPLATE)
+    """A trained job whose plan binds the training template."""
     training = root / 'training'
     safetensors(training / 'adapter/adapter_model.safetensors', 4)
     write(training / 'adapter/adapter_config.json', {'r': 16})
@@ -87,9 +94,9 @@ def job(root, monkeypatch):
     write(training / 'result.json', {'adapter': tree(training / 'adapter')})
     directory = root / 'job'
     directory.mkdir()
-    write(directory / 'plan.json', {'checkout': str(host), 'models': str(root / 'models'), 'specification': load(),
+    write(directory / 'plan.json', {'checkout': str(root / 'host'), 'models': str(root / 'models'), 'specification': load(),
                                     'student': '26b-a4b', 'out': str(training), 'specification_sha256': 'spec',
-                                    'host_commit': 'host'})
+                                    'host_commit': 'host', 'rendering': RENDERING})
     monkeypatch.setattr(exporting, 'validate_inputs', lambda plan: None)
     monkeypatch.setattr(exporting, 'validate_result', lambda plan: None)
     return directory
@@ -101,6 +108,8 @@ def test_one_merge_returns_three_outputs_bound_by_the_receipt(tmp_path, monkeypa
     artifact = exporting.export(directory, tmp_path / 'llama', 'revision', run=worker)
     assert [Path(next(a for a in call if a.endswith('.py'))).name for call in worker.calls] == [
         'export.py', 'gguf_export.py', 'convert_mlx.py']
+    served = worker.calls[1]
+    assert served[served.index('--server') + 1].endswith('build/bin/llama-server') and '--loader' not in served
     receipt = json.loads((directory / 'export_receipt.json').read_text())
     assert artifact['export_receipt_sha256'] == file_sha256(directory / 'export_receipt.json')
     assert artifact['context'] == load()['context'] and json.loads((directory / 'artifact.json').read_text()) == artifact
@@ -110,19 +119,47 @@ def test_one_merge_returns_three_outputs_bound_by_the_receipt(tmp_path, monkeypa
     assert outputs['mlx']['profile'] == '26b-a4b' and outputs['mlx']['quantization'] == 'affine-group64-f16'
     assert exporting.UNQUANTIZED not in outputs['vulkan']['files']
     assert set(outputs['lora_adapter']['files']) == set(exporting.ADAPTER)
-    template = file_sha256(tmp_path / 'host' / exporting.TEMPLATE)
-    assert outputs['vulkan']['chat_template_sha256'] == outputs['mlx']['chat_template_sha256'] == template
+    assert outputs['vulkan']['chat_template_sha256'] == outputs['mlx']['chat_template_sha256'] == TEMPLATE_SHA256
+    assert receipt['rendering'] == RENDERING and artifact['template_sha256'] == TEMPLATE_SHA256
+    assert receipt['behavior_sha256'] == file_sha256(directory / 'merged' / exporting.REFERENCE)
+    assert outputs['vulkan']['behavior'] == AGREED
     for output in outputs.values():
         assert output['sha256'] == file_sha256(directory / output['directory'] / output['payload'])
         assert output['bytes'] == (directory / output['directory'] / output['payload']).stat().st_size
 
 
-@pytest.mark.parametrize('probe', ['failed', {'status': 'failed'}])
-def test_a_failed_load_probe_publishes_nothing(tmp_path, monkeypatch, probe):
+DECISIVE = {**AGREED, 'departures': [{'prompt': 'b', 'step': 3, 'margin': 2.5}]}
+
+
+@pytest.mark.parametrize('worker,reason', [
+    (Worker(behavior=None), 'no behavioural check'),
+    (Worker(behavior={**AGREED, 'agreed_tokens': []}), 'no behavioural check'),
+    (Worker(behavior=DECISIVE), 'no behavioural check'),
+    (Worker(served='0' * 64), 'not served with the training chat template'),
+    (Worker(merged='0' * 64), 'merge does not carry'),
+])
+def test_an_export_that_was_not_served_and_held_to_its_merge_publishes_nothing(tmp_path, monkeypatch, worker, reason):
     directory = job(tmp_path, monkeypatch)
-    with pytest.raises(JobError, match='parity receipt'):
-        exporting.export(directory, tmp_path / 'llama', 'revision', run=Worker(probe=probe))
+    with pytest.raises(JobError, match=reason):
+        exporting.export(directory, tmp_path / 'llama', 'revision', run=worker)
     assert not (directory / 'artifact.json').exists()
+
+
+def test_a_reference_changed_after_the_export_breaks_the_binding(tmp_path, monkeypatch):
+    directory = job(tmp_path, monkeypatch)
+    exporting.export(directory, tmp_path / 'llama', 'revision', run=Worker())
+    write(directory / 'merged' / exporting.REFERENCE, {'prompts': ['other']})
+    with pytest.raises(JobError, match='merge does not carry'):
+        exporting.publish(directory, 'revision', unquantized=True)
+
+
+def test_a_load_only_receipt_of_the_earlier_exporter_is_refused(tmp_path, monkeypatch):
+    directory = job(tmp_path, monkeypatch)
+    exporting.export(directory, tmp_path / 'llama', 'revision', run=Worker())
+    manifest = json.loads((directory / 'gguf/manifest.json').read_text())
+    write(directory / 'gguf/manifest.json', {**manifest, 'schema': 'pw-custom-gguf/1', 'load_probe': 'passed'})
+    with pytest.raises(JobError, match='served GGUF receipt'):
+        exporting.publish(directory, 'revision', unquantized=True)
 
 
 @pytest.mark.parametrize('worker', [Worker(template='stock template'), Worker(mlx_template='stock template')])
@@ -235,6 +272,7 @@ def test_a_remote_export_returns_all_three_outputs_and_leaves_the_merge(tmp_path
     assert not (received / 'gguf' / exporting.UNQUANTIZED).exists() and not (received / 'merged/model').exists()
     assert {name for name in exporting.OUTPUTS if (received / name).is_dir()} == set(exporting.OUTPUTS)
     assert (received / 'export_receipt.json').read_bytes() == (worker_directory / 'export_receipt.json').read_bytes()
+    assert (received / 'merged' / exporting.REFERENCE).is_file()
     assert ('/w/job/runs/one/mlx/', ()) in machine.received
 
 

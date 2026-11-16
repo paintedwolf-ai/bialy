@@ -4,8 +4,8 @@
 
 version: 1
 profiles:
-  # A mechanical rehearsal of the student segment on one host commit. Its training recipe
-  # makes two updates, checkpoints each, and pauses after the first and resumes.
+  # A mechanical rehearsal of the student segment on one host commit. Its two training rows
+  # make one update an epoch; training checkpoints each, pauses after the first and resumes.
   dry-run:
     segments: [student]
     students: [e4b]

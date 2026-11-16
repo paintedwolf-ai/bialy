@@ -1,5 +1,7 @@
+import hashlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -16,10 +18,16 @@ def export(root, student):
     for name in ('gguf', 'mlx', 'lora_adapter'):
         (job / name).mkdir(parents=True)
         (job / name / 'payload.bin').write_bytes(('%s-%s' % (student, name)).encode())
-    receipt = {'outputs': {key: {'directory': name, 'files': exporting.output_files(job, name)}
+    (job / 'merged').mkdir()
+    (job / 'merged' / exporting.REFERENCE).write_text(json.dumps({'prompts': [
+        {'name': 'fixture', 'tokens': [7, 8, 9], 'margins': [6.0, 0.4, 5.0]}]}))
+    receipt = {'behavior_sha256': file_sha256(job / 'merged' / exporting.REFERENCE),
+               'outputs': {key: {'directory': name, 'files': exporting.output_files(job, name),
+                                 'sha256': file_sha256(job / name / 'payload.bin')}
                            for key, name in (('vulkan', 'gguf'), ('mlx', 'mlx'), ('lora_adapter', 'lora_adapter'))}}
     (job / 'export_receipt.json').write_text(json.dumps(receipt))
-    return {'directory': str(job / 'gguf'), 'export_receipt_sha256': file_sha256(job / 'export_receipt.json')}
+    return {'directory': str(job / 'gguf'), 'export_receipt_sha256': file_sha256(job / 'export_receipt.json'),
+            'host_commit': 'c' * 40}
 
 
 def campaign(tmp_path, outcomes=None, profile='full'):
@@ -35,18 +43,34 @@ def campaign(tmp_path, outcomes=None, profile='full'):
     return run, artifacts
 
 
+def probe(student, bundle, artifact):
+    """What the host's load probe writes for one bundle of an export it loaded and ran."""
+    job = Path(artifact['directory']).parent
+    receipt = json.loads((job / 'export_receipt.json').read_text())
+    return {'schema': decisions.PROBE, 'student': student, 'bundle': bundle, 'passed': True, 'failure': None,
+            'export_receipt_sha256': artifact['export_receipt_sha256'], 'artifact_sha256': receipt['outputs'][bundle]['sha256'],
+            'behavior_sha256': receipt['behavior_sha256'], 'host_commit': artifact['host_commit'],
+            'manifest_sha256': hashlib.sha256((student + bundle).encode()).hexdigest(),
+            'device': {'backend': bundle, 'physical_device': {'kind': 'apple_silicon'}},
+            'prompt': 'fixture', 'generated_tokens': [7, 8, 9], 'behavior': {'tolerance': 2.0}}
+
+
 def probes(artifacts, skip=()):
-    return [{'schema': decisions.PROBE, 'student': student, 'bundle': bundle, 'passed': True,
-             'export_receipt_sha256': artifact['export_receipt_sha256'], 'runtime': 'host-native'}
+    return [probe(student, bundle, artifact)
             for student, artifact in artifacts.items() for bundle in decisions.BUNDLES if (student, bundle) not in skip]
+
+
+def manifests(student):
+    return {bundle: hashlib.sha256((student + bundle).encode()).hexdigest() for bundle in decisions.BUNDLES}
 
 
 def test_only_a_tier_meeting_every_condition_is_published(tmp_path):
     run, artifacts = campaign(tmp_path, {'12b': {'behavioral_status': 'inconclusive'}})
     decision = decisions.decide(run, probes(artifacts, skip={('26b-a4b', 'vulkan')}), 'operator', lambda: AT)
-    assert decision['tiers']['e4b'] == {'publish': True, 'failed': [], 'export_receipt_sha256': artifacts['e4b']['export_receipt_sha256']}
+    assert decision['tiers']['e4b'] == {'publish': True, 'failed': [], 'bundle_manifests': manifests('e4b'),
+                                        'export_receipt_sha256': artifacts['e4b']['export_receipt_sha256']}
     assert decision['tiers']['12b']['failed'] == ['behavioral_inconclusive']
-    assert decision['tiers']['26b-a4b']['failed'] == ['load_probe_vulkan']
+    assert decision['tiers']['26b-a4b']['failed'] == ['load_probe_vulkan_missing']
     assert decision['decided_by'] == 'operator' and decision['decided_at'] == AT.isoformat()
     assert decisions.decide(run, probes(artifacts, skip={('26b-a4b', 'vulkan')}), 'operator', lambda: AT) == decision
     with pytest.raises(CampaignFault, match='decision_changed'):
@@ -66,7 +90,44 @@ def test_an_export_changed_after_its_receipt_is_not_published(tmp_path):
 def test_a_probe_of_another_export_does_not_count(tmp_path):
     run, artifacts = campaign(tmp_path)
     stale = [dict(probe, export_receipt_sha256='0' * 64) if probe['student'] == 'e4b' else probe for probe in probes(artifacts)]
-    assert decisions.decide(run, stale, 'operator', lambda: AT)['tiers']['e4b']['failed'] == ['load_probe_mlx', 'load_probe_vulkan']
+    assert decisions.decide(run, stale, 'operator', lambda: AT)['tiers']['e4b']['failed'] == [
+        'load_probe_mlx_unbound', 'load_probe_vulkan_unbound']
+
+
+@pytest.mark.parametrize('change,reason', [
+    ({'passed': False, 'failure': {'code': 'load_failed', 'detail': 'Unsupported E4B architecture'}}, 'load_failed'),
+    ({'passed': False}, 'failed'),
+    ({'artifact_sha256': '0' * 64}, 'unbound'),
+    ({'behavior_sha256': '0' * 64}, 'unbound'),
+    ({'host_commit': 'd' * 40}, 'unbound'),
+    ({'device': {'backend': 'vulkan', 'physical_device': {'kind': 'pci'}}}, 'device_unstated'),
+    ({'device': {'backend': 'mlx'}}, 'device_unstated'),
+    ({'manifest_sha256': 'unsigned'}, 'device_unstated'),
+    ({'generated_tokens': []}, 'no_generation'),
+    ({'prompt': 'another'}, 'no_generation'),
+    ({'generated_tokens': [1, 8, 9]}, 'behavior_mismatch'),
+    ({'generated_tokens': [7, 8, 1]}, 'behavior_mismatch'),
+])
+def test_a_probe_counts_only_by_what_it_binds(tmp_path, change, reason):
+    run, artifacts = campaign(tmp_path)
+    offered = [dict(item, **change) if (item['student'], item['bundle']) == ('e4b', 'mlx') else item for item in probes(artifacts)]
+    decision = decisions.decide(run, offered, 'operator', lambda: AT)
+    assert decision['tiers']['e4b']['failed'] == ['load_probe_mlx_' + reason]
+    assert decision['tiers']['12b']['publish'] is True
+
+
+def test_a_flag_alone_is_not_a_probe_and_a_narrow_departure_still_qualifies(tmp_path):
+    run, artifacts = campaign(tmp_path)
+    flag = {'schema': decisions.PROBE, 'student': 'e4b', 'bundle': 'mlx', 'passed': True,
+            'export_receipt_sha256': artifacts['e4b']['export_receipt_sha256']}
+    offered = [flag if (item['student'], item['bundle']) == ('e4b', 'mlx') else item for item in probes(artifacts)]
+    offered = [dict(item, generated_tokens=[7, 1, 9]) if (item['student'], item['bundle']) == ('12b', 'mlx') else item for item in offered]
+    decision = decisions.decide(run, offered, 'operator', lambda: AT)
+    assert decision['tiers']['e4b']['failed'] == ['load_probe_mlx_unbound']
+    assert decision['tiers']['12b']['publish'] is True
+    retried = [*offered, probe('e4b', 'mlx', artifacts['e4b'])]
+    assert decisions.tier_decision('e4b', {'execution_status': 'complete', 'behavioral_status': 'pass',
+                                           'artifact': artifacts['e4b']}, retried)['publish'] is True
 
 
 def test_a_rehearsal_cannot_be_decided_and_a_decision_needs_a_decider(tmp_path):
@@ -81,10 +142,13 @@ def test_a_rehearsal_cannot_be_decided_and_a_decision_needs_a_decider(tmp_path):
 def test_the_ledger_records_published_bundles_and_why_the_rest_were_not(tmp_path):
     run, artifacts = campaign(tmp_path, {'26b-a4b': {'behavioral_status': 'behavioral_failure'}})
     decisions.decide(run, probes(artifacts), 'operator', lambda: AT)
-    bundle = {'revision': 'r' * 40, 'manifest_sha256': 'm' * 64}
-    published = {'e4b': {'mlx': bundle, 'vulkan': bundle}, '12b': {'mlx': bundle, 'vulkan': bundle}}
+    published = {student: {name: {'revision': 'r' * 40, 'manifest_sha256': digest} for name, digest in manifests(student).items()}
+                 for student in ('e4b', '12b')}
+    bundle = published['e4b']['vulkan']
     with pytest.raises(CampaignFault, match='publication_incomplete'):
-        decisions.record(run, tmp_path / 'ledger', 'campaign-1', {'e4b': {'mlx': bundle}, '12b': published['12b']})
+        decisions.record(run, tmp_path / 'ledger', 'campaign-1', {'e4b': {'mlx': published['e4b']['mlx']}, '12b': published['12b']})
+    with pytest.raises(CampaignFault, match='publication_not_probed'):
+        decisions.record(run, tmp_path / 'ledger', 'campaign-1', {**published, 'e4b': {**published['e4b'], 'mlx': bundle}})
     with pytest.raises(CampaignFault, match='publication_not_decided'):
         decisions.record(run, tmp_path / 'ledger', 'campaign-1', {**published, '26b-a4b': published['e4b']})
     entry = decisions.record(run, tmp_path / 'ledger', 'campaign-1', published)
@@ -92,4 +156,5 @@ def test_the_ledger_records_published_bundles_and_why_the_rest_were_not(tmp_path
     assert entry['published']['e4b']['bundles']['vulkan'] == bundle
     assert json.loads((tmp_path / 'ledger' / 'students-campaign-1.json').read_text()) == entry
     with pytest.raises(CampaignFault, match='release_ledger_changed'):
-        decisions.record(run, tmp_path / 'ledger', 'campaign-1', {**published, 'e4b': {'mlx': bundle, 'vulkan': dict(bundle, revision='s' * 40)}})
+        decisions.record(run, tmp_path / 'ledger', 'campaign-1',
+                         {**published, 'e4b': {**published['e4b'], 'vulkan': dict(bundle, revision='s' * 40)}})

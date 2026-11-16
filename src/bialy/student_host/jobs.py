@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..provenance import file_sha256
 from .resources import write
-from .specification import arguments, identity
+from .specification import arguments, identity, training_config
 
 
 class JobError(RuntimeError):
@@ -41,6 +41,14 @@ def checkpoint(spec, student, root):
     return files
 
 
+def rendering(spec, checkout):
+    """The profile and template a job trains with; refused unless the checkout carries the pinned template."""
+    declared = spec['rendering']
+    if file_sha256(Path(checkout) / declared['template']) != declared['template_sha256']:
+        raise JobError('trainer checkout does not carry the pinned chat template')
+    return {'profile': declared['profile'], 'template_sha256': declared['template_sha256']}
+
+
 def create(root, spec, student, checkout, models, splits, mirror, device, pilot, *, dry_run=False):
     checkout, models, splits, mirror = map(lambda path: Path(path).resolve(), (checkout, models, splits, mirror))
     revision = subprocess.run(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
@@ -51,6 +59,7 @@ def create(root, spec, student, checkout, models, splits, mirror, device, pilot,
     directory.mkdir(parents=True, exist_ok=False)
     plan = {'schema': 'pw-student-job/1', 'student': student, 'specification': spec, 'specification_sha256': identity(spec),
             'host_commit': revision, 'checkout': str(checkout), 'models': str(models), 'splits': str(splits),
+            'rendering': rendering(spec, checkout),
             'dataset': {name: file_sha256(splits / name) for name in ('train.jsonl', 'val.jsonl', 'holdout.jsonl', 'source.json')},
             'model': checkpoint(spec, student, models), 'device': device, 'pilot': pilot, 'dry_run': dry_run,
             'mirror': str(mirror / directory.name), 'out': str(directory / 'training')}
@@ -64,7 +73,7 @@ def validate_inputs(plan):
     checkout = Path(plan['checkout'])
     revision = subprocess.run(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(checkout), 'status', '--porcelain'], capture_output=True, text=True, check=True).stdout
-    if dirty or revision != plan['host_commit']:
+    if dirty or revision != plan['host_commit'] or rendering(plan['specification'], checkout) != plan['rendering']:
         raise JobError('trainer source changed')
     if any(file_sha256(Path(plan['splits']) / name) != value for name, value in plan['dataset'].items()):
         raise JobError('dataset changed')
@@ -88,12 +97,12 @@ def validate_result(plan):
 
 
 def validate_training_inputs(plan, inputs):
-    expected = {'mode': 'sft', 'targets': plan['specification']['models'][plan['student']]['targets'],
-                'max_length': plan['specification']['context']['max_sequence_tokens'], 'rank': 16,
-                'epochs': 1, 'seed': 7, 'learning_rate': 2e-5, 'beta': 0.1, 'anchor': 0.0,
-                'device': plan['device']}
+    expected = training_config(plan['specification'], plan['student'], plan['device'])
     if inputs.get('model') != plan['model'] or any(inputs.get('config', {}).get(key) != value for key, value in expected.items()):
         raise JobError('training input identity mismatch')
+    if (inputs.get('rendering_profile') != plan['rendering']['profile']
+            or inputs.get('template_sha256') != plan['rendering']['template_sha256']):
+        raise JobError('training rendered its rows with another template or profile')
     for key, name in (('train_sha256', 'train.jsonl'), ('validation_sha256', 'val.jsonl'), ('holdout_sha256', 'holdout.jsonl')):
         if inputs.get(key) != plan['dataset'][name]:
             raise JobError('training result used a different dataset')

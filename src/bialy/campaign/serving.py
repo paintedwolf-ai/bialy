@@ -1,8 +1,14 @@
-"""Serve one pinned student artifact for a campaign evaluation arm."""
+"""Serve one pinned student artifact for a campaign evaluation arm.
+
+A server takes requests only after the host's rendering check passed against it: it
+serves the training chat template and renders the host's conversation fixtures into the
+prompts training rendered. Both arms of a comparison pass the same check.
+"""
 import contextlib
 import json
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib.error import URLError
@@ -26,7 +32,19 @@ class Serving:
         with urlopen(url + '/health', timeout=5) as response:
             return json.load(response).get('status') == 'ok'
 
-    def plan(self, model, checksum, context, model_name):
+    def rendered(self, plan):
+        """The host's rendering check against the running server, bound to this plan."""
+        receipt = self.directory / 'rendering.json'
+        script = Path(self.configuration['checkout']) / 'scripts/bialy/custom_model/serving_check.py'
+        try:
+            self.run([sys.executable, str(script), '--url', plan['url'], '--out', str(receipt)],
+                     check=True, capture_output=True, text=True)
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise CampaignFault('serving_rendering_mismatch', details={'stderr': (getattr(exc, 'stderr', '') or '')[-2000:]}) from None
+        if json.loads(receipt.read_text()).get('template_sha256') != plan['binding']['template_sha256']:
+            raise CampaignFault('serving_template_mismatch')
+
+    def plan(self, model, checksum, context, model_name, template):
         model = Path(model).resolve()
         if file_sha256(model) != checksum:
             raise CampaignFault('serving_artifact_changed')
@@ -34,7 +52,7 @@ class Serving:
         if not cfg['image'].startswith('sha256:') or context['thinking'] is not False or context['truncation'] != 'forbidden':
             raise CampaignFault('serving_configuration_invalid')
         binding = {'model': str(model), 'model_sha256': checksum, 'context': context,
-                   'model_name': model_name, 'configuration': cfg}
+                   'model_name': model_name, 'template_sha256': template, 'configuration': cfg}
         path = self.directory / 'serving.json'
         if path.exists():
             plan = json.loads(path.read_text())
@@ -85,12 +103,14 @@ class Serving:
             if state is None or state['State']['Status'] != 'running':
                 raise CampaignFault('student_server_exited', details={'state': state['State'] if state else None})
             try:
-                if self.health(plan['url']):
-                    self.access(plan, True)
-                    atomic_json(self.directory / 'ready.json', {'container_id': state['Id'], 'binding_sha256': digest(plan['binding'])})
-                    return plan['url'] + '/v1'
+                healthy = self.health(plan['url'])
             except (URLError, TimeoutError, OSError, ValueError):
-                pass
+                healthy = False
+            if healthy:
+                self.access(plan, True)
+                self.rendered(plan)
+                atomic_json(self.directory / 'ready.json', {'container_id': state['Id'], 'binding_sha256': digest(plan['binding'])})
+                return plan['url'] + '/v1'
             self.sleep(1)
         raise CampaignFault('student_server_startup_failed')
 
@@ -122,8 +142,8 @@ class Serving:
         atomic_json(self.directory / 'stopped.json', {'container_id': identifier, 'binding_sha256': digest(plan['binding'])})
 
     @contextlib.contextmanager
-    def session(self, model, checksum, context, model_name):
-        plan = self.plan(model, checksum, context, model_name)
+    def session(self, model, checksum, context, model_name, template):
+        plan = self.plan(model, checksum, context, model_name, template)
         try:
             yield self.start(plan)
         finally:

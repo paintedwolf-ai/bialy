@@ -1,11 +1,15 @@
 """Per-tier go/no-go after a campaign, and the release ledger of what was published.
 
 A tier is published only when its export receipt still binds its files, its MLX and
-Vulkan bundles each passed a load probe in the host's native runtime, and its outcome
-under the frozen evaluation policy is a pass. Every other tier is recorded unpublished
-with the conditions it missed.
+Vulkan bundles each carry a load probe the host's native runtime wrote for this export,
+and its outcome under the frozen evaluation policy is a pass. A probe counts by what it
+binds: the export receipt, the bundle's artifact, the behaviour reference, the host
+commit the tier was trained on and the device it ran on, and tokens that stay inside
+the reference's tolerance. Every other tier is recorded unpublished with the conditions
+it missed.
 """
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,21 +37,64 @@ def export_failures(artifact):
             if exporting.output_files(job, output['directory']) != output['files']]
 
 
-def probe_failures(student, artifact, probes):
-    """The bundles without a passed load probe of this export in the host's native runtime."""
-    receipt = (artifact or {}).get('export_receipt_sha256')
-    passed = {probe['bundle'] for probe in probes
-              if probe.get('schema') == PROBE and probe.get('student') == student and probe.get('passed') is True
-              and probe.get('export_receipt_sha256') == receipt}
-    return ['load_probe_%s' % bundle for bundle in BUNDLES if bundle not in passed]
+def reference_prompt(job, name):
+    reference = json.loads((job / 'merged' / exporting.REFERENCE).read_text())
+    return next((prompt for prompt in reference['prompts'] if prompt['name'] == name), None)
+
+
+def probe_fault(probe, bundle, artifact, receipt, job):
+    """Why one probe receipt does not qualify this export's bundle; None when it does."""
+    if probe.get('passed') is not True or probe.get('failure'):
+        return (probe.get('failure') or {}).get('code') or 'failed'
+    device = probe.get('device') or {}
+    if (probe.get('export_receipt_sha256') != artifact['export_receipt_sha256']
+            or probe.get('artifact_sha256') != receipt['outputs'][bundle]['sha256']
+            or probe.get('behavior_sha256') != receipt['behavior_sha256']
+            or probe.get('host_commit') != artifact['host_commit']):
+        return 'unbound'
+    if (device.get('backend') != bundle or not device.get('physical_device')
+            or not re.fullmatch(r'[0-9a-f]{64}', str(probe.get('manifest_sha256')))):
+        return 'device_unstated'
+    prompt, behavior = reference_prompt(job, probe.get('prompt')), probe.get('behavior') or {}
+    tokens = probe.get('generated_tokens') or []
+    if prompt is None or not tokens or type(behavior.get('tolerance')) not in (int, float):
+        return 'no_generation'
+    wanted = prompt['tokens']
+    shared = min(len(wanted), len(tokens))
+    agreed = next((index for index in range(shared) if wanted[index] != tokens[index]), shared)
+    if agreed == 0 or (agreed < len(wanted) and prompt['margins'][agreed] >= behavior['tolerance']):
+        return 'behavior_mismatch'
+    return None
+
+
+def probed(student, artifact, probes):
+    """For each bundle, the manifest a qualifying load probe of this export loaded, and the
+    bundles without one with the reason their probes gave."""
+    job = Path(artifact['directory']).parent
+    receipt = json.loads((job / 'export_receipt.json').read_text())
+    manifests, failed = {}, []
+    for bundle in BUNDLES:
+        offered = [probe for probe in probes if probe.get('schema') == PROBE and probe.get('student') == student
+                   and probe.get('bundle') == bundle]
+        faults = {id(probe): probe_fault(probe, bundle, artifact, receipt, job) for probe in offered}
+        qualified = [probe for probe in offered if faults[id(probe)] is None]
+        if qualified:
+            manifests[bundle] = qualified[0]['manifest_sha256']
+        else:
+            failed.append('load_probe_%s_%s' % (bundle, min(faults.values()) if offered else 'missing'))
+    return manifests, failed
 
 
 def tier_decision(student, outcome, probes):
-    failed = export_failures(outcome.get('artifact')) + probe_failures(student, outcome.get('artifact'), probes)
+    artifact = outcome.get('artifact')
+    failed = export_failures(artifact)
+    # A probe can only be bound to an export whose receipt still holds.
+    manifests, unprobed = ({}, []) if failed else probed(student, artifact, probes)
+    failed += unprobed
     if outcome.get('execution_status') != 'complete' or outcome.get('behavioral_status') != 'pass':
         failed.append('behavioral_%s' % outcome.get('behavioral_status', 'not_measured'))
     return {'publish': not failed, 'failed': failed,
-            'export_receipt_sha256': (outcome.get('artifact') or {}).get('export_receipt_sha256')}
+            'export_receipt_sha256': (artifact or {}).get('export_receipt_sha256'), 'bundle_manifests': manifests}
 
 
 def decide(run_directory, probes, decided_by, clock=None):
@@ -82,6 +129,8 @@ def record(run_directory, ledger_directory, campaign, publications):
             if not bundles or set(bundles) != set(BUNDLES) or any(
                     set(bundle) != {'revision', 'manifest_sha256'} for bundle in bundles.values()):
                 raise CampaignFault('publication_incomplete', details={'student': student})
+            if any(bundles[name]['manifest_sha256'] != tier['bundle_manifests'].get(name) for name in BUNDLES):
+                raise CampaignFault('publication_not_probed', details={'student': student})
             published[student] = {'export_receipt_sha256': tier['export_receipt_sha256'], 'bundles': bundles}
         else:
             if bundles:

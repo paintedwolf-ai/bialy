@@ -6,6 +6,7 @@ import pytest
 from bialy.student_host import machines, reaper
 from bialy.student_host.jobs import JobError
 from bialy.student_host.remote_training import Remote, bootstrap
+from bialy.student_host.specification import load
 
 
 def configuration(tmp_path):
@@ -55,7 +56,10 @@ def test_ssh_transport_uses_the_configured_account_port_and_key(tmp_path):
 def test_bootstrap_scopes_sources_tools_and_models_to_the_job_workspace(tmp_path):
     config = configuration(tmp_path)
     calls = []
-    bootstrap(SimpleNamespace(command=lambda args, **kwargs: calls.append(args)), config, '/srv/training/job', '26b-a4b')
+    def command(args, **kwargs):
+        calls.append(args)
+        return json.dumps({'gpu_memory_gib': 141.0, 'memory_gib': 240.0, 'disk_gib': 900.0})
+    bootstrap(SimpleNamespace(command=command), config, '/srv/training/job', '26b-a4b', load()['models']['26b-a4b'])
     clones = [args for args in calls if args[:2] == ['git', 'clone']]
     assert [args[-1] for args in clones] == ['/srv/training/job/host', '/srv/training/job/bialy', '/srv/training/job/llama.cpp']
     assert all('/root/' not in ' '.join(args) and '/scratch/' not in ' '.join(args) for args in calls)
@@ -66,7 +70,7 @@ def test_bootstrap_scopes_sources_tools_and_models_to_the_job_workspace(tmp_path
     assert ['git', '-C', llama, 'checkout', '--detach', 'c' * 40] in calls
     configure, build = [args for args in calls if args[0] == 'cmake']
     assert '-DGGML_CUDA=OFF' in configure
-    assert build[:3] == ['cmake', '--build', llama + '/build'] and {'llama-quantize', 'llama-completion'} <= set(build)
+    assert build[:3] == ['cmake', '--build', llama + '/build'] and {'llama-quantize', 'llama-server'} <= set(build)
 
 
 @pytest.mark.parametrize('field,value', [('workspace', '/'), ('workspace', '/srv/../other'), ('user', '-root'), ('port', 0), ('host', '-option')])

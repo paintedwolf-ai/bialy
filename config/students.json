@@ -1,24 +1,50 @@
 {
-  "schema": "pw-students/1",
+  "schema": "pw-students/2",
   "context": {"max_sequence_tokens": 65536, "thinking": false, "truncation": "forbidden"},
+  "rendering": {
+    "profile": "gemma4-code-v1",
+    "template": "lycaon/internal/generation/templates/gemma4-code-v1.jinja",
+    "template_sha256": "53a6a1387629aee10a91a47590cb09f6272de6ebaf0f61d33ef70d471fb77619"
+  },
+  "recipe": {
+    "version": 1,
+    "targets": "re:model\\.language_model\\.layers\\.\\d+\\.self_attn\\.(q_proj|k_proj|v_proj|o_proj)",
+    "rank": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "epochs": 3,
+    "seed": 7,
+    "learning_rate": 0.0001,
+    "warmup_ratio": 0.05,
+    "final_learning_rate_ratio": 0.1,
+    "accumulation": 8,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1.0
+  },
   "models": {
     "e4b": {
       "repository": "google/gemma-4-E4B-it",
       "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2",
       "directory": "gemma-4-E4B-it",
-      "targets": "re:.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj)"
+      "adapted_modules": 168,
+      "architecture": {"parameters": 7996157418, "layers": 42, "hidden_size": 2560, "mlp_width": 10240, "vocabulary": 262144},
+      "machine": {"gpu_memory_gib": 80, "memory_gib": 64, "disk_gib": 120}
     },
     "12b": {
       "repository": "google/gemma-4-12B-it",
       "revision": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
       "directory": "gemma-4-12B-it",
-      "targets": "re:.*\\.(q_proj|k_proj|v_proj|o_proj)"
+      "adapted_modules": 184,
+      "architecture": {"parameters": 11959730224, "layers": 48, "hidden_size": 3840, "mlp_width": 15360, "vocabulary": 262144},
+      "machine": {"gpu_memory_gib": 140, "memory_gib": 96, "disk_gib": 160}
     },
     "26b-a4b": {
       "repository": "google/gemma-4-26B-A4B-it",
       "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
       "directory": "gemma-4-26B-A4B-it",
-      "targets": "re:.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj)"
+      "adapted_modules": 115,
+      "architecture": {"parameters": 25805936206, "layers": 30, "hidden_size": 2816, "mlp_width": 7744, "vocabulary": 262144},
+      "machine": {"gpu_memory_gib": 140, "memory_gib": 160, "disk_gib": 300}
     }
   }
 }

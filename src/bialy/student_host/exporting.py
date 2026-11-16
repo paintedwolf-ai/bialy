@@ -1,7 +1,9 @@
 """Train-to-export transitions with checked host parity receipts.
 
 One fp32 merge yields three outputs: the Vulkan GGUF in `gguf/`, the MLX checkpoint in
-`mlx/` and the LoRA adapter in `lora_adapter/`. `export_receipt.json` binds all three.
+`mlx/` and the LoRA adapter in `lora_adapter/`. `export_receipt.json` binds all three to
+the template the rows were rendered with and to the merge's behaviour reference, which
+the GGUF was served and held to before the receipt is written.
 """
 import hashlib
 import json
@@ -17,7 +19,8 @@ from .resources import write
 UNQUANTIZED = 'model-f16.gguf'
 QUANTIZED = 'model-Q4_K_M.gguf'
 ADAPTER = ('adapter_model.safetensors', 'adapter_config.json')
-TEMPLATE = 'lycaon/internal/generation/templates/gemma4-code-v1.jinja'
+GGUF = 'pw-custom-gguf/2'
+REFERENCE = 'behavior.json'
 INDEX = 'model.safetensors.index.json'
 OUTPUTS = ('gguf', 'mlx', 'lora_adapter')
 
@@ -43,7 +46,7 @@ def export(directory, llama, revision, run=subprocess.run):
     run(args, check=True)
     args = [*prefix, str(pipe / 'gguf_export.py'), '--merge', str(merged), '--llama-cpp', str(llama),
             '--revision', revision, '--quantizer', str(llama / 'build/bin/llama-quantize'),
-            '--loader', str(llama / 'build/bin/llama-completion'), '--out', str(gguf)]
+            '--server', str(llama / 'build/bin/llama-server'), '--out', str(gguf)]
     if gguf.exists():
         args.append('--resume')
     run(args, check=True)
@@ -103,22 +106,44 @@ def output_files(directory, name):
     return {path: digest for path, digest in tree(directory / name).items() if path != UNQUANTIZED}
 
 
+def served(manifest, name, template, reference):
+    """What the host's export recorded of serving one GGUF; refused unless it rendered the
+    training template as training did and, given a reference, stayed inside its tolerance."""
+    record = (manifest.get('served') or {}).get(name) or {}
+    rendering, behavior = record.get('rendering') or {}, record.get('behavior')
+    if rendering.get('template_sha256') != template or not rendering.get('cases'):
+        raise JobError('export was not served with the training chat template')
+    if reference is None:
+        return None
+    if (not behavior or not behavior.get('agreed_tokens')
+            or any(item['margin'] >= behavior['tolerance'] for item in behavior['departures'])):
+        raise JobError('export has no behavioural check against its merge')
+    return {key: behavior[key] for key in ('precision', 'tolerance', 'agreed_tokens', 'departures')}
+
+
 def describe(directory, plan, source):
     """The receipt for one export, computed from the files it binds."""
     gguf = json.loads((directory / 'gguf/manifest.json').read_text())
+    merged = json.loads((directory / 'merged/manifest.json').read_text())
+    reference = file_sha256(directory / 'merged' / REFERENCE) if (directory / 'merged' / REFERENCE).is_file() else None
+    if (reference is None or merged.get('behavior_sha256') != reference or gguf.get('behavior_sha256') != reference
+            or merged.get('template_sha256') != plan['rendering']['template_sha256']
+            or merged.get('rendering_profile') != plan['rendering']['profile']):
+        raise JobError('merge does not carry the job\'s template and a behaviour reference')
     conversion = json.loads((directory / 'mlx/conversion.json').read_text())
     if conversion.get('source_sha256') != source:
         raise JobError('MLX conversion is of another checkpoint')
     weights, adapter = directory / 'mlx/model.safetensors', directory / 'lora_adapter' / ADAPTER[0]
     template = gguf['quantized']['metadata']['tokenizer.chat_template']
     return {
-        'schema': 'pw-student-export/1', 'student': plan['student'],
+        'schema': 'pw-student-export/2', 'student': plan['student'],
         'merged_manifest_sha256': file_sha256(directory / 'merged/manifest.json'),
-        'training_template_sha256': file_sha256(Path(plan['checkout']) / TEMPLATE),
+        'rendering': plan['rendering'], 'behavior_sha256': reference,
         'outputs': {
             'vulkan': {'directory': 'gguf', 'payload': QUANTIZED, 'bytes': (directory / 'gguf' / QUANTIZED).stat().st_size,
                        'sha256': gguf['quantized']['sha256'], 'tensors': len(gguf['quantized']['tensors']),
                        'quantization': 'Q4_K_M', 'chat_template_sha256': hashlib.sha256(template.encode()).hexdigest(),
+                       'behavior': served(gguf, 'quantized', plan['rendering']['template_sha256'], reference),
                        'files': output_files(directory, 'gguf')},
             'mlx': {'directory': 'mlx', 'payload': 'model.safetensors', 'bytes': weights.stat().st_size,
                     'sha256': conversion['weights_sha256'], 'tensors': tensor_count(weights),
@@ -137,23 +162,23 @@ def publish(directory, revision, unquantized):
     plan = checked_plan(directory)
     gguf = directory / 'gguf'
     manifest = json.loads((gguf / 'manifest.json').read_text())
-    if (manifest.get('schema') != 'pw-custom-gguf/1' or manifest.get('load_probe') != 'passed'
-            or manifest.get('llama_cpp_revision') != revision
+    if (manifest.get('schema') != GGUF or manifest.get('llama_cpp_revision') != revision
             or manifest.get('merged_manifest_sha256') != file_sha256(directory / 'merged' / 'manifest.json')
             or (gguf / UNQUANTIZED).exists() is not unquantized
             or (unquantized and manifest.get('unquantized', {}).get('sha256') != file_sha256(gguf / UNQUANTIZED))
             or manifest.get('quantized', {}).get('sha256') != file_sha256(gguf / QUANTIZED)):
-        raise JobError('export lacks a load parity receipt')
+        raise JobError('export lacks a served GGUF receipt')
     receipt = json.loads((directory / 'export_receipt.json').read_text())
     if receipt != describe(directory, plan, receipt['outputs']['mlx']['source_sha256']):
         raise JobError('export receipt does not match its outputs')
-    template = receipt['training_template_sha256']
-    if any(output.get('chat_template_sha256', template) != template for output in receipt['outputs'].values()):
+    template = plan['rendering']['template_sha256']
+    if any(receipt['outputs'][name]['chat_template_sha256'] != template for name in ('vulkan', 'mlx')):
         raise JobError('an export does not carry the training chat template')
-    result = {'schema': 'pw-student-artifact/2', 'student': plan['student'],
+    result = {'schema': 'pw-student-artifact/3', 'student': plan['student'],
               'specification_sha256': plan['specification_sha256'], 'host_commit': plan['host_commit'],
               'dry_run': plan.get('dry_run', False), 'unquantized_retained': unquantized,
               'context': plan['specification']['context'], 'files': tree(gguf), 'directory': str(gguf),
+              'template_sha256': template,
               'export_receipt_sha256': file_sha256(directory / 'export_receipt.json')}
     write(directory / 'artifact.json', result)
     return result

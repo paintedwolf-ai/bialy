@@ -91,7 +91,7 @@ workload:
 
 | Profile | Segments | Workload |
 |---|---|---|
-| `dry-run` | student | `e4b` by default; two training rows, one validation and one held-out, each at most 10,240 tokens; two updates with a pause and resume; one unjudged evaluation; stamped `dry_run` |
+| `dry-run` | student | `e4b` by default; two training rows, one validation and one held-out, each at most 10,240 tokens; one update an epoch, with a pause after the first and a resume; one unjudged evaluation; stamped `dry_run` |
 | `pilot` | student | 32 training and 16 validation episodes, at least two groups per focus; a supplied `P0` (`selector_policy`) or the engine disabled, stamped as fallback |
 | `full` | selector, student | the head-row pass, `P0`, the adoption boundary, then student collection, training, export and paired evaluation on the adopted commit |
 
@@ -278,6 +278,82 @@ review still decide which candidates train the student. Structured utility healt
 requires a host build carrying `pw-training-health/1` telemetry under the capture
 directory's `health/` subdirectory.
 
+## Student rendering, recipe and machines
+
+`config/students.json` is the one owner of how a student is rendered, trained
+and sized. A job plan binds all of it, the trainer records what it ran with, and
+a result that differs is refused.
+
+**Rendering.** Every tier trains and serves in the host's `gemma4-code-v1`
+template, pinned by SHA-256. A job refuses a host checkout whose template has
+another digest and a training result rendered with another template or profile.
+The export embeds that template in the GGUF and the MLX checkpoint. Before an
+evaluation arm takes a request, the host's `serving_check.py` runs against its
+llama.cpp server: the server must serve that template and render the host's
+conversation fixtures, sent as the chat-completions wire carries them, into the
+prompts training rendered. The base arm is the stock weights staged by the host
+with the training tokenizer and template, so the two arms differ in weights
+alone. With the template the stack first landed with, the pinned llama.cpp
+server exited at start (the template raised when rendered with thinking
+enabled), and llama.cpp rewrote tool messages for any Gemma 4 template lacking
+the current official marker, so no trained artifact could have been evaluated.
+
+**Export.** The host writes the merged checkpoint's greedy continuation of each
+served fixture, with the top-two logit margin of every step. Each GGUF is then
+served and may leave those tokens only at a step decided by less than 0.5
+(F16) or 2.0 (Q4_K_M); each rendered prompt must tokenize identically. An
+export without that record, or one served in another template, is refused. The
+MLX checkpoint has no runtime on the export machine: its behaviour is checked
+by the load probe on Apple silicon, against the same reference.
+
+**Recipe.** LoRA rank 16 (alpha 32, dropout 0.05) on the language model's
+attention projections; three epochs; AdamW at a peak of 1e-4 with weight decay
+0.01; linear warmup over 5% of updates, cosine decay to 10% of the peak; eight
+rows an update; gradient norm clipped at 1.0. A full campaign collects 64
+training episodes of many model turns each, so an epoch is on the order of a
+hundred updates and a run a few hundred. The earlier recipe (one epoch at a
+constant 2e-5 with single-row updates) sits an order of magnitude under the
+rates LoRA is normally trained at (1e-4 to 2e-4 in the LoRA and QLoRA papers
+and Google's Gemma tuning guides) and its single-row gradients are noisy at any
+rate. Accumulation gives the batch a 65,536-token row cannot have in memory;
+warmup protects the first updates of a zero-initialized adapter, and the decay
+and dropout are there because the data is small and no epoch is selected by
+validation loss. The schedule is a function of the update index, so a resumed
+run continues it exactly.
+
+**Targets.** Each pinned revision keeps its text model under
+`model.language_model`, and the E4B and 26B-A4B revisions carry vision or audio
+towers with projections of the same names. One anchored pattern adapts the
+language model's `q_proj`, `k_proj`, `v_proj` and `o_proj` in every tier; the
+trainer refuses to start unless it matches exactly the declared number of
+modules (168, 184 and 115; the larger two share keys and values in some layers
+and have no `v_proj` there), none outside the language model.
+
+**Machines.** Peak GPU memory of one update on a 65,536-token row, in bfloat16
+with gradient checkpointing, is estimated as: the weights (2 bytes a
+parameter); one hidden state per layer for the checkpoints; the sliding-window
+mask and its additive form (3 bytes a token pair); the live activations of the
+layer being differentiated; and logits, log-probabilities and their gradient at
+up to 2,048 completion positions.
+
+| Tier | Weights | Checkpoints | Masks | Layer | Logits | Estimate | Declared GPU |
+|---|---|---|---|---|---|---|---|
+| E4B | 16.0 GB | 14.1 GB | 12.9 GB | 6.7 GB | 5.4 GB | 55 GB (51 GiB) | 80 GiB |
+| 12B | 23.9 GB | 24.2 GB | 12.9 GB | 10.1 GB | 5.4 GB | 76 GB (71 GiB) | 140 GiB |
+| 26B-A4B | 51.6 GB | 11.1 GB | 12.9 GB | 6.0 GB | 5.4 GB | 87 GB (81 GiB) | 140 GiB |
+
+The specification refuses a tier whose estimate exceeds 85% of the GPU it
+declares, so 12B and 26B-A4B do not fit an 80 GiB card at the declared length
+and declare a 140 GiB one. The estimate assumes an attention kernel that never
+materializes the token-pair matrix (69 GB for E4B's eight heads at this
+length, twice that for the others); the trainer disables the kernel that does,
+so an unsupported configuration fails at the first update. Only a rented run
+confirms the estimate. The fp32 merge needs about four bytes a parameter of
+host memory (32, 48 and 103 GB), and the disk holds the base checkpoint, the
+merge, the F16 and Q4 GGUFs, the MLX checkpoint, checkpoints and toolchains:
+about 100, 135 and 260 GB. Each tier declares its GPU, host memory and disk,
+and a remote job refuses a smaller machine before it downloads anything.
+
 ## Campaign rehearsal
 
 Before money is spent on a campaign, the `dry-run` profile is run once for each
@@ -353,9 +429,19 @@ bialy campaign decide --run /path/to/plan/run --probes load-probes.json --by NAM
 
 A tier is published only when three conditions hold:
 - its `export_receipt.json` still binds every exported file;
-- its MLX and Vulkan bundles each have a passed `pw-load-probe/1` receipt for
-  that export from the host's native runtime;
+- its MLX and Vulkan bundles each have a `pw-load-probe/1` receipt that the
+  host's `scripts/generation/load_probe.py` wrote for that export on a device;
 - its outcome under the frozen evaluation policy is a pass.
+
+A probe receipt counts by what it binds, not by its `passed` flag: the export
+receipt, the bundle's primary artifact, the behaviour reference, the host commit
+the tier trained on, the backend and device the runtime reported, and generated
+tokens that leave the export's reference only inside its tolerance. A bundle
+without one is recorded as `load_probe_<bundle>_missing`; a failed or unbound
+one carries the probe's own reason, such as `load_probe_mlx_load_failed`. The
+host's native runtime loads only E4B, so the 12B and 26B-A4B tiers cannot be
+published until it loads them. The ledger refuses a published bundle whose
+manifest is not the one its probe loaded.
 
 `decision.json` records each tier's decision, the conditions it missed, and who
 decided. A second decision must be the same one.

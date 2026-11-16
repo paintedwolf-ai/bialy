@@ -6,7 +6,7 @@ import pytest
 from bialy.student_host import remote_training
 from bialy.student_host.jobs import JobError, tree
 from bialy.student_host.resources import write
-from bialy.student_host.specification import identity
+from bialy.student_host.specification import identity, load
 
 
 def test_restart_observes_existing_worker_without_launching_again(tmp_path, monkeypatch):
@@ -165,21 +165,46 @@ def test_export_launches_once_on_the_training_machine(tmp_path, monkeypatch):
     assert not any(args[:2] == ['bash', '-lc'] for args in resumed.commands)
 
 
+class Machine:
+    """Records bootstrap commands and answers the capacity probe with `capacity`."""
+
+    def __init__(self, capacity):
+        self.capacity, self.commands = capacity, []
+
+    def command(self, args, **kwargs):
+        self.commands.append(args)
+        if args[:2] == ['python3', '-c']:
+            if self.capacity is None:
+                raise JobError('no nvidia-smi')
+            return json.dumps(self.capacity)
+        return ''
+
+
+BOOTSTRAP = {'machine': {'uv': '/opt/uv/bin/uv'}, 'llama_repository': 'l', 'llama_commit': 'c',
+             **{name + suffix: name for name in ('host', 'bialy') for suffix in ('_repository', '_commit')}}
+
+
 def test_bootstrap_prepares_the_training_and_conversion_projects(tmp_path):
-    class Recorder:
-        def __init__(self):
-            self.commands = []
-
-        def command(self, args, **kwargs):
-            self.commands.append(args)
-            return ''
-
-    remote = Recorder()
-    config = {'machine': {'uv': '/opt/uv/bin/uv'}, 'llama_repository': 'l', 'llama_commit': 'c',
-              **{name + suffix: name for name in ('host', 'bialy') for suffix in ('_repository', '_commit')}}
-    remote_training.bootstrap(remote, config, '/w/job', '26b-a4b')
+    model = load()['models']['26b-a4b']
+    # An "80 GB" card reports slightly under its name; the declared sizes allow for that.
+    remote = Machine({'gpu_memory_gib': model['machine']['gpu_memory_gib'] - 0.4, 'memory_gib': 240.0, 'disk_gib': 900.0})
+    remote_training.bootstrap(remote, BOOTSTRAP, '/w/job', '26b-a4b', model)
     synced = [args[args.index('--project') + 1] for args in remote.commands if 'sync' in args]
     assert synced == ['/w/job/bialy', '/w/job/host/scripts/bialy/custom_model', '/w/job/host/scripts/generation']
+    build = next(args for args in remote.commands if '--target' in args)
+    assert 'llama-server' in build and 'llama-quantize' in build and 'llama-completion' not in build
+
+
+@pytest.mark.parametrize('capacity, message', [
+    ({'gpu_memory_gib': 79.6, 'memory_gib': 240.0, 'disk_gib': 900.0}, 'smaller than the student declares.*gpu_memory_gib'),
+    ({'gpu_memory_gib': 140.4, 'memory_gib': 64.0, 'disk_gib': 900.0}, 'smaller than the student declares.*memory_gib'),
+    ({'gpu_memory_gib': 140.4, 'memory_gib': 240.0, 'disk_gib': 230.0}, 'smaller than the student declares.*disk_gib'),
+    (None, 'capacity could not be read')])
+def test_a_machine_smaller_than_the_student_declares_is_refused_before_any_download(tmp_path, capacity, message):
+    remote = Machine(capacity)
+    with pytest.raises(JobError, match=message):
+        remote_training.bootstrap(remote, BOOTSTRAP, '/w/job', '26b-a4b', load()['models']['26b-a4b'])
+    assert not any('clone' in args or 'sync' in args for args in remote.commands)
 
 
 @pytest.mark.parametrize('observations, message', [

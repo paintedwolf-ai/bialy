@@ -170,7 +170,7 @@ def compose(journal, directory, body, adopted=None):
                                                    judged=profile['judged'], tasks=profile.get('evaluation_tasks')),
                     cleanup=Cleanup(cfg))
     training = {**student_cfg, 'specification': str(ROOT / 'config/students.json')}
-    server = {'image': cfg['server_image'], 'gateway': cfg['gateway'], **run.factory.network}
+    server = {'image': cfg['server_image'], 'gateway': cfg['gateway'], 'checkout': student_cfg['checkout'], **run.factory.network}
     for student in students:
         handlers['baseline_' + student] = Baseline(journal, training, specification, student)
         handlers['train_' + student] = Training(journal, training, student, pilot=profile['recipe'] != 'full',

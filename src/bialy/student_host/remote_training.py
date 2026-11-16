@@ -11,7 +11,7 @@ from pathlib import Path
 from . import exporting, machines
 from .jobs import JobError, tree, validate_inputs, validate_result, validate_training_inputs
 from .resources import write
-from .specification import identity
+from .specification import identity, load
 from .transfer import checkpoints
 
 SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
@@ -49,8 +49,26 @@ def prefix(configuration, workspace):
             'UV_TOOL_DIR=' + workspace + '/tools', 'UV_TOOL_BIN_DIR=' + workspace + '/bin', uv]
 
 
-def bootstrap(remote, configuration, workspace, student):
+def capacity(remote, workspace, model):
+    """Refuse a machine smaller than the student declares, before anything is downloaded to it."""
+    probe = ('import json,os,shutil,subprocess; print(json.dumps({'
+             '"gpu_memory_gib": int(subprocess.check_output(["nvidia-smi","--query-gpu=memory.total",'
+             '"--format=csv,noheader,nounits"],text=True).split()[0])/1024, '
+             '"memory_gib": os.sysconf("SC_PAGE_SIZE")*os.sysconf("SC_PHYS_PAGES")/2**30, '
+             '"disk_gib": shutil.disk_usage(' + repr(workspace) + ').free/2**30}))')
+    try:
+        observed = json.loads(remote.command(['python3', '-c', probe], timeout=60))
+    except (JobError, ValueError, subprocess.TimeoutExpired):
+        raise JobError('training machine capacity could not be read') from None
+    # Vendors state sizes in round figures the hardware reports slightly under.
+    short = {name: round(observed[name], 1) for name, needed in model['machine'].items() if observed[name] < 0.97 * needed}
+    if short:
+        raise JobError('training machine is smaller than the student declares: ' + json.dumps(short, sort_keys=True))
+
+
+def bootstrap(remote, configuration, workspace, student, model):
     remote.command(['mkdir', '-p', workspace])
+    capacity(remote, workspace, model)
     uv = prefix(configuration, workspace)
     remote.command([*uv, '--version'])
     for name in ('host', 'bialy'):
@@ -67,7 +85,7 @@ def bootstrap(remote, configuration, workspace, student):
     remote.command(['git', '-C', llama, 'checkout', '--detach', configuration['llama_commit']])
     remote.command(['cmake', '-S', llama, '-B', llama + '/build', '-DGGML_CUDA=OFF', '-DLLAMA_CURL=OFF',
                     '-DCMAKE_BUILD_TYPE=Release'], timeout=1800)
-    remote.command(['cmake', '--build', llama + '/build', '--target', 'llama-quantize', 'llama-completion',
+    remote.command(['cmake', '--build', llama + '/build', '--target', 'llama-quantize', 'llama-server',
                     '--parallel'], timeout=3600)
     remote.command([*uv, 'tool', 'install', 'huggingface_hub==2.2.0'])
     remote.command([*uv, 'run', '--project', workspace + '/bialy', '--locked',
@@ -143,6 +161,7 @@ def export_remotely(remote, configuration, workspace, remote_directory, destinat
         raise JobError('remote export failed with status %d' % observation['exit'])
     job = destination / 'job'
     remote.receive(remote_directory + '/merged/manifest.json', job / 'merged')
+    remote.receive(remote_directory + '/merged/' + exporting.REFERENCE, job / 'merged')
     remote.receive(remote_directory + '/gguf/', job / 'gguf', exclude=(exporting.UNQUANTIZED,), timeout=7200)
     remote.receive(remote_directory + '/mlx/', job / 'mlx', timeout=7200)
     remote.receive(remote_directory + '/lora_adapter/', job / 'lora_adapter')
@@ -218,7 +237,7 @@ def train_locked(configuration_path, student, splits, source_key, destination, r
             if resume:
                 remote_directory = json.loads((destination / 'remote.json').read_text())['directory']
             else:
-                bootstrap(remote, configuration, workspace, student)
+                bootstrap(remote, configuration, workspace, student, load()['models'][student])
                 check_connection()
                 remote.command(['mkdir', '-p', *[workspace + '/' + name for name in ('data', 'private', 'runs', 'spool')]])
                 remote.upload(str(Path(splits)) + '/', workspace + '/data/')
