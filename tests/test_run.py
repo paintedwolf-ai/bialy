@@ -180,10 +180,10 @@ def test_compare_matches_requests_across_passes(factory, tmp_path):
     off.parent.mkdir(parents=True)
     on.parent.mkdir(parents=True)
 
-    def row(task, index, tokens, recalls, dropped):
+    def row(task, index, tokens, recalls, dropped, recorded=True):
         return {"schema": "pw-request-row/1", "host": "coordinator", "surface": "implement_investigate", "partial": False, "request_index": index,
                 "calls": 4, "prompt_tokens": tokens, "recall_calls": recalls, "repeated_calls": 0, "meta": {"task_id": task},
-                "retention": {"recorded": True, "asked": dropped is not None, "watermark": False, "tokens": 1, "candidates": 3, "dropped": dropped or 0}}
+                "retention": {"recorded": recorded, "asked": dropped is not None, "dropped": dropped or 0}}
     off.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 10000, 0, None), row("t1", 1, 20000, 0, None), row("t2", 0, 5000, 0, None))))
     on.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 9000, 0, 1), row("t1", 1, 15000, 1, 2), row("t3", 0, 1, 0, 0))))
     out = runmod.stage_compare(run)
@@ -191,7 +191,13 @@ def test_compare_matches_requests_across_passes(factory, tmp_path):
     assert c["requests"] == 2 and c["off_only"] == 1 and c["on_only"] == 1 and c["released_results"] == 3 and c["released_requests"] == 2
     assert c["measures"]["prompt_tokens"] == {"off": 15000.0, "on": 12000.0, "delta": -3000.0, "delta_median": -3000, "wants": "down"}
     assert c["measures"]["recall_calls"]["delta"] == 0.5
+    assert json.loads(run.path("compare.json").read_text()) == c
     assert runmod.stage_compare(make_run(factory, tmp_path / "other", engine_on={"enabled": False, "deadline_ms": 1}))["skipped"]
+    on.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 9000, 0, None, recorded=False), row("t1", 1, 15000, 0, None, recorded=False))))
+    assert runmod.stage_compare(run) == {"refused": "retention_not_recorded", "requests": 2, "unrecorded": 2}
+    assert not run.path("compare.json").exists()
+    on.unlink()
+    assert runmod.stage_compare(run) == {"refused": "request_rows_missing", "off": 3, "on": 0}
 
 
 def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):

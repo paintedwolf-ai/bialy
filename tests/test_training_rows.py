@@ -41,7 +41,12 @@ def test_a_successful_step_is_ordinary_and_keeps_only_its_own_facts(tmp_path):
     assert row['admission'] == {'eligibility': 'eligible', 'category': 'ordinary', 'semantic_outcome': 'success'}
     assert set(row) == set(item) | {'admission'} and row['execution'] == item['execution']
     assert training_rows.is_eligible(row) and not training_rows.training_ready(row)
-    assert training_rows.training_ready({**row, 'quality': {'verdict': 'pass'}})
+    quality = {'verdict': 'pass', 'role': 'action', 'reviewer_slot': '0', 'controls_passed': True, 'controls_sha256': 'e' * 64,
+               'request_sha256': row['request_capture']['sha256'], 'response_sha256': row['response_sha256']}
+    assert training_rows.training_ready({**row, 'quality': quality})
+    for change in ({'verdict': 'fail'}, {'role': 'episode'}, {'controls_passed': False}, {'controls_sha256': ''}, {'reviewer_slot': ''},
+                   {'request_sha256': '0' * 64}, {'response_sha256': '0' * 64}):
+        assert not training_rows.training_ready({**row, 'quality': {**quality, **change}})
 
 
 @pytest.mark.parametrize('change,reason', [

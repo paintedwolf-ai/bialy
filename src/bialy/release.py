@@ -65,12 +65,12 @@ request needed. No row comes from a person's private session.
 
 `retention/` holds one `pw-retention-row/1` row per decided request
 (`retention/retention-row.schema.json`), split by the same prompt groups: the
-request state, the earlier tool results the host offered with the option text
-the engine read, what the engine dropped, and which results the session read
-again, by its own later tool calls and citations. No judge scores them. The
-runner records candidates on every request, not only past the compaction
-watermark, so `watermark` says whether the host would have asked. A release
-whose sessions wrote none has no `retention/` directory.
+request state, the earlier tool results the request still carried with the
+option text an engine would read, and which of them the session went on to
+need, by its own later tool calls and citations. No judge scores them. The host
+reconstructs every row when it exports a session (`reconstructed` is true) and
+records no engine decision (`engine.state` is `abstained`). A release whose
+sessions wrote none has no `retention/` directory.
 
 ## Code-rank pairs
 

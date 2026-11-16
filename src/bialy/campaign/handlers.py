@@ -73,13 +73,13 @@ class Host:
 
 
 class ReviewerQualification:
-    """Qualify every reviewer slot on the versioned controls before any episode is reviewed."""
+    """Qualify every reviewer slot for every reviewing role before anything is reviewed."""
 
     def __init__(self, reviewers):
         self.reviewers = reviewers
 
     def execute(self, inputs, attempt):
-        return {'slots': reviewer_controls.qualify(self.reviewers)}
+        return {'roles': reviewer_controls.qualify(self.reviewers)}
 
     def reconcile(self, inputs, attempt):
         return self.execute(inputs, attempt)

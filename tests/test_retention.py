@@ -1,5 +1,7 @@
 import dataclasses
 
+import pytest
+
 from bialy import retention
 
 
@@ -52,14 +54,38 @@ def test_viability_reads_the_interval_the_structural_facts_and_the_comparison():
     assert not retention.viability({}, None, {})["viable"]
 
 
+def request(task, index, tokens, partial=False, recorded=True):
+    return {"host": "coordinator", "surface": "s", "partial": partial, "request_index": index, "calls": 3, "prompt_tokens": tokens, "recall_calls": 0,
+            "repeated_calls": 1, "meta": {"task_id": task}, "retention": {"recorded": recorded, "asked": recorded, "dropped": int(recorded)}}
+
+
 def test_compare_uses_only_requests_both_passes_drove():
-    def row(task, index, tokens, partial=False):
-        return {"host": "coordinator", "surface": "s", "partial": partial, "request_index": index, "calls": 3, "prompt_tokens": tokens, "recall_calls": 0,
-                "repeated_calls": 1, "meta": {"task_id": task}, "retention": {"asked": True, "dropped": 1}}
-    out = retention.compare([row("a", 0, 100), row("b", 0, 300, partial=True)], [row("a", 0, 80), row("b", 0, 10, partial=True), row("c", 0, 5)])
+    out = retention.compare([request("a", 0, 100), request("b", 0, 300, partial=True)],
+                            [request("a", 0, 80), request("b", 0, 10, partial=True), request("c", 0, 5)])
     assert out["requests"] == 1 and out["on_only"] == 1 and out["off_only"] == 0
-    assert out["measures"]["prompt_tokens"]["delta"] == -20 and out["measures"]["repeated_calls"]["delta"] == 0 and out["asked"] == 1
-    assert retention.compare([], [])["requests"] == 0
+    assert out["measures"]["prompt_tokens"]["delta"] == -20 and out["measures"]["repeated_calls"]["delta"] == 0
+    assert out["asked"] == 1 and out["released_results"] == 1
+
+
+@pytest.mark.parametrize("off,on,code,details", [
+    ([], [request("a", 0, 80)], "request_rows_missing", {"off": 0, "on": 1}),
+    ([request("a", 0, 100)], [request("b", 0, 80)], "no_matched_requests", {"off": 1, "on": 1}),
+    ([request("a", 0, 100), request("b", 0, 100)], [request("a", 0, 80), request("b", 0, 80, recorded=False)],
+     "retention_not_recorded", {"requests": 2, "unrecorded": 1}),
+])
+def test_compare_refuses_what_the_request_rows_cannot_support(off, on, code, details):
+    with pytest.raises(retention.ComparisonRefused, match=code) as refused:
+        retention.compare(off, on)
+    assert refused.value.record() == {"refused": code, **details}
+
+
+def test_compare_refuses_the_request_rows_the_host_exports():
+    """A request row as `lycaon-debug decide export --requests` writes it records no retention decision."""
+    exported = {"schema": "pw-request-row/1", "host": "coordinator", "surface": "s", "partial": False, "request_index": 0, "calls": 2,
+                "prompt_tokens": 90, "recall_calls": 0, "repeated_calls": 0, "meta": {"task_id": "a"},
+                "retention": {"recorded": False, "asked": False, "dropped": 0}}
+    with pytest.raises(retention.ComparisonRefused, match="retention_not_recorded"):
+        retention.compare([exported], [exported])
 
 
 def test_needed_release_requires_verified_recovery():

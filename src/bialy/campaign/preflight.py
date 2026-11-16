@@ -4,13 +4,14 @@ import json
 import subprocess
 from pathlib import Path
 
-from .. import host_bundle
+from .. import host_bundle, host_contract
 from .execution import atomic_json
 from .journal import CampaignFault
 
 
 def inspect(checkout, commit, image, destination, process=subprocess.run):
-    """The pinned checkout is clean at commit, and its image exports that commit's training contract."""
+    """The pinned checkout is clean at commit and declares everything the runner asks of the
+    host, and its image exports that commit's training contract."""
     checkout = Path(checkout).resolve()
     actual = process(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
     if actual != commit:
@@ -19,6 +20,10 @@ def inspect(checkout, commit, image, destination, process=subprocess.run):
                     check=True, capture_output=True, text=True).stdout.strip()
     if dirty:
         raise CampaignFault('host_source_not_clean')
+    try:
+        host_contract.verify(checkout)
+    except host_contract.HostContractError as exc:
+        raise CampaignFault(exc.code, details={'missing': exc.missing}) from exc
     try:
         contract, contract_sha256 = host_bundle.contract(image, destination, commit, process)
     except host_bundle.HostEvidenceError as exc:

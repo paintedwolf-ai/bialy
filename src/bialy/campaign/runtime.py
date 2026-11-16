@@ -152,7 +152,7 @@ def compose(journal, directory, body, adopted=None):
     driver = teacher_driver if run is teachers_run else EpisodeDriver(journal, lineage, run, reviewers, bank)
     if student_cfg is not cfg:
         handlers['student_host_qualification'] = Host(run, student_cfg, teachers)
-    exports = Exports(run.factory, cfg['checkout'], custom_model_run.binding(run), file_sha256(cfg['corpus']))
+    exports = Exports(reviewers, cfg['checkout'], custom_model_run.binding(run), file_sha256(cfg['corpus']))
     measure = dataset.Measurement(cfg['checkout'], cfg['models'], specification)
     coverage = profile['coverage']
     groups = 0 if coverage == 'none' else coverage['groups_per_focus']
