@@ -130,8 +130,8 @@ class Archetype:
     workflow_prompt_timeout: str
     new_files: bool = False
     reference_rate: float = 0.0
-    # The follow-ups a task may carry; every follow-up is a retention decision
-    # with the earlier turns to look back on.
+    # The follow-ups a task may carry; each follow-up request adds a retention row
+    # over the earlier turns' tool results.
     max_follow_ups: int = 2
 
     def timeout(self, workflow):
