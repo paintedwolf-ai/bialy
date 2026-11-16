@@ -68,6 +68,34 @@ def test_arguments_refuse_an_unrecorded_command_or_flag():
         host_contract.arguments("lycaon-debug", "decide replay")
 
 
+def test_a_host_script_is_run_only_with_its_recorded_flags(tmp_path):
+    pipe = "scripts/bialy/custom_model/"
+    assert host_contract.script("/host", pipe + "export.py", ["--model", "/m", "--out", tmp_path, "--resume"]) == [
+        "/host/" + pipe + "export.py", "--model", "/m", "--out", str(tmp_path), "--resume"]
+    with pytest.raises(host_contract.HostContractError, match="host_flag_unrecorded") as refused:
+        host_contract.script("/host", pipe + "gguf_export.py", ["--merge", "/m", "--loader", "/bin/llama-completion"])
+    assert refused.value.missing == [pipe + "gguf_export.py --loader"]
+    with pytest.raises(host_contract.HostContractError, match="host_script_unrecorded"):
+        host_contract.script("/host", pipe + "prepare.py", [])
+
+
+def test_every_student_trainer_flag_is_recorded():
+    from bialy.student_host.specification import arguments, load, students
+    for student in students():
+        for options in ({}, {"pilot": True}, {"resume": True}, {"dry_run": True}):
+            host_contract.script("/host", "scripts/bialy/custom_model/train.py",
+                                 arguments(load(), student, "/models", "/splits", "/run", "cuda:0", "/mirror", **options))
+
+
+def test_a_missing_host_script_fails_verification(tmp_path):
+    checkout = tmp_path / "host"
+    shutil.copytree(CHECKOUT, checkout)
+    (checkout / "scripts/bialy/custom_model/base_checkpoint.py").unlink()
+    with pytest.raises(host_contract.HostContractError, match="host_contract_drift") as refused:
+        host_contract.verify(checkout)
+    assert refused.value.missing == ["script scripts/bialy/custom_model/base_checkpoint.py"]
+
+
 def test_the_record_holds_against_the_host_checkout():
     record = host_contract.verify(CHECKOUT)
     declared = host_contract.declared(CHECKOUT)
@@ -90,6 +118,11 @@ def edit(path, old, new):
     ("lycaon/cmd/lycaon-debug/decide.go", '"pw-request-row/1"', '"pw-request-row/2"', "schema pw-request-row/1"),
     ("lycaon/config/packs/painted-wolf/plan/workflows/plan/workflow.yaml", "version: 1.0.1", "version: 1.0.2",
      "workflow plan@1.0.1 (the checkout serves 1.0.2 live)"),
+    ("scripts/bialy/custom_model/train.py", '"--accumulation"', '"--gradient-accumulation"',
+     "flag scripts/bialy/custom_model/train.py --accumulation"),
+    ("scripts/bialy/custom_model/gguf_export.py", '"server"', '"loader"', "flag scripts/bialy/custom_model/gguf_export.py --server"),
+    ("scripts/bialy/custom_model/serving_check.py", '"--revision"', '"--commit"', "flag scripts/bialy/custom_model/serving_check.py --revision"),
+    ("scripts/generation/convert_mlx.py", '"--source-sha256"', '"--pin"', "flag scripts/generation/convert_mlx.py --source-sha256"),
 ])
 def test_a_checkout_that_stopped_declaring_a_recorded_name_fails_verification(tmp_path, path, old, new, missing):
     checkout = tmp_path / "host"

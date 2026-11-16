@@ -74,7 +74,7 @@ def bootstrap(remote, configuration, workspace, student, directory):
     remote.command(['git', '-C', llama, 'checkout', '--detach', configuration['llama_commit']])
     remote.command(['cmake', '-S', llama, '-B', llama + '/build', '-DGGML_CUDA=OFF', '-DLLAMA_CURL=OFF',
                     '-DCMAKE_BUILD_TYPE=Release'], timeout=1800)
-    remote.command(['cmake', '--build', llama + '/build', '--target', 'llama-quantize', 'llama-completion',
+    remote.command(['cmake', '--build', llama + '/build', '--target', 'llama-quantize', 'llama-server',
                     '--parallel'], timeout=3600)
     remote.command([*uv, 'tool', 'install', 'huggingface_hub==2.2.0'])
     remote.command([*uv, 'run', '--project', workspace + '/bialy', '--locked',
@@ -122,6 +122,7 @@ def export_remotely(remote, configuration, workspace, remote_directory, destinat
         raise JobError('remote export failed with status %d' % observation['exit'])
     job = destination / 'job'
     remote.receive(remote_directory + '/merged/manifest.json', job / 'merged')
+    remote.receive(remote_directory + '/merged/' + exporting.REFERENCE, job / 'merged')
     remote.receive(remote_directory + '/gguf/', job / 'gguf', exclude=(exporting.UNQUANTIZED,), timeout=7200)
     remote.receive(remote_directory + '/mlx/', job / 'mlx', timeout=7200)
     remote.receive(remote_directory + '/lora_adapter/', job / 'lora_adapter')

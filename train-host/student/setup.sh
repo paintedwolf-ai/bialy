@@ -23,7 +23,7 @@ fi
 git -C "$LLAMA" fetch origin "$LLAMA_COMMIT"
 git -C "$LLAMA" checkout --detach "$LLAMA_COMMIT"
 cmake -S "$LLAMA" -B "$LLAMA/build" -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build "$LLAMA/build" --target llama-quantize llama-completion -j"$(nproc)"
+cmake --build "$LLAMA/build" --target llama-quantize llama-server -j"$(nproc)"
 docker pull "$SERVER_IMAGE"
 uv tool install huggingface_hub==2.2.0
 uv run --project "$BIALY_CODE" --locked python -m bialy.student_host models --root "$MODELS"

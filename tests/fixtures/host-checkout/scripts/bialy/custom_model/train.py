@@ -1,0 +1,26 @@
+"""The arguments the host's train.py takes."""
+import argparse
+
+parser = argparse.ArgumentParser()
+for name in ("model", "train", "validation", "holdout", "out"):
+    parser.add_argument("--" + name, required=True)
+parser.add_argument("--checkpoint-every")
+parser.add_argument("--checkpoint-mirror")
+parser.add_argument("--mode")
+parser.add_argument("--device")
+parser.add_argument("--max-length")
+parser.add_argument("--adapted-modules")
+parser.add_argument("--targets")
+parser.add_argument("--rank")
+parser.add_argument("--lora-alpha")
+parser.add_argument("--lora-dropout")
+parser.add_argument("--epochs")
+parser.add_argument("--seed")
+parser.add_argument("--learning-rate")
+parser.add_argument("--warmup-ratio")
+parser.add_argument("--final-learning-rate-ratio")
+parser.add_argument("--accumulation")
+parser.add_argument("--weight-decay")
+parser.add_argument("--max-grad-norm")
+parser.add_argument("--max-updates")
+parser.add_argument("--resume")

@@ -426,8 +426,10 @@ examples or hosted judgments were used in this final control experiment.
 The student host trains and exports every student declared in
 `config/students.json` (E4B, 12B, and 26B-A4B) using the pinned Painted Wolf
 Code trainer. That file is the only student list: it declares each model
-revision and LoRA targets, and one context policy for pilots, full training,
-and serving: 65,536 tokens, thinking disabled, and no token truncation. Adding
+revision, the pinned chat template, one training recipe, and one context policy
+for pilots, full training, and serving: 65,536 tokens, thinking disabled, and no
+token truncation. `docs/running.md` gives the reasoning behind the recipe and
+the machine each tier needs. Adding
 a student is a new entry there; collection, datasets, training, export, and
 evaluation follow it. Student-specific dataset directories
 contain `train.jsonl`, `val.jsonl`, `holdout.jsonl`, and an authenticated
@@ -447,7 +449,9 @@ be clean. SSH credentials come from the deployment environment. Instance provisi
 
 Use `student/machine.example.json` for an existing SSH-accessible machine, or
 `student/provisioned-machine.example.json` (Scaleway) or
-`student/vastai-machine.example.json` (Vast.ai) to rent one. All use the same
+`student/vastai-machine.example.json` (Vast.ai) to rent one. Those two declare an
+80 GB card, which holds E4B; `student/vastai-large-machine.example.json`
+declares a 140 GiB card for 12B and 26B-A4B. All use the same
 remote job protocol. Configure the SSH user, port, key path, workspace, `uv`
 executable, and device. Set `llama_commit` to `LLAMA_COMMIT` from
 `student/pins.env`. Jobs use separate workspace directories.
@@ -469,7 +473,9 @@ released. The host merge loads the base model in float32, so its peak memory is
 about four bytes per parameter: about 96 GiB for 26B-A4B, which fits a rented
 GPU machine's memory but not a workstation's. The one merge yields three
 exports: the Q4_K_M GGUF for Vulkan in `gguf/`, the MLX checkpoint in `mlx/`
-written by the host's converter, and the LoRA adapter in `lora_adapter/`.
+written by the host's converter, and the LoRA adapter in `lora_adapter/`. The
+export serves each GGUF with the pinned `llama-server` build and holds it to
+the merge's behaviour reference before the receipt is written.
 `export_receipt.json` binds each by size, tensor count, quantization and
 SHA-256, and records that both model exports carry the training chat template.
 Those three, the receipt and the merge manifest come back; the merged
