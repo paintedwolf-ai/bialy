@@ -2,7 +2,7 @@
 # after it passes every positive control of that role and accepts no negative one. Each
 # negative is a false success: everything looks finished, and one fact shows it is not. A
 # slot that accepts any negative is disabled for the role; a role with no slot left stops
-# the campaign as reviewers_unqualified. Change `version` with any change below.
+# the campaign as reviewers_unqualified. `version` is part of each role's identity.
 
 version: 2
 

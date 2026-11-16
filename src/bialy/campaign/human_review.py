@@ -7,7 +7,8 @@ that reaches the campaign directory while the controller runs, waits, or is stop
     <queue>/items/<id>.json            written once by the controller
     <queue>/decisions/<id>/<n>.json    decision receipts, appended by the reviewer
     <queue>/revealed/<id>/<episode>    written when the reviewer shows the model reviewers' verdicts
-    <queue>/finished.json              written once by the reviewer; lists the final receipts
+    <queue>/finished.json              written once, by the reviewer or by the gate for an empty queue;
+                                       lists the final receipts
 
 Each episode belongs to at most one item. A skip, and every item without a receipt when its
 queue finishes, keeps the automated verdict. Gates freeze a finished queue's decisions into

@@ -2,7 +2,7 @@
 # a factory host with a CUDA GPU: Bialy's normal two-pass run over this host's
 # half of the workspaces, with the student consuming the engine-on pass only.
 # The other half runs on a CPU host (student-collect-cpu.example.yaml), and the
-# two runs' splits are concatenated for training. Set host_commit to the clean
+# two runs' splits are concatenated for training. host_commit is the clean
 # host commit the runners are built from.
 run:
   lycaon_checkout: ../paintedwolf-code

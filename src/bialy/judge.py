@@ -7,9 +7,9 @@ every other loadable tool card against each request_tools need. Tools a
 session called are not labels on their own: driving models make habitual
 orientation calls, and a head trained on them learns the habit.
 
-Reviewer slots name the models used for scoring. Decoding is greedy with a fixed
-seed, and candidates are shown in an order shuffled per row and unit, recorded on
-the row, so position bias averages out across the set instead of favouring the
+Reviewer slots name the models used for scoring. Decoding is greedy, and
+candidates are shown in an order shuffled by a seed derived from the row and
+unit, so position bias averages out across the set instead of favouring the
 catalog's first cards. A slot labels rows only after it scores the versioned controls
 in config/judge-controls.yaml correctly; another qualified slot judges a sample of rows
 again to report agreement.

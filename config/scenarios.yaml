@@ -16,8 +16,8 @@
 # they scale archetypes, and `run.workspaces` and `run.archetypes` filter by
 # the scenario's workspace and archetype.
 #
-# Vary how a variant is typed, not only its words. A scenario's variants
-# should span several of:
+# Variants differ in how they are typed, not only in their words. A scenario's
+# variants span several of:
 #   - a terse fragment ("ci red again. auth")
 #   - a full paragraph with context
 #   - pasted error or log output with a one-line ask

@@ -1,7 +1,8 @@
 """Train-to-export transitions with checked host parity receipts.
 
-One fp32 merge yields three outputs: the Vulkan GGUF in `gguf/`, the MLX checkpoint in
-`mlx/` and the LoRA adapter in `lora_adapter/`. `export_receipt.json` binds all three to
+An export has three outputs: the Vulkan GGUF in `gguf/` and the MLX checkpoint in `mlx/`,
+both from one fp32 merge, and the trained LoRA adapter in `lora_adapter/`.
+`export_receipt.json` binds all three to
 the template the rows were rendered with and to the merge's behaviour reference, which
 the GGUF was served and held to before the receipt is written.
 """

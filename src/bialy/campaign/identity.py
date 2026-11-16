@@ -11,7 +11,6 @@ from .journal import CampaignFault, digest
 
 KINDS = ("capture_host", "factory", "trainer", "converter", "server", "recipe", "model_template", "scenario", "dataset")
 
-# What each artifact depends on.
 DEPENDS = {
     "capture": ("capture_host", "factory", "scenario", "model_template"),
     "dataset": ("capture_host", "factory", "scenario", "model_template", "dataset"),

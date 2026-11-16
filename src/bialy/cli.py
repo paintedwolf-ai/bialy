@@ -9,14 +9,16 @@
   bialy fleet run --run NAME [--runners N] [--pilot DIR --image NAME]
   bialy fleet replan --run NAME --tasks DIR [--pilot DIR]
   bialy fleet reap --run NAME
+  bialy fleet reexport --run NAME --lycaon-debug BIN
   bialy fleet salvage --run NAME --into NAME --tasks DIR --out DIR
   bialy coderank harvest --decide-rerank BIN --out DIR
   bialy coderank pairs --units DIR --out DIR [--per-repo N --seed N]
   bialy coderank dumps --decide-rerank BIN --units DIR --pairs DIR --ancestry FILE --out DIR
   bialy collect --run NAME --pass NAME --tasks DIR
   bialy judge --corpus FILE --rows FILE --out FILE [--unit skills|tools|requests ...]
-  bialy split --out DIR ROWS...
-  bialy release --split DIR --version V --code-ref REF --out DIR --schema FILE --corpus FILE --driven FILE ...
+  bialy skillreq --corpus FILE --out FILE --writer MODEL [--ancestry FILE | --split NAME]
+  bialy split --ancestry FILE --out DIR ROWS...
+  bialy release --split DIR --version V --code-ref REF --out DIR --schema FILE --corpus FILE --ancestry FILE --driven FILE ...
                    [--agreement FILE ...] [--coderank DIR] [--stage FILE ...] [--stopping TEXT]
   bialy release-heads --selector DIR --version V --dataset-version V --engine-commit SHA --out DIR
   bialy publish dataset|heads --release DIR --version V [--push]
@@ -28,6 +30,7 @@
   bialy run --run NAME [--until STAGE] [--from STAGE] [--redo STAGE ...] [--dry-run] [--push] [--rebuild-image]
             [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
   bialy run-status --run NAME
+  bialy run-faults --run NAME
   bialy review [--run DIR] [open|status|show ITEM|skip ITEM|finish QUEUE|wait]
   bialy campaign plan --config FILE --out NEW_DIR
   bialy campaign run --plan DIR

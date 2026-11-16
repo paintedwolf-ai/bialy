@@ -2,7 +2,8 @@
 
 A server takes requests only after the host's rendering check passed against it: it
 serves the training chat template, renders the host's conversation fixtures into the
-prompts training rendered, and reports a build of the pinned llama.cpp revision. Both arms of a comparison pass the same check.
+prompts training rendered, and reports a build of the pinned llama.cpp revision. Both
+arms of a comparison pass the same check.
 """
 import contextlib
 import json

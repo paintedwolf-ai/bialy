@@ -88,7 +88,8 @@ def witnessed(task, oracle):
 
 
 def admit(candidates, episode, task, oracle):
-    """Admission records for one episode's candidates, in the order their turns settled."""
+    """Admission records for one episode's candidates: those the host excluded, then the
+    rest in the order their turns settled."""
     facts = Episode(episode)
     witness = witnessed(task, oracle)
     built = [item for item in candidates if not item.get('host_exclusion')]

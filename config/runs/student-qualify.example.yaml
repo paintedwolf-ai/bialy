@@ -1,6 +1,6 @@
 # The `run:` section of config/factory.yaml for a student qualification pass:
 # one task of every archetype on one repository and one held-out stack, driven
-# with released heads. Set host_commit to the clean host commit the runners are
+# with released heads. host_commit is the clean host commit the runners are
 # built from.
 run:
   lycaon_checkout: ../paintedwolf-code

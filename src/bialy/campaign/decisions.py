@@ -4,9 +4,9 @@ A tier is published only when its export receipt still binds its files, its MLX 
 Vulkan bundles each carry a load probe the host's native runtime wrote for this export,
 and its outcome under the frozen evaluation policy is a pass. A probe counts by what it
 binds: the export receipt, the bundle's artifact, the behaviour reference, the host
-commit the tier was trained on and the device it ran on, and tokens that stay inside
-the reference's tolerance. Every other tier is recorded unpublished with the conditions
-it missed.
+commit the tier was trained on and the device it ran on, and tokens that agree with
+the reference within the probe's stated tolerance. Every other tier is recorded
+unpublished with the conditions it missed.
 """
 import json
 import re
@@ -131,7 +131,8 @@ def decide(run_directory, probes, decided_by, clock=None):
 
 def record(run_directory, ledger_directory, campaign, publications):
     """The release ledger entry: each published tier's bundle revisions and manifest digests,
-    and each unpublished tier with the conditions it missed. Only decided tiers may appear."""
+    and each unpublished tier with the conditions it missed. Bundles given for an
+    unpublished tier are refused."""
     decision = json.loads((Path(run_directory) / 'decision.json').read_text())
     published, unpublished = {}, {}
     for student, tier in decision['tiers'].items():

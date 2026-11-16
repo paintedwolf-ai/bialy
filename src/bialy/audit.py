@@ -3,8 +3,8 @@
 Everything a release claims is recomputed from the files it ships:
 
 - every row matches the row schema the release carries (`row.schema.json`)
-- every statistic on the card and in PROVENANCE.json (rows, hosts, languages,
-  prompt groups per split) is recounted from the rows
+- every statistic in PROVENANCE.json (rows, hosts, languages, prompt groups per
+  split) and every row count on the card is recounted from the rows
 - the split does not leak: no prompt group on two sides, and every held-out
   workspace (a repository or a greenfield stack) only in the test split
 - the judge agreement is recomputed from the second-judge sample it ships
@@ -90,7 +90,7 @@ def validate_schema(release, rows_by_split):
 
 
 def check_task_meta(rows_by_split):
-    """Every row names its task, repository, and prompt group, which the leakage check groups by."""
+    """Every row names its task, workspace, and prompt group, which the leakage check groups by."""
     for split, rows in rows_by_split.items():
         for n, row in enumerate(rows, 1):
             meta = row.get("meta") or {}
@@ -196,8 +196,8 @@ METRICS = (("tools", "precision"), ("tools", "recall"), ("tools", "f1"))
 
 
 def heads(release, dataset_release, lycaon, engine_bin, model, tolerance=0.01):
-    """Replay the released heads over the dataset's held-out split and compare every
-    headline metric with the held-out report the heads release ships.
+    """Replay the released heads over the dataset's held-out split and compare the tools
+    precision, recall and F1 with the held-out report the heads release ships.
 
     The engine is started as the release was measured: the release's own catalog gives
     the thresholds and the head budget. `engine_bin` is a `bialy` built from `lycaon`, a

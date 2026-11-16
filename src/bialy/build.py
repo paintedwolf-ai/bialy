@@ -4,7 +4,8 @@ engine-on pass carries.
 
 Go builds run with the host's Go when it has one, otherwise inside the Go image
 of the toolchain the checkout's go.mod names, with the checkout mounted at its
-own path, so the same commands and relative paths hold either way. The runner platform is linux/amd64.
+own path, so the same commands and relative paths hold either way. The runner
+platform is linux/amd64.
 """
 import hashlib
 import json
@@ -93,10 +94,11 @@ SCANNER_IDENTITY_SYMBOL = "github.com/lycaon/lycaon/internal/scan/bundled.buildI
 
 
 def binaries(checkout, out_dir, cache_root, goos=RUNNER_GOOS, goarch=RUNNER_GOARCH, scanner_identity=None):
-    """lycaon, lycaon-debug, and decide-rerank for one platform, with BUILD.json. They carry
-    the checkout's version and, with a pinned scanner, its build identity, as the checkout's
-    own builds stamp them: a binary without the identity gives its bundled scanner no engine
-    byte identity, and the host refuses every scan."""
+    """lycaon, lycaon-debug, decide-rerank and the document helper for one platform, with
+    BUILD.json. The three host binaries carry the checkout's version and, with a pinned
+    scanner, its build identity, as the checkout's own builds stamp them: a binary without
+    the identity gives its bundled scanner no engine byte identity, and the host refuses
+    every scan."""
     checkout, out_dir = Path(checkout).resolve(), Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     version = (checkout / "VERSION").read_text(encoding="utf-8").strip() if (checkout / "VERSION").exists() else ""

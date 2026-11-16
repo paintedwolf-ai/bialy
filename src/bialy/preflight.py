@@ -70,7 +70,7 @@ def run_phase(run, pass_name, phase, pilot):
     name, work, args = fleet.container_args(run.factory, directory.name, shard, mounts, run.image(pass_name))
     fleet.Ledger(directory).append(event="start", container=name, shard=phase)
     try:
-        # Host stderr may contain identifying paths; keep it only in this private run.
+        # Host stderr may contain identifying paths; it stays in this private run.
         with (shard / "docker.log").open("w") as log:
             result = subprocess.run(args, stdout=log, stderr=log, timeout=int(run.setting("preflight")["timeout_seconds"]))
         report = json.loads((shard / "preflight.json").read_text()) if (shard / "preflight.json").exists() else {}

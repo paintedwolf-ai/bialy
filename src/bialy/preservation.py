@@ -21,7 +21,7 @@ RECORD = "store.json"
 FAULT = "store-fault.json"
 SCHEMA = "bialy-store-snapshot/1"
 ATTEMPTS = "attempts"
-# Bytes 18 and 19 of a SQLite header are the read and write versions: 1 for rollback
+# Bytes 18 and 19 of a SQLite header are the write and read versions: 1 for rollback
 # journal mode, 2 for WAL. A WAL-mode file is not self-contained once copied.
 ROLLBACK_HEADER = b"\x01\x01"
 CONTAINER_STORE = "/cfg/store.db"

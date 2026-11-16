@@ -1,6 +1,6 @@
 # The `run:` section of config/factory.yaml for the command-surface collection on
 # a factory host without a usable GPU: the other half of the workspaces, with
-# heads trained on the CPU. Use the same host_commit as the GPU host's run.
+# heads trained on the CPU. host_commit is the same as the GPU host's run.
 run:
   lycaon_checkout: ../paintedwolf-code
   generators: [deepseek-v4.1-flash]

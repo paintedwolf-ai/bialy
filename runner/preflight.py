@@ -1,4 +1,5 @@
-"""Runner-local probes and a free OpenAI-compatible capture fixture."""
+"""Runner-local probes and an OpenAI-compatible capture fixture. The fixture answers
+every request itself except one compaction summary, which it forwards upstream."""
 
 import json
 import os
