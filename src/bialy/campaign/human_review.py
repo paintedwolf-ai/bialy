@@ -260,14 +260,14 @@ class CollectionGate(Gate):
     def episodes(self, inputs):
         return [episode['episode_sha256'] for episode in inputs['collection']['episodes']]
 
-    def offer_episode(self, episode, trial, task):
+    def offer_episode(self, episode, trial, task, partition):
         """Queue an exported collection episode whose label could change the dataset."""
         self.review.open(self.name, self.kind)
         kind = {'pass': 'spot_check', 'split': 'split'}.get(reviewed(trial))
         if kind is None or episode['exports'] is None:
             return None
         rows = min(exported['rows'] for exported in episode['exports'].values())
-        summary = {'task_id': task['id'], 'family': task['family'], 'partition': task['partition'],
+        summary = {'task_id': task['id'], 'family': task['family'], 'partition': partition,
                    'repetition': episode['repetition'], 'rows': rows, 'prompt': task['prompt']}
         return self.review.offer(self.name, kind, [subject(episode['stage'], trial, None)], [], summary, rows)
 

@@ -353,6 +353,10 @@ def load():
     replicas, tunnels = local_deployment()
     out = Factory(root=Path(factory["root"]), network=factory["network"], fleet=factory["fleet"],
                   split=factory["split"], judge=factory["judge"], run=run_settings(factory.get("run")))
+    fractions = out.split.get("fractions") or {}
+    if set(out.split) != {"seed", "fractions"} or set(fractions) - {"train", "validation", "development", "system_test"} \
+            or abs(sum(float(v) for v in fractions.values()) - 1.0) > 1e-9:
+        raise ConfigError("split: a seed and fractions of train, validation, development and system_test summing to 1")
     # Docker gives every runner an address on the bridge; beyond the subnet, runs fail to start.
     hosts = ipaddress.ip_network(out.network["subnet"]).num_addresses - 3
     if int(out.fleet["runners"]) > hosts:

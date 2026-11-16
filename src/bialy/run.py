@@ -43,8 +43,9 @@ from . import (
     tasks,
     training,
 )
+from .campaign import ancestry
 
-STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
+STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "ancestry", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
           "judge_skillreq", "split_pilot", "train_pilot", "engine", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on",
           "split", "custom_model", "coderank", "release", "train", "evaluate", "release_heads", "report")
 ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on")
@@ -386,22 +387,47 @@ def judging_off(run):
     return not run.setting("judge", {}).get("enabled", True)
 
 
-def stage_skillreq(run):
-    """Requests for every skill, written by the writer model; the judges label them later."""
+def skillreq_plan(run):
+    """The skill-request families this run writes, or None when no recipe needs them."""
     if "E4" not in recipes(run):
-        return {"skipped": "E4 is not in run.train.recipes; skill requests are only for the unit-rank head"}
+        return None
     settings = run.setting("skillreq", {})
-    out = run.path("skillreq", "requests.jsonl")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    writer = writer_model(run)
     families = {k: int(v) for k, v in settings["families"].items()}
     cap = run.setting("task_cap")
     if cap:
         families = {k: min(v, 1) for k, v in families.items()}
     none_families = min(int(settings["none_families"]), 2) if cap else int(settings["none_families"])
+    return families, none_families
+
+
+def stage_ancestry(run):
+    """Every task and skill-request family the run will generate, joined by shared
+    ancestry and allocated to its partitions before anything is driven or written."""
+    planned = skillreq_plan(run)
+    families = skillreq.family_nodes(scaled_factory(run), corpus(run), *planned, int(run.setting("seed", 7)),
+                                     workspaces=tuple(run.setting("workspaces") or ())) if planned else []
+    assignment = split.assign(run.factory, split.read_tasks(run.path("tasks")), families)
+    assignment.save(run.path("ancestry.json"))
+    return {"ancestry": str(run.path("ancestry.json")), "sha256": assignment.sha256, "components": assignment.counts()}
+
+
+def ancestry_of(run):
+    return ancestry.load(run.path("ancestry.json"))
+
+
+def stage_skillreq(run):
+    """Requests for every skill, written by the writer model; the judges label them later."""
+    planned = skillreq_plan(run)
+    if planned is None:
+        return {"skipped": "E4 is not in run.train.recipes; skill requests are only for the unit-rank head"}
+    families, none_families = planned
+    settings = run.setting("skillreq", {})
+    out = run.path("skillreq", "requests.jsonl")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    writer = writer_model(run)
     report = skillreq.write(scaled_factory(run), corpus(run), out, writer.id, families, none_families, int(settings["per_family"]),
                             seed=int(run.setting("seed", 7)), workers=int(run.setting("workers", 16)),
-                            workspaces=tuple(run.setting("workspaces") or ()))
+                            workspaces=tuple(run.setting("workspaces") or ()), assignment=ancestry_of(run))
     provenance.record(run.factory, str(out) + ".provenance.json", "skillreq", uses_engine=False, writer=writer.id, families=families,
                       none_families=none_families, per_family=int(settings["per_family"]), seed=int(run.setting("seed", 7)),
                       corpus_revision=corpus(run)["catalog_revision"])
@@ -558,11 +584,13 @@ def engine_on_or_skip(run):
 
 
 def split_rows(run, out_dir, judged, retention_rows):
-    """The judged rows split into out_dir, and the retention rows split by the same
-    groups into out_dir/retention when any pass wrote them."""
-    out = {"split": str(out_dir), "counts": split.split(run.factory, [str(p) for p in judged], out_dir), "passes": len(judged)}
+    """The judged rows split into out_dir by the run's ancestry, and the retention rows
+    split the same way into out_dir/retention when any pass wrote them."""
+    assignment = ancestry_of(run)
+    out = {"split": str(out_dir), "ancestry": assignment.sha256, "counts": split.split(assignment, [str(p) for p in judged], out_dir),
+           "passes": len(judged)}
     if retention_rows:
-        out["retention"] = split.split(run.factory, [str(p) for p in retention_rows], out_dir / "retention")
+        out["retention"] = split.split(assignment, [str(p) for p in retention_rows], out_dir / "retention")
     return out
 
 
@@ -655,7 +683,6 @@ def stage_compare(run):
 
 
 def stage_split(run):
-    # The same seed and groups, so a request's retention row lands beside its turn rows.
     return split_rows(run, run.path("split"), judged_files(run), retention_files(run))
 
 
@@ -707,7 +734,7 @@ def stage_release(run):
     pairs = run.path("coderank", "pairs")
     retention = run.path("split", "retention")
     release.build(run.factory, run.path("split"), version, out, run.checkout / "scripts/bialy/row.schema.json", run.path("corpus.json"),
-                  run.setting("code_ref", "HEAD"), agreement=agreement, stages=[str(p) for p in stages], driven=[str(p) for p in driven],
+                  run.setting("code_ref", "HEAD"), run.path("ancestry.json"), agreement=agreement, stages=[str(p) for p in stages], driven=[str(p) for p in driven],
                   coderank=str(pairs) if pairs.exists() else None, stopping=run.setting("stopping", ""),
                   retention=retention if retention.exists() else None, retention_schema=run.checkout / "scripts/bialy/retention-row.schema.json")
     return {"release": str(out), "version": version, "anchor": str(anchor.path("dataset", version))}
@@ -723,8 +750,8 @@ def train_heads(run, split_dir, heads_dir, label):
     inputs = {"corpus": run.path("corpus.json"),
               "independent_corpus": training.independent_corpus(run.checkout, run.path("corpus.json"), run.path("independent-corpus.json")),
               "train": split_dir / "train.jsonl", "val": split_dir / "val.jsonl",
-              "skillreq_train": judged_skillreq if judged_skillreq.exists() else None,
-              "skillreq_eval": training.skillreq_eval(judged_skillreq, run.path("skillreq", "eval.jsonl")) if judged_skillreq.exists() else None,
+              "skillreq_train": training.skillreq_partition(judged_skillreq, "train", run.path("skillreq", "train.jsonl")) if judged_skillreq.exists() else None,
+              "skillreq_eval": training.skillreq_partition(judged_skillreq, "validation", run.path("skillreq", "validation.jsonl")) if judged_skillreq.exists() else None,
               "dumps": run.path("coderank", "dumps") if run.path("coderank", "dumps").exists() else None,
               "retention_train": split_dir / "retention" / "train.jsonl", "retention_val": split_dir / "retention" / "val.jsonl"}
     budget = float(settings.get("max_hours", 24)) * 3600

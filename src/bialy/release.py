@@ -24,6 +24,7 @@ configs:
     data_files:
       - {{split: train, path: train.jsonl}}
       - {{split: validation, path: val.jsonl}}
+      - {{split: development, path: development.jsonl}}
       - {{split: test, path: holdout.jsonl}}
 ---
 
@@ -124,7 +125,7 @@ def recipe(stages):
     }
 
 
-def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreement=(), stages=(), driven=(), coderank=None,
+def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, ancestry, agreement=(), stages=(), driven=(), coderank=None,
           stopping="", retention=None, retention_schema=None):
     """A dataset release: the splits, the row schema and corpus they are read with, the
     second-judge sample, the code-rank pairs, the retention rows when the sessions wrote
@@ -140,6 +141,7 @@ def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreem
         splits.append("- `%s`: %d rows (%s)" % (name, stats[split]["rows"], ", ".join("%s %d" % kv for kv in stats[split]["hosts"].items())))
     shutil.copy2(schema, out_dir / "row.schema.json")
     shutil.copy2(corpus, out_dir / "corpus.json")
+    shutil.copy2(ancestry, out_dir / "ancestry.json")
     retention_stats = {}
     if retention and retention_schema:
         # Retention rows split by the same groups; a split a run wrote no rows for is absent.
@@ -176,6 +178,7 @@ def build(factory, split_dir, version, out_dir, schema, corpus, code_ref, agreem
         "stopping": stopping or None,
         "row_schema_sha256": file_sha256(out_dir / "row.schema.json"),
         "corpus_revision": json.loads((out_dir / "corpus.json").read_text(encoding="utf-8")).get("catalog_revision"),
+        "ancestry_sha256": json.loads((out_dir / "ancestry.json").read_text(encoding="utf-8"))["assignment_sha256"],
     }
     provenance["recipe"] = recipe([json.loads(Path(p).read_text(encoding="utf-8")) for p in stages])
     (out_dir / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")

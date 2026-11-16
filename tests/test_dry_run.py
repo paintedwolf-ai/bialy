@@ -8,7 +8,7 @@ from bialy.campaign.dry_run_data import import_evidence, qualified, read_source
 from bialy.campaign.episodes import Episodes
 from bialy.campaign.journal import CampaignFault, Journal, canonical
 from bialy.campaign.lineage import Lineage
-from bialy.campaign.pilot_bank import build
+from bialy.campaign.pilot_bank import assignment, build
 from bialy.student_host.select_rows import select
 from bialy.student_host.specification import arguments, load
 
@@ -39,7 +39,8 @@ def test_dry_run_pauses_after_one_update_and_resumes_without_that_bound():
 
 def prepare_evidence(journal, bank):
     lineage = Lineage(journal)
-    lineage.roots(build(bank))
+    tasks = build(bank)
+    lineage.roots(tasks, assignment(tasks, 'seed'))
     lineage.freeze()
     Episodes(journal, lineage)
     journal.db.execute('CREATE TABLE judge_controls(identity TEXT PRIMARY KEY, receipt TEXT NOT NULL)')
@@ -50,7 +51,8 @@ def prepare_evidence(journal, bank):
 def test_source_evidence_is_copied_without_rewriting_parent_or_terminal_failure(tmp_path):
     parent = Journal(tmp_path / 'parent', {})
     lineage = prepare_evidence(parent, tmp_path / 'bank')
-    lineage.bind_session('epoch', 'session', 'train-structured_closeout')
+    closeout = lineage.db.execute("SELECT id FROM tasks WHERE partition='train' AND family='structured_closeout'").fetchone()[0]
+    lineage.bind_session('epoch', 'session', closeout)
     stage = parent.begin('dataset_pilot', {})
     parent.settle('dataset_pilot', stage['attempt'], 'passed', output={'qualified': True})
     stage = parent.begin('pilot_e4b', {})
@@ -60,13 +62,13 @@ def test_source_evidence_is_copied_without_rewriting_parent_or_terminal_failure(
     child = Journal(tmp_path / 'child', {})
     prepare_evidence(child, tmp_path / 'child-bank')
     copied = import_evidence(child, tmp_path / 'parent')
-    assert copied.session_task('epoch', 'session')['id'] == 'train-structured_closeout'
+    assert copied.session_task('epoch', 'session')['id'] == closeout
     assert (tmp_path / 'parent/campaign.sqlite').read_bytes() == original
     with read_source(tmp_path / 'parent') as source:
         assert qualified(source, 'dataset_pilot') == {'qualified': True}
         with pytest.raises(CampaignFault, match='source_stage_unqualified'):
             qualified(source, 'pilot_e4b')
-    child.db.execute("UPDATE tasks SET spec='changed' WHERE id='train-structured_closeout'")
+    child.db.execute("UPDATE tasks SET spec='changed' WHERE id=?", (closeout,))
     child.db.commit()
     with pytest.raises(CampaignFault, match='source_evidence_changed'):
         import_evidence(child, tmp_path / 'parent')

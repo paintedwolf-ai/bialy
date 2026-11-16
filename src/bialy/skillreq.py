@@ -11,8 +11,9 @@ model drafts requests for every skill in families of four kinds:
 
 No request names any skill; the judges then score every skill card against
 each request (`bialy judge --unit skills`), so a label never comes from the
-writer's intent. A family is one writer call, and whole families go to
-training or evaluation, so paraphrases never cross the split.
+writer's intent. A family is one writer call and one node of the run's ancestry
+(split.graph), joined to the repository it is set in, so paraphrases and requests
+about one codebase never cross a partition.
 """
 
 import concurrent.futures
@@ -108,10 +109,24 @@ def plan(factory, skills, families, none_families, seed, only=(), workspaces=())
     return out
 
 
-def write(factory, corpus, out_path, writer, families, none_families, per_family, seed=7, eval_fraction=0.2, only=(), workers=16,
-          workspaces=(), split=None, offered=None):
-    """Write the families to `out_path` as rows, each with meta.split train or eval, or all
-    with `split` (an acceptance set written after the selection rules were fixed)."""
+def family_nodes(factory, corpus, families, none_families, seed, only=(), workspaces=()):
+    """Every family the plan writes, as (ancestry node, workspace name)."""
+    skills = {s["name"]: s for s in corpus["skills"]}
+    return [(family_node(family_id(seed, name or "none", kind, n)), workspace.name)
+            for name, kind, _, n, workspace, _, _ in plan(factory, skills, families, none_families, seed, only, workspaces)]
+
+
+def family_node(fam):
+    return "family:" + fam
+
+
+def write(factory, corpus, out_path, writer, families, none_families, per_family, seed=7, only=(), workers=16,
+          workspaces=(), assignment=None, split=None, offered=None):
+    """Write the families to `out_path` as rows, each with meta.split the partition its
+    family holds in the run's ancestry `assignment`, or all with `split` (an acceptance
+    set written after the selection rules were fixed)."""
+    if (assignment is None) == (split is None):
+        raise ValueError("give the run's ancestry assignment or one explicit split")
     skills = {s["name"]: s for s in corpus["skills"]}
     model = next(m for m in factory.models if m.id == writer)
     chat = factory.chats(model)[0]
@@ -120,13 +135,13 @@ def write(factory, corpus, out_path, writer, families, none_families, per_family
     def work(job):
         name, kind, other, n, workspace, lang, register = job
         fam = family_id(seed, name or "none", kind, n)
+        chosen = split or assignment.partition(family_node(fam))
         language = "Write in %s." % LANGUAGE_NAMES[lang] if lang != "en" else "Write in English."
         user = "The developer works in %s. Style: %s.\n%s\n%s" % (
             workspace.describe(), register, brief(kind, skills.get(name), skills.get(other), per_family), language)
         value = chat.json(SYSTEM, user, temperature=0.9, seed=int(fam[:8], 16), thinking=False, max_tokens=4096, schema=REPLY_SCHEMA)
         requests = [clean(r) for r in (value.get("requests") or []) if isinstance(r, str) and 12 <= len(r.strip()) <= 1500]
         requests = [r for r in requests if not any(names_skill(r, n) for n in skills)]
-        chosen = split or ("eval" if int(fam[8:12], 16) / 0xFFFF < eval_fraction else "train")
         meta = {"skill": name or None, "other": other or None, "kind": kind, "split": chosen, "writer": writer}
         return [row(r, fam, i, writer, workspace, lang, corpus["catalog_revision"], meta, offered) for i, r in enumerate(requests)]
 
@@ -143,5 +158,7 @@ def write(factory, corpus, out_path, writer, families, none_families, per_family
     kinds = {}
     for r in rows:
         kinds[r["meta"]["kind"]] = kinds.get(r["meta"]["kind"], 0) + 1
-    return {"rows": len(rows), "families": len(jobs), "failed": failures, "kinds": kinds,
-            "eval_rows": sum(1 for r in rows if r["meta"]["split"] == "eval")}
+    splits = {}
+    for r in rows:
+        splits[r["meta"]["split"]] = splits.get(r["meta"]["split"], 0) + 1
+    return {"rows": len(rows), "families": len(jobs), "failed": failures, "kinds": kinds, "splits": dict(sorted(splits.items()))}
