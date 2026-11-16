@@ -1,0 +1,1119 @@
+# The campaign scenario bank. A group is one situation a developer is in; its
+# variants differ only in the parameters substituted for $names, and they always
+# share a partition. Every group carries:
+#   prompt       the request as a developer would type it; it never names a host tool
+#   fixtures     files seeded into the workspace before the episode
+#   grader       Python run on a copy of the delivered source, outside the workspace,
+#                with host evidence beside it (grader_support); an exception fails it
+#   verification whether the grader also requires a passed host verification of the
+#                delivered source (default true)
+#   solution     files a correct episode ends with; mutation tests require it to pass
+#   superficial  a change that satisfies the visible example but not the task
+#   tampered     changed workspace tests that go green without the fix
+#   diagnostic   an expected failure the episode must reproduce before changing code;
+#                the task gains a witness check the training rows admit it against
+# Mutation tests refuse the unchanged fixtures, every superficial and tampered
+# change, and a correct solution without verification where it is required.
+
+quotas:
+  variants_per_group: 4
+  pilot:
+    fractions: {train: 1.0}
+    minimums: {train: 1, validation: 1, development: 1, system_test: 1}
+  full:
+    fractions: {train: 0.7, validation: 0.1, development: 0.1, system_test: 0.1}
+    minimums: {train: 10, validation: 1, development: 1, system_test: 3}
+
+focuses:
+  - id: implementation_investigation
+    summary: Read the code and its callers, find the cause, fix it with boundary tests.
+  - id: failure_diagnosis
+    summary: A documented command or path fails; find what is actually wrong before changing code.
+  - id: interactive_work
+    summary: Drive a program that needs a live terminal, answering its prompts.
+  - id: build_test_repair
+    summary: Make a failing test suite pass by fixing the code, never the tests.
+  - id: partial_effect_recovery
+    summary: A step failed after changing something; inspect what it did and finish without repeating it.
+  - id: capability_recovery
+    summary: The task needs a capability the turn does not start with; find it and use it.
+  - id: sustained_work
+    summary: A task extended over several requests whose earlier requirements must all survive.
+  - id: evidence_closeout
+    summary: Make an exact change, verify it, and report only what was changed and checked.
+
+groups:
+  # Implementation investigation
+  - id: pricing-threshold
+    focus: implementation_investigation
+    workspace: python-cli
+    prompt: >-
+      Inspect pricing.py and its callers. Orders at or above the documented threshold should get the
+      discount but some don't. Fix it, add boundary tests, run them, and explain the cause.
+    fixtures:
+      pricing.py: |
+        # Orders of THRESHOLD units or more are charged the discounted rate of 2.
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * (2 if n > THRESHOLD else 3)
+      app.py: |
+        from pricing import charge
+        print(charge(4))
+    grader: |
+      from pricing import charge
+      assert charge($threshold - 1) == ($threshold - 1) * 3
+      assert charge($threshold) == $threshold * 2
+      assert charge($threshold + 1) == ($threshold + 1) * 2
+    solution:
+      pricing.py: |
+        # Orders of THRESHOLD units or more are charged the discounted rate of 2.
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * (2 if n >= THRESHOLD else 3)
+    superficial:
+      pricing.py: |
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * 2
+    variants: [{threshold: 5}, {threshold: 8}]
+
+  - id: shipping-weight-rounding
+    focus: implementation_investigation
+    workspace: python-cli
+    prompt: >-
+      Customers say a 2.1 kg parcel is being charged like a 2 kg one. Our policy is that any started
+      kilogram is charged in full. Find where shipping is priced, fix it and cover the edges with tests.
+    fixtures:
+      shipping.py: |
+        RATE = $rate
+        def cost(weight):
+            return int(weight) * RATE
+    grader: |
+      from shipping import cost
+      assert cost(0) == 0
+      assert cost(2.0) == 2 * $rate
+      assert cost(2.1) == 3 * $rate
+      assert cost(0.4) == $rate
+    solution:
+      shipping.py: |
+        import math
+        RATE = $rate
+        def cost(weight):
+            return math.ceil(weight) * RATE
+    superficial:
+      shipping.py: |
+        RATE = $rate
+        def cost(weight):
+            return (int(weight) + 1) * RATE
+    variants: [{rate: 4}, {rate: 7}]
+
+  - id: slug-separators
+    focus: implementation_investigation
+    workspace: python-cli
+    prompt: >-
+      URLs generated for titles like "$word  draft__v2" come out with odd characters. Look at how slugs
+      are built, make every run of punctuation or whitespace a single dash with none at the ends, and
+      add tests.
+    fixtures:
+      slugs.py: |
+        def slugify(title):
+            return title.lower().replace(' ', '-')
+    grader: |
+      from slugs import slugify
+      assert slugify("$word  draft__v2") == "$word-draft-v2".lower()
+      assert slugify("--$word--") == "$word".lower()
+      assert slugify("a.b c") == "a-b-c"
+    solution:
+      slugs.py: |
+        import re
+        def slugify(title):
+            return re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    superficial:
+      slugs.py: |
+        def slugify(title):
+            return '-'.join(title.lower().split())
+    variants: [{word: Report}, {word: Ledger}]
+
+  - id: retry-backoff-cap
+    focus: implementation_investigation
+    workspace: python-cli
+    prompt: >-
+      Our client sometimes waits minutes between retries. The retry delays are supposed to double
+      from the base but never exceed the configured cap of $cap seconds. Track down why and fix it with tests.
+    fixtures:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            return [base * 2 ** n for n in range(attempts)]
+    grader: |
+      from retry import delays
+      expected = [min(2 ** n, $cap) for n in range(8)]
+      assert delays(8) == expected
+      assert delays(3, base=2) == [min(2 * 2 ** n, $cap) for n in range(3)]
+      assert delays(0) == []
+    solution:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            return [min(base * 2 ** n, CAP) for n in range(attempts)]
+    superficial:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            values = [base * 2 ** n for n in range(attempts)]
+            return values[:-1] + [CAP] if values else values
+    variants: [{cap: 10}, {cap: 30}]
+
+  # Failure diagnosis
+  - id: documented-verify-missing
+    focus: failure_diagnosis
+    workspace: python-cli
+    prompt: >-
+      The documented verification command is python3 verify.py. Try it, investigate any failure, find
+      the checks that actually exist, and fix compute(n) to return n + $offset. Report the verification
+      command that worked.
+    fixtures:
+      value.py: |
+        def compute(n):
+            return n
+      checks/check.py: |
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from value import compute
+        assert compute(3) == 3 + $offset
+    grader: |
+      from value import compute
+      assert compute(3) == 3 + $offset
+      assert compute(0) == $offset
+      assert compute(-2) == $offset - 2
+    solution:
+      value.py: |
+        def compute(n):
+            return n + $offset
+    superficial:
+      value.py: |
+        def compute(n):
+            return 3 + $offset
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{offset: 6}, {offset: 10}]
+
+  - id: renamed-formatter-import
+    focus: failure_diagnosis
+    workspace: python-cli
+    prompt: >-
+      python3 report.py crashes on startup since the formatting module was tidied up. Work out what
+      broke and get the report working again without changing what fmt.py offers.
+    fixtures:
+      fmt.py: |
+        def format_amount(value):
+            return '$currency' + format(value, ',.2f')
+      report.py: |
+        from fmt import format_total
+        def render(values):
+            return ', '.join(format_total(value) for value in values)
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    grader: |
+      import fmt
+      from report import render
+      assert hasattr(fmt, 'format_amount')
+      assert render([1, 2.5]) == '$currency' + '1.00, ' + '$currency' + '2.50'
+      assert render([1234]) == '$currency' + '1,234.00'
+    verification: false
+    solution:
+      report.py: |
+        from fmt import format_amount
+        def render(values):
+            return ', '.join(format_amount(value) for value in values)
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    superficial:
+      report.py: |
+        def render(values):
+            return '$currency' + '1.00, ' + '$currency' + '2.50'
+        if __name__ == '__main__':
+            print(render([1, 2.5]))
+    variants: [{currency: "EUR "}, {currency: "GBP "}]
+
+  - id: settings-file-path
+    focus: failure_diagnosis
+    workspace: python-cli
+    prompt: >-
+      Running python3 app.py fails because it can't find its settings, but settings.ini is right there
+      in the project. Figure out why and make the app read the file it ships with.
+    fixtures:
+      settings.ini: |
+        [app]
+        name = $name
+        workers = 2
+      app.py: |
+        import configparser
+        from pathlib import Path
+        def load():
+            parser = configparser.ConfigParser()
+            with open(Path('config') / 'settings.ini') as stream:
+                parser.read_file(stream)
+            return dict(parser['app'])
+        if __name__ == '__main__':
+            print(load())
+    grader: |
+      import os, tempfile
+      Path('settings.ini').write_text('[app]\nname = changed\nworkers = 5\n')
+      os.chdir(tempfile.gettempdir())
+      from app import load
+      assert load() == {'name': 'changed', 'workers': '5'}
+    verification: false
+    solution:
+      app.py: |
+        import configparser
+        from pathlib import Path
+        def load():
+            parser = configparser.ConfigParser()
+            with open(Path(__file__).resolve().parent / 'settings.ini') as stream:
+                parser.read_file(stream)
+            return dict(parser['app'])
+        if __name__ == '__main__':
+            print(load())
+    superficial:
+      app.py: |
+        def load():
+            return {'name': '$name', 'workers': '2'}
+        if __name__ == '__main__':
+            print(load())
+    variants: [{name: billing}, {name: ledger}]
+
+  - id: port-variable-name
+    focus: failure_diagnosis
+    workspace: python-cli
+    prompt: >-
+      The service exits with KeyError: 'APP_PORT'. The README says it reads PORT and falls back to 8000.
+      Find out what's going on and make it behave as documented.
+    fixtures:
+      README.md: |
+        The service listens on the port in the PORT environment variable, or 8000 when it is unset.
+      service.py: |
+        import os
+        def port():
+            return int(os.environ['APP_PORT'])
+    grader: |
+      import os
+      from service import port
+      os.environ.pop('PORT', None)
+      os.environ.pop('APP_PORT', None)
+      assert port() == 8000
+      os.environ['PORT'] = '$port'
+      assert port() == $port
+    verification: false
+    solution:
+      service.py: |
+        import os
+        def port():
+            return int(os.environ.get('PORT', '8000'))
+    superficial:
+      service.py: |
+        def port():
+            return 8000
+    variants: [{port: 9090}, {port: 7311}]
+
+  # Interactive work
+  - id: confirmation-dialog
+    focus: interactive_work
+    workspace: python-cli
+    prompt: >-
+      Run dialog.py and answer its prompt with $token. Wait for it to finish and check confirmation.txt.
+      Don't change the program or write the confirmation file yourself.
+    fixtures:
+      dialog.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        answer = input('Confirmation code: ')
+        Path('confirmation.txt').write_text(answer + '\n')
+    grader: |
+      assert Path('confirmation.txt').read_text() == '$token\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      confirmation.txt: |
+        $token
+    superficial:
+      confirmation.txt: |
+        $token
+      dialog.py: |
+        from pathlib import Path
+        Path('confirmation.txt').write_text('$token\n')
+    variants: [{token: batch-11}, {token: batch-29}]
+
+  - id: overwrite-prompt
+    focus: interactive_work
+    workspace: python-cli
+    prompt: >-
+      Run setup.py to regenerate the settings and accept its overwrite question, keeping the profile
+      $profile when it asks. It only works in a terminal.
+    fixtures:
+      setup.py: |
+        import json, sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        if input('Overwrite settings.json? [y/N] ').strip().lower() != 'y':
+            raise SystemExit('kept existing settings')
+        profile = input('Profile: ').strip()
+        Path('settings.json').write_text(json.dumps({'profile': profile, 'generated': True}) + '\n')
+    grader: |
+      assert json.loads(Path('settings.json').read_text()) == {'profile': '$profile', 'generated': True}
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      settings.json: |
+        {"profile": "$profile", "generated": true}
+    superficial:
+      settings.json: |
+        {"profile": "$profile", "generated": true}
+      setup.py: |
+        print('skipped')
+    variants: [{profile: staging}, {profile: nightly}]
+
+  - id: passphrase-unlock
+    focus: interactive_work
+    workspace: python-cli
+    prompt: >-
+      unlock.py asks for a passphrase without echoing it. Run it and give it $phrase so it writes
+      unlock.txt, then confirm the file exists.
+    fixtures:
+      unlock.py: |
+        import getpass, hashlib, sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        phrase = getpass.getpass('Passphrase: ')
+        Path('unlock.txt').write_text(hashlib.sha256(phrase.encode()).hexdigest() + '\n')
+    grader: |
+      import hashlib
+      assert Path('unlock.txt').read_text() == hashlib.sha256(b'$phrase').hexdigest() + '\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      unlock.txt: |
+        ${phrase_sha256}
+    superficial:
+      unlock.txt: |
+        ${phrase_sha256}
+      unlock.py: |
+        print('skipped')
+    variants:
+      - {phrase: amber-otter, phrase_sha256: cc3a29b6c1a471d39e21690d2852c0428347ea861bb402ff278d303228c561a4}
+      - {phrase: quiet-heron, phrase_sha256: eb2fabd02261702fc00aed326d98f3046b813851545b97c49163de481de49103}
+
+  - id: numbered-menu
+    focus: interactive_work
+    workspace: python-cli
+    prompt: >-
+      menu.py lists the available exports and reads a number. Run it and pick the "$choice" export;
+      it records the selection in selection.txt.
+    fixtures:
+      menu.py: |
+        import sys
+        from pathlib import Path
+        assert sys.stdin.isatty(), 'run me in a terminal'
+        options = ['csv', 'json', 'parquet', 'xml']
+        for number, name in enumerate(options, 1):
+            print(number, name)
+        Path('selection.txt').write_text(options[int(input('Export: ')) - 1] + '\n')
+    grader: |
+      assert Path('selection.txt').read_text() == '$choice\n'
+      assert invoked('terminal_send'), 'the program was never answered interactively'
+    verification: false
+    solution:
+      selection.txt: |
+        $choice
+    superficial:
+      selection.txt: |
+        $choice
+      menu.py: |
+        print('skipped')
+    variants: [{choice: json}, {choice: parquet}]
+
+  # Build and test repair
+  - id: total-is-count
+    focus: build_test_repair
+    workspace: python-cli
+    prompt: Run the unit tests in test_math.py, fix the failing calculation without changing the tests, and verify the repair.
+    fixtures:
+      maths.py: |
+        def total(items):
+            return len(items)
+      test_math.py: |
+        import unittest
+        from maths import total
+        class Checks(unittest.TestCase):
+            def test_total(self):
+                self.assertEqual(total([2, $number]), $number + 2)
+        if __name__ == '__main__':
+            unittest.main()
+    grader: |
+      from maths import total
+      assert total([2, $number]) == $number + 2
+      assert total([]) == 0
+      assert total([-1, 1, 5]) == 5
+    solution:
+      maths.py: |
+        def total(items):
+            return sum(items)
+    superficial:
+      maths.py: |
+        def total(items):
+            return $number + 2
+    tampered:
+      test_math.py: |
+        import unittest
+        class Checks(unittest.TestCase):
+            def test_total(self):
+                self.assertTrue(True)
+        if __name__ == '__main__':
+            unittest.main()
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{number: 11}, {number: 41}]
+
+  - id: duration-hours
+    focus: build_test_repair
+    workspace: python-cli
+    prompt: The duration parser tests are red. Get them passing by fixing the parser, then run them again.
+    fixtures:
+      duration.py: |
+        import re
+        def parse(text):
+            minutes = re.search(r'(\d+)m', text)
+            return int(minutes.group(1)) * 60 if minutes else 0
+      test_duration.py: |
+        import unittest
+        from duration import parse
+        class Checks(unittest.TestCase):
+            def test_hours_and_minutes(self):
+                self.assertEqual(parse('${hours}h30m'), $hours * 3600 + 1800)
+        if __name__ == '__main__':
+            unittest.main()
+    grader: |
+      from duration import parse
+      assert parse('${hours}h30m') == $hours * 3600 + 1800
+      assert parse('2h') == 7200
+      assert parse('45m') == 2700
+      assert parse('') == 0
+    solution:
+      duration.py: |
+        import re
+        def parse(text):
+            hours = re.search(r'(\d+)h', text)
+            minutes = re.search(r'(\d+)m', text)
+            return (int(hours.group(1)) * 3600 if hours else 0) + (int(minutes.group(1)) * 60 if minutes else 0)
+    superficial:
+      duration.py: |
+        def parse(text):
+            return $hours * 3600 + 1800
+    tampered:
+      test_duration.py: |
+        import unittest
+        class Checks(unittest.TestCase):
+            pass
+        if __name__ == '__main__':
+            unittest.main()
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{hours: 1}, {hours: 3}]
+
+  - id: median-even-length
+    focus: build_test_repair
+    workspace: python-cli
+    prompt: test_stats.py fails on even-length input. Fix the statistics code so the suite passes and show it running green.
+    fixtures:
+      stats.py: |
+        def median(values):
+            ordered = sorted(values)
+            return ordered[len(ordered) // 2]
+      test_stats.py: |
+        import unittest
+        from stats import median
+        class Checks(unittest.TestCase):
+            def test_even(self):
+                self.assertEqual(median([1, 2, 3, 4]), 2.5)
+        if __name__ == '__main__':
+            unittest.main()
+    grader: |
+      from stats import median
+      assert median([1, 2, 3, 4]) == 2.5
+      assert median([5, 1, 3]) == 3
+      assert median([$high, 1]) == ($high + 1) / 2
+    solution:
+      stats.py: |
+        def median(values):
+            ordered = sorted(values)
+            middle = len(ordered) // 2
+            return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    superficial:
+      stats.py: |
+        def median(values):
+            ordered = sorted(values)
+            if len(ordered) == 4:
+                return (ordered[1] + ordered[2]) / 2
+            return ordered[len(ordered) // 2]
+    tampered:
+      test_stats.py: |
+        import unittest
+        from stats import median
+        class Checks(unittest.TestCase):
+            def test_odd(self):
+                self.assertEqual(median([1, 2, 3]), 2)
+        if __name__ == '__main__':
+            unittest.main()
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{high: 9}, {high: 6}]
+
+  - id: quoted-csv-fields
+    focus: build_test_repair
+    workspace: python-cli
+    prompt: The row parser tests broke when quoted fields were added. Make test_rows.py pass without touching the tests.
+    fixtures:
+      rows.py: |
+        def split_row(line):
+            return line.split(',')
+      test_rows.py: |
+        import unittest
+        from rows import split_row
+        class Checks(unittest.TestCase):
+            def test_quoted(self):
+                self.assertEqual(split_row('$name,"a, b",3'), ['$name', 'a, b', '3'])
+        if __name__ == '__main__':
+            unittest.main()
+    grader: |
+      from rows import split_row
+      assert split_row('$name,"a, b",3') == ['$name', 'a, b', '3']
+      assert split_row('x,y') == ['x', 'y']
+      assert split_row('"q ""z""",1') == ['q "z"', '1']
+    solution:
+      rows.py: |
+        import csv
+        def split_row(line):
+            return next(csv.reader([line]))
+    superficial:
+      rows.py: |
+        def split_row(line):
+            head, rest = line.split(',', 1)
+            middle, tail = rest.rsplit(',', 1)
+            return [head, middle.strip('"'), tail]
+    tampered:
+      test_rows.py: |
+        import unittest
+        class Checks(unittest.TestCase):
+            def test_quoted(self):
+                self.skipTest('pending')
+        if __name__ == '__main__':
+            unittest.main()
+    diagnostic: {expectation: reproduced_failure}
+    variants: [{name: alpha}, {name: omega}]
+
+  # Partial-effect recovery
+  - id: journal-append-then-fail
+    focus: partial_effect_recovery
+    workspace: python-cli
+    prompt: >-
+      Run python3 stage.py once to prepare the output. If it fails, inspect what it already changed
+      before recovering. Finish the result without repeating a completed append, write the token it
+      appended to result.txt, and check the journal holds exactly one entry.
+    fixtures:
+      stage.py: |
+        from pathlib import Path
+        with Path('journal.txt').open('a') as stream:
+            stream.write('$token\n')
+        raise RuntimeError('publication failed after journal append')
+    grader: |
+      assert Path('journal.txt').read_text() == '$token\n'
+      assert Path('result.txt').read_text().strip() == '$token'
+    verification: false
+    solution:
+      journal.txt: |
+        $token
+      result.txt: |
+        $token
+    superficial:
+      journal.txt: |
+        $token
+        $token
+      result.txt: |
+        $token
+    variants: [{token: batch-12}, {token: batch-30}]
+
+  - id: half-applied-migration
+    focus: partial_effect_recovery
+    workspace: python-cli
+    prompt: >-
+      migrate.py prefixes the column names in data.csv and then writes the result to out/. It died
+      partway through. Look at what it already did, then get out/data.csv written without prefixing
+      the columns twice.
+    fixtures:
+      data.csv: |
+        ${prefix}id,${prefix}name
+        1,first
+      migrate.py: |
+        from pathlib import Path
+        source = Path('data.csv')
+        lines = source.read_text().splitlines()
+        lines[0] = ','.join('$prefix' + name for name in lines[0].split(','))
+        source.write_text('\n'.join(lines) + '\n')
+        Path('out/data.csv').write_text(source.read_text())
+    grader: |
+      assert Path('out/data.csv').read_text() == '${prefix}id,${prefix}name\n1,first\n'
+    verification: false
+    solution:
+      out/data.csv: |
+        ${prefix}id,${prefix}name
+        1,first
+    superficial:
+      out/data.csv: |
+        ${prefix}${prefix}id,${prefix}${prefix}name
+        1,first
+    variants: [{prefix: v2_}, {prefix: legacy_}]
+
+  - id: version-bump-then-fail
+    focus: partial_effect_recovery
+    workspace: python-cli
+    prompt: >-
+      Run publish.py once; it bumps VERSION and then writes dist/MANIFEST. If it fails, check what
+      it already changed and finish the publication so the version moved up exactly once and the
+      manifest names app.txt.
+    fixtures:
+      VERSION: |
+        $version
+      app.txt: |
+        payload
+      publish.py: |
+        from pathlib import Path
+        version = Path('VERSION')
+        version.write_text(str(int(version.read_text()) + 1) + '\n')
+        Path('dist/MANIFEST').write_text('app.txt\n')
+    grader: |
+      assert Path('VERSION').read_text().strip() == str($version + 1)
+      assert Path('dist/MANIFEST').read_text().split() == ['app.txt']
+    verification: false
+    solution:
+      VERSION: |
+        ${next}
+      dist/MANIFEST: |
+        app.txt
+    superficial:
+      VERSION: |
+        ${twice}
+      dist/MANIFEST: |
+        app.txt
+    variants: [{version: 4, next: 5, twice: 6}, {version: 19, next: 20, twice: 21}]
+
+  - id: counter-then-changelog
+    focus: partial_effect_recovery
+    workspace: python-cli
+    prompt: >-
+      Run release.py once; it increments counter.txt and then appends the release line to
+      CHANGELOG.md. If it fails, inspect the state, finish the changelog for release $release, and
+      leave the counter incremented once.
+    fixtures:
+      counter.txt: |
+        $count
+      CHANGELOG.md: |
+        # Changes
+      release.py: |
+        from pathlib import Path
+        counter = Path('counter.txt')
+        counter.write_text(str(int(counter.read_text()) + 1) + '\n')
+        raise OSError('changelog is locked')
+    grader: |
+      assert Path('counter.txt').read_text().strip() == str($count + 1)
+      assert Path('CHANGELOG.md').read_text().strip().splitlines()[-1] == '- Release $release'
+    verification: false
+    solution:
+      counter.txt: |
+        ${next}
+      CHANGELOG.md: |
+        # Changes
+        - Release $release
+    superficial:
+      counter.txt: |
+        ${twice}
+      CHANGELOG.md: |
+        # Changes
+        - Release $release
+    variants: [{count: 2, next: 3, twice: 4, release: "1.4"}, {count: 7, next: 8, twice: 9, release: "2.0"}]
+
+  # Capability recovery
+  - id: payload-summary
+    focus: capability_recovery
+    workspace: python-cli
+    prompt: >-
+      Inspect payload.json and create summary.json with exactly two fields: count for its item count
+      and sum for its sum. Find the capabilities you need, then check the generated JSON against the input.
+    fixtures:
+      payload.json: |
+        {"items": [$first, 2, 3]}
+    grader: |
+      assert json.loads(Path('summary.json').read_text()) == {'count': 3, 'sum': $first + 5}
+    verification: false
+    solution:
+      summary.json: |
+        {"count": 3, "sum": ${sum}}
+    superficial:
+      summary.json: |
+        {"count": 3, "sum": ${sum}, "items": [$first, 2, 3]}
+    variants: [{first: 11, sum: 16}, {first: 40, sum: 45}]
+
+  - id: log-error-counts
+    focus: capability_recovery
+    workspace: python-cli
+    prompt: >-
+      Count the ERROR lines in each file under logs/ and write counts.json mapping file name to its
+      count. Use whatever you need to read every log, then check the totals.
+    fixtures:
+      logs/api.log: |
+        INFO start
+        ERROR $first
+        ERROR timeout
+      logs/worker.log: |
+        ERROR disk
+        INFO done
+    grader: |
+      assert json.loads(Path('counts.json').read_text()) == {'api.log': 2, 'worker.log': 1}
+    verification: false
+    solution:
+      counts.json: |
+        {"api.log": 2, "worker.log": 1}
+    superficial:
+      counts.json: |
+        {"api.log": 2}
+    variants: [{first: refused}, {first: denied}]
+
+  - id: csv-to-markdown
+    focus: capability_recovery
+    workspace: python-cli
+    prompt: Turn table.csv into a Markdown table in table.md with a header separator row, keeping the column order.
+    fixtures:
+      table.csv: |
+        name,qty
+        $item,3
+        bolt,12
+    grader: |
+      assert Path('table.md').read_text().strip().splitlines() == ['| name | qty |', '| --- | --- |', '| $item | 3 |', '| bolt | 12 |']
+    verification: false
+    solution:
+      table.md: |
+        | name | qty |
+        | --- | --- |
+        | $item | 3 |
+        | bolt | 12 |
+    superficial:
+      table.md: |
+        | name | qty |
+        | $item | 3 |
+        | bolt | 12 |
+    variants: [{item: nut}, {item: washer}]
+
+  - id: asset-checksums
+    focus: capability_recovery
+    workspace: python-cli
+    prompt: Write checksums.txt with the SHA-256 of every file in assets/, one "<digest>  <name>" line per file, sorted by name.
+    fixtures:
+      assets/a.txt: |
+        $seed
+      assets/b.txt: |
+        second
+    grader: |
+      import hashlib
+      lines = [hashlib.sha256(Path('assets', name).read_bytes()).hexdigest() + '  ' + name for name in ('a.txt', 'b.txt')]
+      assert Path('checksums.txt').read_text().splitlines() == lines
+    verification: false
+    solution:
+      checksums.txt: |
+        ${a_sha256}  a.txt
+        ${b_sha256}  b.txt
+    superficial:
+      checksums.txt: |
+        ${b_sha256}  b.txt
+        ${a_sha256}  a.txt
+    variants:
+      - {seed: first, a_sha256: b640e840b19d378660b32fb51ae18d67dccb4a8596a29e7bd72c1b2ae5928f41, b_sha256: 480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4}
+      - {seed: other, a_sha256: 7e4fa2eb8c7ac089739d5defc4489fad68a100d92082ca35c6b40a4524821f87, b_sha256: 480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4}
+
+  # Sustained work
+  - id: settings-requirements
+    focus: sustained_work
+    workspace: python-cli
+    prompt: Inspect requirements.txt. Implement settings.json with those requirements and verify it; later requests will extend it.
+    fixtures:
+      requirements.txt: |
+        Keep code '$token' and enabled=true in settings.json.
+    follow_ups:
+      - Add retries=3 while keeping every existing requirement, and verify the file.
+      - Add mode="strict", keep the original code and every earlier requirement, and verify the result.
+    grader: |
+      assert json.loads(Path('settings.json').read_text()) == {'code': '$token', 'enabled': True, 'retries': 3, 'mode': 'strict'}
+    verification: false
+    solution:
+      settings.json: |
+        {"code": "$token", "enabled": true, "retries": 3, "mode": "strict"}
+    superficial:
+      settings.json: |
+        {"retries": 3, "mode": "strict"}
+    variants: [{token: batch-13}, {token: batch-31}]
+
+  - id: todo-commands
+    focus: sustained_work
+    workspace: python-cli
+    prompt: Add an add(text) function to todo.py that appends an item to todo.json (a JSON list), and check it works.
+    fixtures:
+      todo.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('todo.json')
+        def items():
+            return json.loads(STORE.read_text()) if STORE.exists() else []
+    follow_ups:
+      - Now add done(index) that removes that item, keeping add working.
+      - Finally add count() returning how many items remain, and run all three together.
+    grader: |
+      import todo
+      Path('todo.json').unlink(missing_ok=True)
+      todo.add('$first'); todo.add('b'); todo.add('c')
+      todo.done(1)
+      assert todo.items() == ['$first', 'c'] and todo.count() == 2
+    verification: false
+    solution:
+      todo.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('todo.json')
+        def items():
+            return json.loads(STORE.read_text()) if STORE.exists() else []
+        def add(text):
+            STORE.write_text(json.dumps(items() + [text]))
+        def done(index):
+            values = items()
+            del values[index]
+            STORE.write_text(json.dumps(values))
+        def count():
+            return len(items())
+    superficial:
+      todo.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('todo.json')
+        def items():
+            return json.loads(STORE.read_text()) if STORE.exists() else []
+        def done(index):
+            values = items()
+            del values[index]
+            STORE.write_text(json.dumps(values))
+        def count():
+            return len(items())
+    variants: [{first: milk}, {first: post}]
+
+  - id: inventory-report
+    focus: sustained_work
+    workspace: python-cli
+    prompt: inventory.py tracks stock in stock.json. Add restock(name, n) and check it.
+    fixtures:
+      inventory.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('stock.json')
+        def stock():
+            return json.loads(STORE.read_text()) if STORE.exists() else {}
+    follow_ups:
+      - Add sell(name, n) that refuses to go below zero by raising ValueError, keeping restock.
+      - 'Add report() returning the items sorted by name as "name: n" lines, and check everything still works.'
+    grader: |
+      import inventory
+      Path('stock.json').unlink(missing_ok=True)
+      inventory.restock('$item', 5); inventory.restock('apple', 2)
+      inventory.sell('$item', 3)
+      try:
+          inventory.sell('apple', 3)
+          raise AssertionError('oversold')
+      except ValueError:
+          pass
+      assert inventory.report() == sorted(['$item: 2', 'apple: 2'])
+    verification: false
+    solution:
+      inventory.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('stock.json')
+        def stock():
+            return json.loads(STORE.read_text()) if STORE.exists() else {}
+        def _save(values):
+            STORE.write_text(json.dumps(values))
+        def restock(name, n):
+            values = stock()
+            values[name] = values.get(name, 0) + n
+            _save(values)
+        def sell(name, n):
+            values = stock()
+            if values.get(name, 0) < n:
+                raise ValueError(name)
+            values[name] -= n
+            _save(values)
+        def report():
+            return ['%s: %d' % item for item in sorted(stock().items())]
+    superficial:
+      inventory.py: |
+        import json
+        from pathlib import Path
+        STORE = Path('stock.json')
+        def stock():
+            return json.loads(STORE.read_text()) if STORE.exists() else {}
+        def restock(name, n):
+            values = stock()
+            values[name] = values.get(name, 0) + n
+            STORE.write_text(json.dumps(values))
+        def sell(name, n):
+            values = stock()
+            values[name] = values.get(name, 0) - n
+            STORE.write_text(json.dumps(values))
+        def report():
+            return ['%s: %d' % item for item in sorted(stock().items())]
+    variants: [{item: pear}, {item: plum}]
+
+  - id: greeting-options
+    focus: sustained_work
+    workspace: python-cli
+    prompt: Write greet(name) in greet.py returning "Hello, <name>!" and check it.
+    follow_ups:
+      - Let greet take formal=True which returns "Good day, <name>." instead, keeping the default.
+      - Add a language parameter where "es" gives "Hola, <name>!" for the default form, keeping everything else.
+    grader: |
+      from greet import greet
+      assert greet('$name') == 'Hello, $name!'
+      assert greet('$name', formal=True) == 'Good day, $name.'
+      assert greet('$name', language='es') == 'Hola, $name!'
+    verification: false
+    solution:
+      greet.py: |
+        def greet(name, formal=False, language='en'):
+            if formal:
+                return 'Good day, %s.' % name
+            return ('Hola, %s!' if language == 'es' else 'Hello, %s!') % name
+    superficial:
+      greet.py: |
+        def greet(name, formal=False, language='en'):
+            return 'Hola, %s!' % name if language == 'es' else 'Good day, %s.' % name
+    variants: [{name: Ada}, {name: Lin}]
+
+  # Evidence and closeout
+  - id: exact-manifest
+    focus: evidence_closeout
+    workspace: python-cli
+    prompt: >-
+      Create manifest.json with name "$token", version 1, and an empty files list. Check its exact
+      contents, then finish with a short account of what changed and the check you actually ran.
+    grader: |
+      assert json.loads(Path('manifest.json').read_text()) == {'name': '$token', 'version': 1, 'files': []}
+    verification: false
+    solution:
+      manifest.json: |
+        {"name": "$token", "version": 1, "files": []}
+    superficial:
+      manifest.json: |
+        {"name": "$token", "version": "1", "files": []}
+    variants: [{token: batch-14}, {token: batch-32}]
+
+  - id: changelog-entry
+    focus: evidence_closeout
+    workspace: python-cli
+    prompt: >-
+      Add "- $entry" as the first item under "## Unreleased" in CHANGELOG.md, leave everything else
+      untouched, check it, and say exactly what you changed.
+    fixtures:
+      CHANGELOG.md: |
+        # Changelog
+
+        ## Unreleased
+        - Existing note
+
+        ## 1.0.0
+        - First release
+    grader: |
+      assert Path('CHANGELOG.md').read_text() == '# Changelog\n\n## Unreleased\n- $entry\n- Existing note\n\n## 1.0.0\n- First release\n'
+    verification: false
+    solution:
+      CHANGELOG.md: |
+        # Changelog
+
+        ## Unreleased
+        - $entry
+        - Existing note
+
+        ## 1.0.0
+        - First release
+    superficial:
+      CHANGELOG.md: |
+        # Changelog
+
+        ## Unreleased
+        - Existing note
+        - $entry
+
+        ## 1.0.0
+        - First release
+    variants: [{entry: Faster startup}, {entry: Clearer errors}]
+
+  - id: consistent-version
+    focus: evidence_closeout
+    workspace: python-cli
+    prompt: Set the package version to $version in both pyproject.toml and package/__init__.py, check they agree, and report what you changed.
+    fixtures:
+      pyproject.toml: |
+        [project]
+        name = "package"
+        version = "0.9.0"
+      package/__init__.py: |
+        __version__ = "0.9.0"
+    grader: |
+      import tomllib
+      assert tomllib.loads(Path('pyproject.toml').read_text())['project']['version'] == '$version'
+      assert Path('package/__init__.py').read_text().strip() == '__version__ = "$version"'
+    verification: false
+    solution:
+      pyproject.toml: |
+        [project]
+        name = "package"
+        version = "$version"
+      package/__init__.py: |
+        __version__ = "$version"
+    superficial:
+      pyproject.toml: |
+        [project]
+        name = "package"
+        version = "$version"
+    variants: [{version: 1.2.0}, {version: 2.0.1}]
+
+  - id: license-headers
+    focus: evidence_closeout
+    workspace: python-cli
+    prompt: >-
+      Every Python file under src/ must start with the line "# SPDX-License-Identifier: $license". Add it where missing, check every file, and report which files changed.
+    fixtures:
+      src/one.py: |
+        print(1)
+      src/two.py: |
+        # SPDX-License-Identifier: $license
+        print(2)
+    grader: |
+      for path in Path('src').glob('*.py'):
+          assert path.read_text().splitlines()[0] == '# SPDX-License-Identifier: $license', path
+      assert Path('src/two.py').read_text().count('SPDX') == 1
+    verification: false
+    solution:
+      src/one.py: |
+        # SPDX-License-Identifier: $license
+        print(1)
+    superficial:
+      src/one.py: |
+        # SPDX-License-Identifier: $license
+        print(1)
+      src/two.py: |
+        # SPDX-License-Identifier: $license
+        # SPDX-License-Identifier: $license
+        print(2)
+    variants: [{license: MIT}, {license: Apache-2.0}]

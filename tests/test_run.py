@@ -286,8 +286,8 @@ def test_scaled_factory_caps_tasks_and_narrows_generators(factory, tmp_path):
     with pytest.raises(runmod.RunError, match="task_share"):
         runmod.scaled_factory(make_run(factory, tmp_path, task_share=1.5))
     # Archetype selection keeps only the named kinds of request.
-    picked = runmod.scaled_factory(make_run(factory, tmp_path, archetypes=["question", "new_project"]))
-    assert sorted(a.id for a in picked.archetypes) == ["new_project", "question"]
+    picked = runmod.scaled_factory(make_run(factory, tmp_path, archetypes=["repository_question", "new_project"]))
+    assert sorted(a.id for a in picked.archetypes) == ["new_project", "repository_question"]
     with pytest.raises(runmod.RunError, match="unknown archetypes"):
         runmod.scaled_factory(make_run(factory, tmp_path, archetypes=["no_such_archetype"]))
 

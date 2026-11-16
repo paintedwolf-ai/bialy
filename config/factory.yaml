@@ -35,7 +35,8 @@ run:
     mistral-large-4: 0.05
   archetype_generators:
     # Routine orientation, search, and chores weight local Gemma 26B with Gemma 31B
-    question: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    conceptual_question: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
+    repository_question: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
     explain_code: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
     locate: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
     git_history: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
