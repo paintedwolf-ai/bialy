@@ -5,6 +5,20 @@ from .execution import Executor, atomic_json, paused, resuming
 from .journal import CampaignFault, StageWaiting, digest
 
 
+def tier(**stages):
+    """One student's outcome: its artifact, execution and behavioral statuses kept apart, so one
+    tier's failure never hides another's usable artifact."""
+    return {'artifact_status': 'absent', 'artifact': None, 'execution_status': 'not_executed',
+            'behavioral_status': 'not_measured', **stages}
+
+
+def data_status(result):
+    if result['status'] == 'passed':
+        return result['output'].get('data_status', 'data_ready') if isinstance(result['output'], dict) else 'data_ready'
+    fault = result.get('fault') or {}
+    return 'data_incomplete' if fault.get('code') == 'data_incomplete' else 'data_unavailable'
+
+
 class Campaign:
     """The full campaign. With human review, collection and evaluation each pause at a review gate."""
     def __init__(self, journal, backend, sleep, students, review=False, resume=None):
@@ -65,10 +79,10 @@ class Campaign:
             return self.finish('insufficient_qualified_data', selector_status)
         collection, pilot_data = self.dataset('collection_pilot', {**common, 'teachers': teachers['output'], 'selector': selected})
         if pilot_data['status'] != 'passed':
-            return self.finish('insufficient_qualified_data', selector_status)
+            return self.finish('insufficient_qualified_data', selector_status, data=data_status(pilot_data))
         plan = self.stage('evaluation_plan', {**common, 'selector': selected, 'measurements': collection['output']})
         if plan['status'] != 'passed':
-            return self.finish('evaluation_plan_unavailable', selector_status)
+            return self.finish('evaluation_plan_unavailable', selector_status, data=data_status(pilot_data))
         frozen = {**common, 'plan': plan['output'], 'selector': selected, 'teachers': teachers['output']}
         pilots = {}
         for student in self.students:
@@ -78,43 +92,53 @@ class Campaign:
         outcomes, evaluated = {}, {}
         for student in self.students:
             base = self.stage('evaluate_base_' + student, {**frozen, 'student': student})
+            outcome = outcomes[student] = tier(base=base)
             if data['status'] != 'passed' or pilots[student]['status'] != 'passed':
-                outcomes[student] = {'status': 'execution_incomplete', 'base': base}
+                outcome['execution_status'] = 'training_incomplete'
                 continue
             trained = self.stage('train_' + student, {**frozen, 'student': student, 'dataset': data['output'],
                                                       'pilot': pilots[student]['output']})
+            outcome['training'] = trained
             if trained['status'] != 'passed':
-                outcomes[student] = {'status': 'execution_incomplete', 'base': base, 'training': trained}
+                outcome['execution_status'] = 'training_incomplete'
                 continue
             exported = self.stage('export_' + student, {**frozen, 'student': student, 'training': trained['output']})
+            outcome['export'] = exported
             if exported['status'] != 'passed':
-                outcomes[student] = {'status': 'export_incomplete', 'base': base, 'training': trained, 'export': exported}
+                outcome['execution_status'] = 'export_incomplete'
                 continue
+            outcome.update(artifact_status='exported', artifact=exported['output'])
             evaluation = self.stage('evaluate_trained_' + student, {**frozen, 'student': student, 'artifact': exported['output']})
+            outcome['evaluation'] = evaluation
             if base['status'] != 'passed' or evaluation['status'] != 'passed':
-                outcomes[student] = {'status': 'evaluation_incomplete', 'base': base, 'evaluation': evaluation,
-                                     'artifact': exported['output']}
+                outcome['execution_status'] = 'evaluation_incomplete'
                 continue
             evaluated[student] = {'base': base['output'], 'trained': evaluation['output'], 'artifact': exported['output']}
         if evaluated:
             review = self.gate('review_evaluation', {'evaluations': {student: {'base': item['base'], 'trained': item['trained']}
                                                                       for student, item in evaluated.items()}})
             for student, item in evaluated.items():
+                outcome = outcomes[student]
                 if review['status'] != 'passed':
-                    outcomes[student] = {'status': 'evaluation_incomplete', 'review': review, 'artifact': item['artifact']}
+                    outcome.update(execution_status='evaluation_incomplete', review=review)
                     continue
                 grade = self.stage('compare_' + student, {**frozen, 'student': student, 'base': item['base'],
                                                           'trained': item['trained'], 'artifact': item['artifact'],
                                                           'review': review['output']})
-                outcomes[student] = {'status': grade['output']['status'] if grade['status'] == 'passed' else 'evaluation_incomplete',
-                                     'grade': grade, 'artifact': item['artifact']}
-        status = 'qualified' if all(outcomes[student]['status'] == 'pass' for student in self.students) else 'no_go'
-        return self.finish(status, selector_status, {student: outcomes[student] for student in self.students})
+                outcome['grade'] = grade
+                if grade['status'] != 'passed':
+                    outcome['execution_status'] = 'evaluation_incomplete'
+                    continue
+                outcome.update(execution_status='complete', behavioral_status=grade['output']['status'])
+        status = 'qualified' if all(outcomes[student]['behavioral_status'] == 'pass' for student in self.students) else 'no_go'
+        return self.finish(status, selector_status, outcomes, data_status(data))
 
-    def finish(self, status, selector=None, students=None):
+    def finish(self, status, selector=None, students=None, data='not_reached'):
         snapshot = self.journal.snapshot()
-        result = {'schema': 'pw-training-campaign-result/1', 'status': status, 'selector': selector,
-                  'students': students or {name: {'status': 'not_executed'} for name in self.students},
+        tiers = students or {name: tier() for name in self.students}
+        complete = all(item['execution_status'] == 'complete' for item in tiers.values())
+        result = {'schema': 'pw-training-campaign-result/2', 'status': status, 'selector': selector, 'data_status': data,
+                  'execution_status': 'complete' if complete else 'incomplete', 'students': tiers,
                   'journal_sha256': digest(snapshot), 'journal': snapshot}
         path = self.journal.directory / 'result.json'
         if path.exists():

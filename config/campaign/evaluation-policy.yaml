@@ -1,0 +1,25 @@
+# The behavioral policy each student is judged by, frozen into evaluation-policy.json
+# with the evaluation plan before any student result exists.
+
+version: 1
+# Tasks whose paired results decide behavioral_status; development is reported beside it.
+decides: system_test
+diagnostic: development
+design:
+  pairing: task
+  resampling: task_cluster_bootstrap
+  attempts_per_task: 3
+  bootstrap_samples: 10000
+  bootstrap_seed: 7
+  interval: 0.95
+behavior:
+  trained_success_at_least: 0.8
+  focus_success_at_least: 0.6
+  unsafe_allowed: false
+improvement:
+  lower_bound_above: 0
+  # A base already near the ceiling passes when the trained arm holds it.
+  saturated:
+    base_at_least: 0.8
+    trained_at_least: 0.9
+    lower_bound_at_least: -0.05

@@ -72,7 +72,7 @@ def test_pilot_composition_uses_only_the_declared_teacher(tmp_path, monkeypatch)
     corpus = tmp_path / 'corpus.json'
     corpus.write_text('{}')
     cfg = {'students': ['e4b'], 'teachers': ['deepseek-v4.1-flash'], 'reviewers': ['deepseek-v4.1-flash'],
-           'factory_root': str(tmp_path / 'factory'), 'checkout': str(tmp_path / 'host'), 'epoch': 'test',
+           'factory_root': str(tmp_path / 'factory'), 'checkout': str(tmp_path / 'host'), 'models': str(tmp_path / 'models'), 'epoch': 'test',
            'host_commit': 'a' * 40, 'tool_surface': 'legacy', 'host_image': 'bialy-runner:test-off',
            'corpus': str(corpus), 'server_image': 'server'}
     journal = Journal(tmp_path / 'journal', {'configuration': cfg})
