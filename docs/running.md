@@ -420,9 +420,18 @@ the tier trained on, the backend and device the runtime reported, and generated
 tokens that leave the export's reference only inside its tolerance. A bundle
 without one is recorded as `load_probe_<bundle>_missing`; a failed or unbound
 one carries the probe's own reason, such as `load_probe_mlx_load_failed`. The
-host's native runtime loads only E4B, so the 12B and 26B-A4B tiers cannot be
-published until it loads them. The ledger refuses a published bundle whose
-manifest is not the one its probe loaded.
+ledger refuses a published bundle whose manifest is not the one its probe
+loaded, and the decision records the device that ran each probe.
+
+**12B and 26B-A4B cannot be published yet.** The host's native runtime loads
+only E4B (`scripts/generation/native_tiers.json` in the host states which tiers
+each backend loads). A campaign still trains, exports and evaluates all three
+tiers, but no load probe of a 12B or 26B-A4B bundle can pass, so their
+decisions are `load_probe_<bundle>_native_runtime_unsupported` or `_missing`
+until the runtime loads them. `bialy campaign plan` prints this for a full
+profile as `unpublishable`, from the planned host checkout. The MLX checkpoint
+has no runtime on the export machine, so its greedy-reference check is the load
+probe on Apple silicon.
 
 `decision.json` records each tier's decision, the conditions it missed, and who
 decided. A second decision must be the same one.

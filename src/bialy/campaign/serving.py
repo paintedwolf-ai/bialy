@@ -1,8 +1,8 @@
 """Serve one pinned student artifact for a campaign evaluation arm.
 
 A server takes requests only after the host's rendering check passed against it: it
-serves the training chat template and renders the host's conversation fixtures into the
-prompts training rendered. Both arms of a comparison pass the same check.
+serves the training chat template, renders the host's conversation fixtures into the
+prompts training rendered, and reports a build of the pinned llama.cpp revision. Both arms of a comparison pass the same check.
 """
 import contextlib
 import json
@@ -37,7 +37,8 @@ class Serving:
         receipt = self.directory / 'rendering.json'
         script = Path(self.configuration['checkout']) / 'scripts/bialy/custom_model/serving_check.py'
         try:
-            self.run([sys.executable, str(script), '--url', plan['url'], '--out', str(receipt)],
+            self.run([sys.executable, str(script), '--url', plan['url'], '--revision', self.configuration['llama_revision'],
+                      '--out', str(receipt)],
                      check=True, capture_output=True, text=True)
         except (subprocess.SubprocessError, OSError) as exc:
             raise CampaignFault('serving_rendering_mismatch', details={'stderr': (getattr(exc, 'stderr', '') or '')[-2000:]}) from None

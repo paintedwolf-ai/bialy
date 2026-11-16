@@ -44,20 +44,26 @@ def test_every_declared_student_has_a_machine_requirement():
 ROOMY = 140
 
 
-@pytest.mark.parametrize('name', ['machine.example.json', 'provisioned-machine.example.json', 'vastai-machine.example.json'])
-def test_every_example_machine_holds_e4b_and_refuses_a_tier_its_card_cannot_hold(name):
-    declared = example(name).get('provisioning', {}).get('specification')
-    held = []
-    for student in students():
-        if declared and declared['gpu_memory_gib'] < machines.requirement(student)['gpu_memory_gib']:
-            with pytest.raises(JobError, match='cannot hold student %s: gpu_memory_gib' % student):
-                machines.preflight(example(name), student)
-            continue
-        report = machines.preflight(example(name), student)
-        assert report['requirement'] == machines.requirement(student)
-        assert (report['declared'] is None) is (name == 'machine.example.json')
-        held.append(student)
-    assert 'e4b' in held
+# The tiers each shipped example is for. An existing machine declares nothing and is measured instead.
+EXAMPLE_TIERS = {'machine.example.json': ('e4b', '12b', '26b-a4b'), 'provisioned-machine.example.json': ('e4b',),
+            'vastai-machine.example.json': ('e4b',), 'vastai-large-machine.example.json': ('12b', '26b-a4b')}
+
+
+def test_every_shipped_example_passes_the_offline_preflight_for_the_tiers_it_is_for():
+    assert {path.name for path in EXAMPLES.glob('*machine.example.json')} == set(EXAMPLE_TIERS)
+    assert {student for tiers in EXAMPLE_TIERS.values() for student in tiers} == set(students())
+    for name, tiers in EXAMPLE_TIERS.items():
+        for student in tiers:
+            report = machines.preflight(example(name), student)
+            assert report['requirement'] == machines.requirement(student)
+            assert (report['declared'] is None) is (name == 'machine.example.json')
+
+
+@pytest.mark.parametrize('name', ['provisioned-machine.example.json', 'vastai-machine.example.json'])
+def test_an_80_gb_example_refuses_the_tiers_its_card_cannot_hold(name):
+    for student in ('12b', '26b-a4b'):
+        with pytest.raises(JobError, match='cannot hold student %s: gpu_memory_gib is 79' % student):
+            machines.preflight(example(name), student)
 
 
 @pytest.mark.parametrize('provider', ['scaleway', 'vastai'])

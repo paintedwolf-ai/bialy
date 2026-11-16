@@ -19,7 +19,8 @@ def fixture(tmp_path, served=TEMPLATE):
     """A serving stage whose host rendering check reports `served`, or fails when it is None."""
     model = tmp_path / 'model.gguf'
     model.write_bytes(b'model')
-    cfg = {'image': 'sha256:server', 'name': 'private', 'gateway': '127.0.0.1', 'checkout': str(tmp_path / 'host')}
+    cfg = {'image': 'sha256:server', 'name': 'private', 'gateway': '127.0.0.1', 'checkout': str(tmp_path / 'host'),
+           'llama_revision': 'c' * 40}
     calls, container = [], {'state': None}
     def run(args, **kwargs):
         calls.append(args)
@@ -53,7 +54,7 @@ def test_student_lifecycle_pins_context_disables_thinking_and_stops_exact_contai
         assert '--no-context-shift' in argv and '--jinja' in argv and '--chat-template-file' not in argv
         check = next(call for call in calls if call[1].endswith('serving_check.py'))
         assert check[1] == str(tmp_path / 'host/scripts/bialy/custom_model/serving_check.py')
-        assert check[check.index('--url') + 1] + '/v1' == url
+        assert check[check.index('--url') + 1] + '/v1' == url and check[check.index('--revision') + 1] == 'c' * 40
         assert json.loads((serving.directory / 'ready.json').read_text())['container_id'] == 'exact-container'
     assert container['state'] is None
     assert ['docker', 'stop', '--time', '30', 'exact-container'] in calls

@@ -64,10 +64,15 @@ def manifests(student):
     return {bundle: hashlib.sha256((student + bundle).encode()).hexdigest() for bundle in decisions.BUNDLES}
 
 
+def probed(student):
+    return {bundle: {'manifest_sha256': digest, 'device': {'backend': bundle, 'physical_device': {'kind': 'apple_silicon'}}}
+            for bundle, digest in manifests(student).items()}
+
+
 def test_only_a_tier_meeting_every_condition_is_published(tmp_path):
     run, artifacts = campaign(tmp_path, {'12b': {'behavioral_status': 'inconclusive'}})
     decision = decisions.decide(run, probes(artifacts, skip={('26b-a4b', 'vulkan')}), 'operator', lambda: AT)
-    assert decision['tiers']['e4b'] == {'publish': True, 'failed': [], 'bundle_manifests': manifests('e4b'),
+    assert decision['tiers']['e4b'] == {'publish': True, 'failed': [], 'probes': probed('e4b'),
                                         'export_receipt_sha256': artifacts['e4b']['export_receipt_sha256']}
     assert decision['tiers']['12b']['failed'] == ['behavioral_inconclusive']
     assert decision['tiers']['26b-a4b']['failed'] == ['load_probe_vulkan_missing']
@@ -158,3 +163,12 @@ def test_the_ledger_records_published_bundles_and_why_the_rest_were_not(tmp_path
     with pytest.raises(CampaignFault, match='release_ledger_changed'):
         decisions.record(run, tmp_path / 'ledger', 'campaign-1',
                          {**published, 'e4b': {**published['e4b'], 'vulkan': dict(bundle, revision='s' * 40)}})
+
+
+def test_a_plan_can_say_which_tiers_the_host_runtime_cannot_yet_publish(tmp_path):
+    students = ('e4b', '12b', '26b-a4b')
+    assert decisions.unpublishable(tmp_path, students) == {student: ['mlx', 'vulkan'] for student in students}
+    declared = tmp_path / decisions.NATIVE_TIERS
+    declared.parent.mkdir(parents=True)
+    declared.write_text(json.dumps({'schema': 'pw-native-tiers/1', 'mlx': ['e4b', '12b'], 'vulkan': ['e4b']}))
+    assert decisions.unpublishable(tmp_path, students) == {'12b': ['vulkan'], '26b-a4b': ['mlx', 'vulkan']}

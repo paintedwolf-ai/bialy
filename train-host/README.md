@@ -449,7 +449,9 @@ be clean. SSH credentials come from the deployment environment. Instance provisi
 
 Use `student/machine.example.json` for an existing SSH-accessible machine, or
 `student/provisioned-machine.example.json` (Scaleway) or
-`student/vastai-machine.example.json` (Vast.ai) to rent one. All use the same
+`student/vastai-machine.example.json` (Vast.ai) to rent one. Those two declare an
+80 GB card, which holds E4B; `student/vastai-large-machine.example.json`
+declares a 140 GiB card for 12B and 26B-A4B. All use the same
 remote job protocol. Configure the SSH user, port, key path, workspace, `uv`
 executable, and device. Set `llama_commit` to `LLAMA_COMMIT` from
 `student/pins.env`. Jobs use separate workspace directories.

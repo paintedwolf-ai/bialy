@@ -170,7 +170,8 @@ def compose(journal, directory, body, adopted=None):
                                                    judged=profile['judged'], tasks=profile.get('evaluation_tasks')),
                     cleanup=Cleanup(cfg))
     training = {**student_cfg, 'specification': str(ROOT / 'config/students.json')}
-    server = {'image': cfg['server_image'], 'gateway': cfg['gateway'], 'checkout': student_cfg['checkout'], **run.factory.network}
+    server = {'image': cfg['server_image'], 'gateway': cfg['gateway'], 'checkout': student_cfg['checkout'],
+              'llama_revision': cfg['llama_revision'], **run.factory.network}
     for student in students:
         handlers['baseline_' + student] = Baseline(journal, training, specification, student)
         handlers['train_' + student] = Training(journal, training, student, pilot=profile['recipe'] != 'full',
@@ -236,7 +237,11 @@ def report(run_directory):
 def main(args):
     if args.action == 'plan':
         body = plan(args.config, args.out)
-        print(json.dumps({'plan': str(args.out), 'plan_sha256': body['plan_sha256'], 'profile': body['profile']['name']}, indent=2))
+        summary = {'plan': str(args.out), 'plan_sha256': body['plan_sha256'], 'profile': body['profile']['name']}
+        if body['profile']['name'] == 'full':
+            from . import decisions
+            summary['unpublishable'] = decisions.unpublishable(body['configuration']['checkout'], body['students'])
+        print(json.dumps(summary, indent=2))
         return 0
     if args.action == 'run':
         result = drive(args.plan)

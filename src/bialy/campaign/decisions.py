@@ -22,6 +22,17 @@ DECISION = 'pw-tier-decision/1'
 PROBE = 'pw-load-probe/1'
 LEDGER = 'pw-student-release/1'
 BUNDLES = ('mlx', 'vulkan')
+# Where a host checkout states which tiers each backend of its native runtime loads.
+NATIVE_TIERS = 'scripts/generation/native_tiers.json'
+
+
+def unpublishable(checkout, students):
+    """The students a campaign on this host checkout cannot publish, each with the bundles its
+    native runtime does not load: no load probe of those can pass."""
+    path = Path(checkout) / NATIVE_TIERS
+    declared = json.loads(path.read_text()) if path.is_file() else {}
+    blocked = {student: [bundle for bundle in BUNDLES if student not in declared.get(bundle, [])] for student in students}
+    return {student: bundles for student, bundles in blocked.items() if bundles}
 
 
 def export_failures(artifact):
@@ -68,8 +79,8 @@ def probe_fault(probe, bundle, artifact, receipt, job):
 
 
 def probed(student, artifact, probes):
-    """For each bundle, the manifest a qualifying load probe of this export loaded, and the
-    bundles without one with the reason their probes gave."""
+    """For each bundle, the manifest a qualifying load probe of this export loaded and the
+    device that ran it, and the bundles without one with the reason their probes gave."""
     job = Path(artifact['directory']).parent
     receipt = json.loads((job / 'export_receipt.json').read_text())
     manifests, failed = {}, []
@@ -79,7 +90,7 @@ def probed(student, artifact, probes):
         faults = {id(probe): probe_fault(probe, bundle, artifact, receipt, job) for probe in offered}
         qualified = [probe for probe in offered if faults[id(probe)] is None]
         if qualified:
-            manifests[bundle] = qualified[0]['manifest_sha256']
+            manifests[bundle] = {'manifest_sha256': qualified[0]['manifest_sha256'], 'device': qualified[0]['device']}
         else:
             failed.append('load_probe_%s_%s' % (bundle, min(faults.values()) if offered else 'missing'))
     return manifests, failed
@@ -94,7 +105,7 @@ def tier_decision(student, outcome, probes):
     if outcome.get('execution_status') != 'complete' or outcome.get('behavioral_status') != 'pass':
         failed.append('behavioral_%s' % outcome.get('behavioral_status', 'not_measured'))
     return {'publish': not failed, 'failed': failed,
-            'export_receipt_sha256': (artifact or {}).get('export_receipt_sha256'), 'bundle_manifests': manifests}
+            'export_receipt_sha256': (artifact or {}).get('export_receipt_sha256'), 'probes': manifests}
 
 
 def decide(run_directory, probes, decided_by, clock=None):
@@ -129,7 +140,7 @@ def record(run_directory, ledger_directory, campaign, publications):
             if not bundles or set(bundles) != set(BUNDLES) or any(
                     set(bundle) != {'revision', 'manifest_sha256'} for bundle in bundles.values()):
                 raise CampaignFault('publication_incomplete', details={'student': student})
-            if any(bundles[name]['manifest_sha256'] != tier['bundle_manifests'].get(name) for name in BUNDLES):
+            if any(bundles[name]['manifest_sha256'] != tier['probes'].get(name, {}).get('manifest_sha256') for name in BUNDLES):
                 raise CampaignFault('publication_not_probed', details={'student': student})
             published[student] = {'export_receipt_sha256': tier['export_receipt_sha256'], 'bundles': bundles}
         else:
