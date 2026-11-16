@@ -144,7 +144,7 @@ class VerdictForm:
             if check['id'] == identifier:
                 return 'check ' + ('passed' if check['passed'] else 'failed')
         invocation = self.view.invocation(identifier)
-        return f"{invocation['tool']} {invocation['status']}" if invocation else ''
+        return f"{invocation.get('tool', '')} {invocation['semantic_outcome']}" if invocation else ''
 
     def footer(self):
         if self.picker is not None:

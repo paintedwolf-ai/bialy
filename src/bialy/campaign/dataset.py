@@ -12,7 +12,7 @@ from .execution import atomic_json
 from .grading import decided
 from .journal import CampaignFault, canonical, digest
 from .lineage import FAMILIES
-from .sources import seal_dataset, verified_exports
+from .sources import exported_episode, seal_dataset, verified_exports
 
 FILES = {'train': 'train.jsonl', 'validation': 'val.jsonl', 'system_test': 'holdout.jsonl'}
 
@@ -31,7 +31,7 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
     episodes = Episodes(journal, lineage)
     outputs = {}
     for student in specification['models']:
-        binding, _, candidates = verified_exports(manifests[student], host_commit)
+        binding, inputs, candidates = verified_exports(manifests[student], host_commit)
         if binding['student_model'] != specification['models'][student]['directory']:
             raise CampaignFault('dataset_student_identity_mismatch')
         rows = {partition: [] for partition in FILES}
@@ -45,7 +45,8 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
                 exclusions['development_partition'] += 1
                 continue
             try:
-                verdict = episodes.admit(binding['epoch'], candidate['session'], candidate['source']['store_sha256'], decisions)
+                episode = exported_episode(inputs, candidate['source']['bundle_sha256'])
+                verdict = episodes.admit(binding['epoch'], candidate['session'], episode.manifest['store_sha256'], decisions)
             except CampaignFault as exc:
                 if exc.code != 'episode_not_qualified':
                     raise

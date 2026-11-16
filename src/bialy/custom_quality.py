@@ -54,7 +54,7 @@ def judge_rows(factory, rows_path, transcripts_path, out, seed=7):
             judge = factory.reviewer()
             if judge.id not in chats:
                 chats[judge.id] = factory.chats(judge)[0]
-            evidence = [report["receipt_id"], *report.get("invocation_receipt_ids", [])]
+            evidence = [report["receipt_id"], *report.get("operation_ids", [])]
             payload = {"session":session,"request":capture,"response":row["target"],
                        "host_receipts":report,"evidence_ids":evidence}
             answer = chats[judge.id].turn([{"role":"system","content":SYSTEM},

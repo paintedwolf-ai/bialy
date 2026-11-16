@@ -78,7 +78,7 @@ def test_an_item_shows_its_instruction_transcript_and_navigation(review_campaign
     model = press(reviewer(review_campaign, copies), 'enter', 'enter', 'enter')
     text = screen(model, height=60)
     assert f'Review › Collection (pilot) › #{first} · disagreement · build_test_repair · 7 rows' in text
-    assert 'One reviewer failed this. Pass recovers 7 training rows' in text and '[r1] completed' in text
+    assert 'One reviewer failed this. Pass recovers 7 training rows' in text and '[r1] success' in text
     assert 'v verdict   x skip' in text and 'Tab other side' not in text
     screen(model, height=12)
     press(model, 'G')
@@ -126,7 +126,7 @@ def test_a_verdict_needs_every_check_and_a_citation_then_saves(review_campaign):
         press(model, check, 'c')
         if check == '1':
             assert 'Pick the receipts that show this check. Space toggles.' in screen(model)
-            assert '[ ] tests            check passed' in screen(model) and 'r1               command completed' in screen(model)
+            assert '[ ] tests            check passed' in screen(model) and 'r1               command success' in screen(model)
             press(model, 'down', 'up', ' ', 'esc', 'c')
         press(model, 'down', ' ', 'k', 'j', 'enter')
     press(model, '6', 'p', 'e', 'o', 'k', 'x', 'backspace', 'enter')

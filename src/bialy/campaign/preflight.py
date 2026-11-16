@@ -1,37 +1,16 @@
 """Check source prerequisites before a campaign spends on collection."""
 import argparse
-import hashlib
 import json
-import sqlite3
 import subprocess
 from pathlib import Path
 
+from .. import host_bundle
 from .execution import atomic_json
 from .journal import CampaignFault
 
-COMMAND_COLUMNS = {
-    'invocation_programs': {'id', 'parent_receipt_id', 'state', 'status_code', 'settled_at',
-                            'progress_state', 'source_exact', 'syntax_validated'},
-    'invocation_program_executions': {'id', 'program_id', 'ordinal', 'state', 'status_code',
-                                     'effect_certainty', 'settled_at'},
-}
 
-
-def command_schema(schema):
-    with sqlite3.connect(':memory:') as database:
-        try:
-            database.executescript(schema)
-        except sqlite3.Error as exc:
-            raise CampaignFault('host_schema_unreadable', details={'exception_type': type(exc).__name__}) from exc
-        missing = {}
-        for table, required in COMMAND_COLUMNS.items():
-            columns = {row[1] for row in database.execute('PRAGMA table_info(' + table + ')')}
-            if required - columns:
-                missing[table] = sorted(required - columns)
-    return {'schema_sha256': hashlib.sha256(schema.encode()).hexdigest(), 'missing_columns': missing}
-
-
-def inspect(checkout, commit, process=subprocess.run, tool_surface='command-v1'):
+def inspect(checkout, commit, image, destination, process=subprocess.run):
+    """The pinned checkout is clean at commit, and its image exports that commit's training contract."""
     checkout = Path(checkout).resolve()
     actual = process(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
     if actual != commit:
@@ -40,33 +19,32 @@ def inspect(checkout, commit, process=subprocess.run, tool_surface='command-v1')
                     check=True, capture_output=True, text=True).stdout.strip()
     if dirty:
         raise CampaignFault('host_source_not_clean')
-    result = command_schema((checkout / 'lycaon/internal/db/schema.sql').read_text())
-    if tool_surface not in {'legacy', 'command-v1'}:
-        raise CampaignFault('host_tool_surface_unknown')
-    if tool_surface == 'command-v1' and result['missing_columns']:
-        raise CampaignFault('host_command_receipts_unavailable', details={'host_commit': actual, **result})
-    return {'host_commit': actual, 'tool_surface': tool_surface, **result}
+    try:
+        contract, contract_sha256 = host_bundle.contract(image, destination, commit, process)
+    except host_bundle.HostEvidenceError as exc:
+        raise CampaignFault(exc.code, details=exc.details) from exc
+    return {'host_commit': actual, 'contract_sha256': contract_sha256, 'sources': contract['sources']}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host-checkout', required=True, type=Path)
     parser.add_argument('--host-commit', required=True)
-    parser.add_argument('--tool-surface', choices=('legacy', 'command-v1'), default='command-v1')
+    parser.add_argument('--host-image', required=True)
     parser.add_argument('--out', required=True, type=Path)
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=False)
-    inputs = {'host_checkout': str(args.host_checkout.resolve()), 'host_commit': args.host_commit, 'tool_surface': args.tool_surface}
+    inputs = {'host_checkout': str(args.host_checkout.resolve()), 'host_commit': args.host_commit, 'host_image': args.host_image}
     atomic_json(args.out / 'inputs.json', inputs)
     try:
-        evidence = inspect(args.host_checkout, args.host_commit, tool_surface=args.tool_surface)
+        evidence = inspect(args.host_checkout, args.host_commit, args.host_image, args.out / 'contract')
         result = {'status': 'source_prerequisites_passed', 'evidence': evidence}
     except CampaignFault as exc:
         result = {'status': 'blocked', 'fault': exc.record()}
     except (OSError, subprocess.SubprocessError) as exc:
         result = {'status': 'blocked', 'fault': {'code': 'host_source_inspection_failed', 'retryable': False,
                                                'details': {'exception_type': type(exc).__name__}}}
-    result.update(schema='pw-campaign-source-preflight/1', inputs=inputs,
+    result.update(schema='pw-campaign-source-preflight/2', inputs=inputs,
                   live_host_qualified=False, collection_started=False, training_started=False)
     atomic_json(args.out / 'result.json', result)
     print(json.dumps(result, indent=2))

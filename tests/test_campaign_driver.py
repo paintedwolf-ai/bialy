@@ -18,7 +18,8 @@ def test_episode_request_uses_wire_identity_and_the_configured_execution_deadlin
     lineage.roots(tasks)
     lineage.freeze()
     factory = SimpleNamespace(workspace=lambda name: SimpleNamespace(name=name, kind='stack'), fleet={'prompt_timeout': '45m'})
-    run = SimpleNamespace(factory=factory, checkout=tmp_path, setting=lambda key: {'epoch': 'epoch', 'students': {}, 'host_commit': 'commit', 'tool_surface': 'command-v1'})
+    run = SimpleNamespace(factory=factory, checkout=tmp_path, path=lambda *parts: tmp_path.joinpath(*parts),
+                          setting=lambda key: {'epoch': 'epoch', 'students': {}, 'host_commit': 'commit'})
     monkeypatch.setattr('bialy.campaign.driver.inspect', lambda *args, **kwargs: {})
     provider = yaml.safe_dump({'providers': [{'id': 'provider'}]})
     monkeypatch.setattr('bialy.campaign.driver.fleet.pilot_env', lambda pilot: {})

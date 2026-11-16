@@ -40,7 +40,7 @@ class Host:
 
     def execute(self, inputs, attempt):
         cfg = self.configuration
-        source = inspect(self.run.checkout, cfg['host_commit'], tool_surface=cfg['tool_surface'])
+        source = inspect(self.run.checkout, cfg['host_commit'], self.run.image('off'), self.run.path('host-contract'))
         prepare_fleet(cfg['factory_root'])
         image = json.loads(subprocess.check_output(['docker', 'image', 'inspect', self.run.image('off')], text=True))[0]
         if image['Config'].get('Labels', {}).get('pw.host_commit') != cfg['host_commit']:
@@ -135,7 +135,7 @@ def compose(journal, cfg):
     factory.run.update(generators=cfg['teachers'], judges=cfg['reviewers'], local_workers_only=False,
                        lycaon_checkout=cfg['checkout'], engine_on={'enabled': False},
                        custom_model={'enabled': True, 'epoch': cfg['epoch'], 'host_commit': cfg['host_commit'],
-                                     'tool_surface': cfg['tool_surface'], 'students': serving(specification)})
+                                     'students': serving(specification)})
     run = Run(factory, cfg['epoch'], factory.run)
     factory.models = roster(run)
     if set(cfg['teachers']) != {model.id for model in factory.generators()}:

@@ -1,96 +1,88 @@
-import copy
-
 import pytest
+from host_bundles import operation, write_episode
 
 from bialy.campaign.host_facts import members, receipt, student_controls
 from bialy.campaign.journal import CampaignFault, digest
+from bialy.host_bundle import Episode
+
+EXECUTION = {'kind': 'execution', 'value': {'status': 'complete', 'submission_ids': ['initial'],
+                                            'closeout': {'model_authored': True, 'visible': True, 'has_tool_calls': False}}}
 
 
 def inputs():
     task = {'project_path': '/work/project', 'allowed_write_roots': ['src'], 'required_checks': ['oracle', 'host-closeout']}
-    invocation = {'id': 'call', 'tool': 'command', 'invoked': True, 'settled_at': 'time', 'status': 'error'}
-    facts = {'version': 1, 'root_session_id': 'root', 'sessions': [{'id': 'root', 'parent_id': '', 'invocations': [invocation]}],
-             'effects': [{'path': 'src/result.py', 'session_id': 'root'}],
-             'execution': {'status': 'complete', 'submission_ids': ['initial'],
-                           'closeout': {'model_authored': True, 'visible': True, 'has_tool_calls': False}}}
     oracle = {'source_sha256': 'source', 'task_spec_sha256': digest(task), 'grader_identity': 'grader',
               'checks': [{'id': 'oracle', 'passed': True}]}
-    programs = {'call': {'state': 'failed', 'status_code': 127, 'settled_at': 'time', 'progress_state': 'committed',
-                         'children': [{'state': 'completed', 'settled_at': 'time', 'effect_certainty': 'completed'}]}}
-    return task, facts, oracle, programs
+    # A failed program whose settled child changed a file: a known partial effect.
+    operations = [operation('call', call='c1', tool='command', outcome='failure', effects='known'),
+                  operation('call-op0', parent='call', tool='tee', effects='known')]
+    return task, oracle, operations
 
 
-def test_settled_known_partial_effect_is_not_an_unresolved_effect_after_recovery():
-    task, facts, oracle, programs = inputs()
-    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
-    assert result['unresolved_effects'] == 0
-    programs['call']['children'][0]['effect_certainty'] = 'unknown'
-    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
+def episode(tmp_path, operations, observations=(EXECUTION,), effects=({'path': 'src/result.py', 'session_id': 'root', 'op': 'write'},),
+            sessions=None, name='bundle'):
+    return Episode(write_episode(tmp_path / name, sessions=sessions, operations=operations, observations=observations, effects=effects))
+
+
+def test_a_settled_known_partial_effect_is_not_unresolved(tmp_path):
+    task, oracle, operations = inputs()
+    result = receipt(task, episode(tmp_path, operations), oracle, 'store', 'epoch', 'teacher', 'grader')
+    assert result['unresolved_effects'] == 0 and result['evidence_ids'] == ['call', 'host-closeout', 'oracle']
+    operations[1]['effect_state'] = 'unknown'
+    result = receipt(task, episode(tmp_path, operations, name='unknown'), oracle, 'store', 'epoch', 'teacher', 'grader')
     assert result['unresolved_effects'] == 1
 
 
-def test_extra_user_submission_and_out_of_scope_write_are_not_hidden_by_success():
-    task, facts, oracle, programs = inputs()
-    facts['execution']['submission_ids'].append('human-help')
-    facts['effects'].append({'path': '/outside/changed', 'session_id': 'root'})
-    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
-    assert result['human_interventions'] == 1 and result['unauthorized_effects'] == 1
+@pytest.mark.parametrize('change,unresolved', [
+    ({}, 0), ({'settlement': 'unsettled'}, 1), ({'effect_state': 'unknown'}, 1), ({'invoked': False, 'effect_state': 'unknown'}, 0)])
+def test_unresolved_work_is_an_invoked_operation_the_host_could_not_settle(tmp_path, change, unresolved):
+    task, oracle, _ = inputs()
+    result = receipt(task, episode(tmp_path, [{**operation('call', call='c1'), **change}]), oracle, 'store', 'epoch', 'teacher', 'grader')
+    assert result['unresolved_effects'] == unresolved
 
 
-def test_unknown_worker_parent_and_missing_program_receipts_fail_closed():
-    task, facts, oracle, programs = inputs()
-    facts['sessions'].append({'id': 'worker', 'parent_id': 'missing'})
+def test_extra_user_submission_and_out_of_scope_write_are_not_hidden_by_success(tmp_path):
+    task, oracle, operations = inputs()
+    execution = {'kind': 'execution', 'value': {**EXECUTION['value'], 'submission_ids': ['initial', 'human-help']}}
+    effects = [{'path': 'src/result.py', 'session_id': 'root', 'op': 'write'}, {'path': '/outside/changed', 'session_id': 'root', 'op': 'write'},
+               {'path': 'src/other.py', 'session_id': 'stranger', 'op': 'write'}]
+    result = receipt(task, episode(tmp_path, operations, (execution,), effects), oracle, 'store', 'epoch', 'teacher', 'grader')
+    assert result['human_interventions'] == 2 and result['unauthorized_effects'] == 1
+    assert result['host_bundle_sha256'] and result['contract_sha256']
+
+
+def test_missing_submissions_oracle_binding_and_closeout_are_visible(tmp_path):
+    task, oracle, operations = inputs()
+    with pytest.raises(CampaignFault, match='submission_evidence_missing'):
+        receipt(task, episode(tmp_path, operations, observations=()), oracle, 'store', 'epoch', 'teacher', 'grader')
+    with pytest.raises(CampaignFault, match='oracle_binding_mismatch'):
+        receipt(task, episode(tmp_path, operations, name='oracle'), oracle, 'store', 'epoch', 'teacher', 'other')
+    unfinished = {'kind': 'execution', 'value': {**EXECUTION['value'], 'status': 'failed'}}
+    result = receipt(task, episode(tmp_path, operations, (unfinished,), name='unfinished'), oracle, 'store', 'epoch', 'teacher', 'grader')
+    assert [check['passed'] for check in result['checks'] if check['id'] == 'host-closeout'] == [False]
+
+
+def test_the_session_tree_must_be_rooted_and_closed(tmp_path):
+    good = episode(tmp_path, [], sessions=[{'id': 'root'}, {'id': 'worker', 'parent_id': 'root'}])
+    assert set(members(good, 'root')) == {'root', 'worker'}
+    with pytest.raises(CampaignFault, match='host_identity_mismatch'):
+        members(good, 'other')
+    broken = episode(tmp_path, [], sessions=[{'id': 'root'}, {'id': 'worker', 'parent_id': 'missing'}], name='broken')
     with pytest.raises(CampaignFault, match='session_tree_invalid'):
-        members(facts, 'root')
-    facts['sessions'].pop()
-    with pytest.raises(CampaignFault, match='program_evidence_missing'):
-        receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', {})
+        members(broken, 'root')
+    duplicate = episode(tmp_path, [], sessions=[{'id': 'root'}, {'id': 'root'}], name='duplicate')
+    with pytest.raises(CampaignFault, match='sessions_invalid'):
+        members(duplicate, 'root')
 
 
-def test_student_controls_check_actual_dispatch_on_every_student_call():
-    record = {'schema': 'pw-training-turn/1', 'provider': 'student', 'model': 'model',
-              'student_provider': 'student', 'student_model': 'model', 'call_id': 'one',
-              'dispatches': 1, 'settled': True, 'request': {'reasoning_effort': 'none'}}
-    assert student_controls([record], 'student', 'model') is False
-    wrong = copy.deepcopy(record)
-    wrong['call_id'] = 'two'
-    wrong['request']['reasoning_effort'] = 'high'
+def test_student_controls_check_actual_dispatch_on_every_student_call(tmp_path):
+    record = {'schema': 'pw-training-turn/1', 'provider': 'student', 'model': 'model', 'student_provider': 'student',
+              'student_model': 'model', 'call_id': 'one', 'dispatches': 1, 'settled': True, 'request': {'reasoning_effort': 'none'}}
+    single = Episode(write_episode(tmp_path / 'one', captures=[record]))
+    assert student_controls(single, 'student', 'model') is False
+    wrong = dict(record, call_id='two', request={'reasoning_effort': 'high'})
+    both = Episode(write_episode(tmp_path / 'two', captures=[record, wrong]))
     with pytest.raises(CampaignFault, match='thinking_enabled_or_unknown'):
-        student_controls([record, wrong], 'student', 'model')
-    wrong['provider'] = 'teacher'
-    with pytest.raises(CampaignFault, match='call_capture_missing'):
-        student_controls([wrong], 'student', 'model')
-
-
-def test_program_status_is_preserved_for_review_and_unsettled_children_block_admission():
-    task, facts, oracle, programs = inputs()
-    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
-    assert result['programs']['call']['status_code'] == 127
-    programs['call']['children'][0]['state'] = 'running'
-    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', programs)
-    assert result['unresolved_effects'] == 1
-
-
-@pytest.mark.parametrize('verdict,unresolved', [('passed', 0), ('failed', 0), ('unverifiable', 1), (None, 1)])
-def test_legacy_receipts_preserve_terminal_verdict_without_program_facts(verdict, unresolved):
-    task, facts, oracle, _ = inputs()
-    facts['sessions'][0]['invocations'][0]['source_verdict'] = verdict
-    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', {}, tool_surface='legacy')
-    assert result['legacy_commands'] == {'call': verdict}
-    assert result['unresolved_effects'] == unresolved
-    assert result['programs'] == {}
-
-
-@pytest.mark.parametrize('mutation, unresolved', [({}, 0), ({'status': 'error'}, 1),
-    ({'settled_at': None}, 2), ({'failure': {'class': 'host_rejection', 'code': 'OTHER'}}, 1),
-    ({'evidence': {'kind': 'rejection', 'ref': 'OTHER'}}, 1)])
-def test_known_missing_executable_is_not_an_unknown_effect(mutation, unresolved):
-    task, facts, oracle, _ = inputs()
-    invocation = facts['sessions'][0]['invocations'][0]
-    invocation.update(status='rejected', failure={'class': 'host_rejection', 'code': 'COMMAND_NOT_FOUND'},
-                      evidence={'kind': 'rejection', 'ref': 'COMMAND_NOT_FOUND'})
-    invocation.update(mutation)
-    result = receipt(task, facts, oracle, 'store', 'epoch', 'teacher', 'grader', {}, tool_surface='legacy')
-    assert result['legacy_commands'] == {'call': None}
-    assert result['unresolved_effects'] == unresolved
-    assert result['legacy_rejections'] == ({} if unresolved else {'call': 'COMMAND_NOT_FOUND'})
+        student_controls(both, 'student', 'model')
+    with pytest.raises(CampaignFault, match='capture_missing_or_duplicate'):
+        student_controls(single, 'teacher', 'model')

@@ -30,7 +30,7 @@ def examples(number):
             {'dialog.py': "from pathlib import Path\nimport sys\nassert sys.stdin.isatty()\n"
                           "answer = input('Confirmation code: ')\nPath('confirmation.txt').write_text(answer+'\\n')\n"},
             f"assert Path('confirmation.txt').read_text() == {token + chr(10)!r}\n"
-            "assert any(i['tool'] == 'terminal_send' and i['invoked'] for s in facts['sessions'] for i in s['invocations'])\n"),
+            "assert any(o.get('tool') == 'terminal_send' and o['invoked'] for o in operations)\n"),
         'build_test_repair': (
             'Run the unit tests in test_math.py, fix the failing calculation without changing the tests, and verify the repair.',
             {'maths.py': 'def total(items):\n    return len(items)\n',
@@ -79,7 +79,9 @@ def build(directory):
             root = directory / identifier
             for name, body in fixtures.items():
                 write_exact(root / 'fixtures' / name, body)
-            script = "import json,sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\nfacts=json.loads(Path('/evidence/host-evidence.json').read_text())\n" + assertions
+            script = ("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()))\n"
+                      "operations=[json.loads(line) for line in Path('/evidence/host-bundle/operations.jsonl').read_text().splitlines() if line.strip()]\n"
+                      + assertions)
             write_exact(root / 'check.py', script)
             files = {str(path.relative_to(root)): file_sha256(path) for path in root.rglob('*') if path.is_file()}
             task = {'id': identifier, 'partition': partition, 'family': family, 'source_class': 'synthetic',

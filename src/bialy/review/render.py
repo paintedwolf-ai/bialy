@@ -4,6 +4,7 @@ import textwrap
 from pathlib import Path
 
 from ..campaign.grading import DIMENSIONS
+from ..host_bundle import Episode
 
 CHECKS = {
     'task_outcome': ('Task outcome', 'Was the asked-for work actually done?'),
@@ -45,18 +46,18 @@ def heading(item):
 
 
 class Subject:
-    """One episode as a person reads it: the transcript, its receipts, and short evidence references."""
+    """One episode as a person reads it: the transcript, its operations, and short evidence references."""
     def __init__(self, subject):
         self.subject = subject
-        self.facts = json.loads((Path(subject['directory']) / 'host-evidence.json').read_text())
+        self.episode = Episode(Path(subject['directory']) / 'host-bundle')
         checks = [check['id'] for check in subject['checks']]
-        invocations = [invocation for session in self.facts['sessions'] for invocation in session.get('invocations', [])]
+        operations = [operation for operation, _ in self.episode.calls()]
         self.refs = {check: check for check in checks}
-        for index, invocation in enumerate(invocations, 1):
-            self.refs[invocation['id']] = 'r' + str(index)
+        for index, operation in enumerate(operations, 1):
+            self.refs[operation['id']] = 'r' + str(index)
         self.ids = {ref: identifier for identifier, ref in self.refs.items()}
-        self.invocations = {invocation['tool_call_id']: invocation for invocation in invocations}
-        self.by_id = {invocation['id']: invocation for invocation in invocations}
+        self.invocations = {operation['tool_call_id']: operation for operation in operations if operation.get('tool_call_id')}
+        self.by_id = {operation['id']: operation for operation in operations}
 
     def ref(self, identifier):
         return self.refs.get(identifier, identifier)
@@ -69,14 +70,14 @@ class Subject:
         for check in self.subject['checks']:
             out.append(f"  {'pass' if check['passed'] else 'FAIL'}  {check['id']}")
         out += ['', 'Transcript']
-        for session in self.facts['sessions']:
-            if session['id'] != self.facts['root_session_id']:
+        for session in self.episode.sessions:
+            if session['id'] != self.episode.root_session:
                 out.append(f"  ── worker {session['id']}")
-            for message in session.get('messages', []):
+            for message in self.episode.messages(session):
                 out += self.message(message, width, full)
         out += ['', 'Evidence']
-        for invocation in (item for session in self.facts['sessions'] for item in session.get('invocations', [])):
-            out.append(f"  {self.ref(invocation['id']):<4} {invocation['tool']:<14} {invocation['status']}")
+        for operation in self.by_id.values():
+            out.append(f"  {self.ref(operation['id']):<4} {operation.get('tool', ''):<14} {operation['semantic_outcome']}")
         return out
 
     def message(self, message, width, full):
@@ -92,7 +93,7 @@ class Subject:
         result = message.get('tool_result')
         if result:
             invocation = self.invocations.get(result.get('tool_call_id'))
-            reference = '[' + self.ref(invocation['id']) + '] ' + invocation['status'] if invocation else ''
+            reference = '[' + self.ref(invocation['id']) + '] ' + invocation['semantic_outcome'] if invocation else ''
             content = (result.get('content') or '').splitlines()
             if not full and len(content) > TOOL_LINES:
                 content = content[:TOOL_LINES] + [f'… {len(content) - TOOL_LINES} more lines (show --full)']

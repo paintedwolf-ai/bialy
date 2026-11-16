@@ -8,7 +8,7 @@ import sys
 
 import yaml
 
-from . import custom_model_run, faults, fleet
+from . import custom_model_run, faults, fleet, host_bundle
 
 
 def verify_window(run, pass_name):
@@ -77,7 +77,7 @@ def run_phase(run, pass_name, phase, pilot):
         if result.returncode or report.get("status") != "passed":
             raise faults.RunFault(report.get("code", "preflight_runner_failed"), phase)
         if phase == "fixture":
-            report["receipt_candidates"] = verify_receipts(run, shard)
+            report["receipt_candidates"] = verify_receipts(run, shard, pass_name)
         return report
     except subprocess.TimeoutExpired as exc:
         raise faults.RunFault("preflight_timeout", phase) from exc
@@ -86,16 +86,22 @@ def run_phase(run, pass_name, phase, pilot):
         fleet.release_work(work)
 
 
-def verify_receipts(run, shard):
-    """Qualify captured payloads with the pinned host's actual receipt exporter."""
+def verify_receipts(run, shard, pass_name):
+    """Qualify captured payloads with the pinned host's actual bundle exporter and collector."""
     custom = run.setting("custom_model")
-    return {name: verify_student_receipts(run, shard, name, serving) for name, serving in custom["students"].items()}
+    try:
+        _, contract_sha256 = host_bundle.contract(run.image(pass_name), run.path("host-contract"), custom["host_commit"])
+    except host_bundle.HostEvidenceError as exc:
+        raise faults.RunFault("preflight_host_contract_failed", shard.name) from exc
+    return {name: verify_student_receipts(run, shard, pass_name, contract_sha256, name, serving)
+            for name, serving in custom["students"].items()}
 
 
-def verify_student_receipts(run, shard, name, serving):
+def verify_student_receipts(run, shard, pass_name, contract_sha256, name, serving):
     custom = run.setting("custom_model")
-    identity = {key: custom[key] for key in ("epoch", "host_commit", "tool_surface", "students")}
-    identity.update(student_provider=serving["provider"], student_kind=serving["kind"], student_model=serving["model"])
+    identity = {key: custom[key] for key in ("epoch", "host_commit", "students")}
+    identity.update(contract_sha256=contract_sha256, student_provider=serving["provider"],
+                    student_kind=serving["kind"], student_model=serving["model"])
     binding = shard / ("receipt-binding-" + name + ".json")
     custom_model_run.write_json(binding, identity)
     records = [json.loads(p.read_text()) for p in (shard / "training-captures").glob("*.json")]
@@ -103,13 +109,20 @@ def verify_student_receipts(run, shard, name, serving):
     # enter a collection's training splits.
     catalog = custom_model_run.digest([r["student_request"].get("tools", []) for r in records
                                       if r.get("schema") == "pw-training-turn/1" and r.get("student_request")])
-    source = shard.parent.parent / ("receipt-source-" + name)
-    (source / "shards").mkdir(parents=True)
-    (source / "shards" / shard.name).symlink_to(shard.resolve(), target_is_directory=True)
+    bundles = []
+    for line in (shard / "manifest.jsonl").read_text().splitlines():
+        if line.strip():
+            root = json.loads(line)["root_session"]
+            try:
+                bundles.append(host_bundle.export(run.image(pass_name), shard, root, shard.parent.parent / "bundles" / shard.name / root).directory)
+            except host_bundle.HostEvidenceError as exc:
+                raise faults.RunFault("preflight_bundle_export_failed", shard.name) from exc
     destination = shard / ("receipt-export-" + name)
-    result = subprocess.run([sys.executable, str(run.checkout / "scripts/bialy/custom_model/collect.py"),
-                             "--fleet", str(source), "--binding", str(binding),
-                             "--catalog-sha256", catalog, "--out", str(destination)], capture_output=True, text=True, timeout=30)
+    arguments = [sys.executable, str(run.checkout / "scripts/bialy/custom_model/collect.py"), "--binding", str(binding),
+                 "--catalog-sha256", catalog, "--out", str(destination)]
+    for directory in bundles:
+        arguments += ["--bundle", str(directory)]
+    result = subprocess.run(arguments, capture_output=True, text=True, timeout=30)
     (shard / ("receipt-export-" + name + ".log")).write_text(result.stdout + result.stderr)
     if result.returncode:
         raise faults.RunFault("preflight_receipt_export_failed", shard.name)
