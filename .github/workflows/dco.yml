@@ -30,4 +30,4 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Certify original PR commits
-        uses: paintedwolf-ai/dco-checker@82d6997588764ead443a819de36ec373b8cbca4f
+        uses: paintedwolf-ai/dco-checker@0946029d0650c8e23d928db8277bf9765a01bf17

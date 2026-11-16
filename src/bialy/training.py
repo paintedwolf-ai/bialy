@@ -1,9 +1,9 @@
 """Train the heads on this machine: the trainer from the pinned checkout in a venv the
 run makes, over the accelerator it finds, under a time budget.
 
-Recipes are the released ones, named as scripts/bialy/README.md names them: B5 and
-B7G for the turn heads, E4 for unit-rank over the judged rows and the skill
-requests, and code-rank over the site dumps.
+Recipes are the released ones, named as scripts/bialy/README.md names them: B5 for
+turn-load, E4 for unit-rank over the judged rows and the skill requests, and
+code-rank over the site dumps.
 """
 import json
 import os
@@ -26,7 +26,6 @@ RANK_ARGS = ["--families", "skills,requests", "--skill-scored", "8", "--skill-ze
 RETENTION_ARGS = ["--families", "retention", "--seed", "11", "--batch-size", "64", "--epochs", "45", "--patience", "8"]
 RECIPES = {
     "B5": {"head": "turn-load", "kind": "turn", "families": "tools"},
-    "B7G": {"head": "guide-load", "kind": "turn", "families": "guides"},
     "E4": {"head": "unit-rank", "kind": "rank"},
     "code-rank": {"head": "code-rank", "kind": "rerank"},
     # R1: the context retention head, over the retention rows the same sessions wrote.

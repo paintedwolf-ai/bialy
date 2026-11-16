@@ -4,9 +4,9 @@ import json
 import sqlite3
 
 import pytest
-from conftest import row
+from conftest import row, sqlite_store
 
-from bialy import cli, config, dpo, fleet, tasks
+from bialy import cli, config, dpo, fleet, preservation, tasks
 from bialy import run as runmod
 
 
@@ -158,7 +158,7 @@ def test_extract_strips_thinking_preloads_judge_tools_and_pairs_rejections(tmp_p
     sft_rows = [json.loads(line) for line in sft_out.read_text().splitlines()]
     first_sft = sft_rows[0]
     assert "summarize" in first_sft["surface"]["active_tools"]
-    assert "commit" in first_sft["surface"]["preloaded_guides"]
+    assert "commit" in first_sft["surface"]["preloaded_skills"]
     # Redundant request_tools for preloaded summarize was stripped, and thinking was removed.
     call_names = [c["name"] for c in first_sft["target"]["tool_calls"]]
     assert "request_tools" not in call_names
@@ -297,6 +297,8 @@ def test_hybrid_generator_weights_local_workers_and_sidecar_request_metering(fac
     shard.mkdir(parents=True)
     (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "t0", "root_session": "s1", "status": "settled", "meta": {"workspace": "flask"}}) + "\n")
     (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s1", "receipt": 1}) + "\n")
+    sqlite_store(shard / preservation.STORE, ["s1"])
+    preservation.adopt(shard, "completed")
     (shard / "requests.jsonl").write_text(
         json.dumps({"schema": "pw-decide-request/1", "root_session": "s1", "model": "accounts/fireworks/models/glm-5p3-flash", "input_tokens": 1000000, "output_tokens": 1000000})
         + "\n"
