@@ -60,11 +60,13 @@ class Workbench:
         assert rows.name == 'val.jsonl'
         return self.calibrated
 
-    def replay(self, launcher, corpus, rows, out):
-        assert rows.name == 'development.jsonl'
+    def replay(self, launcher, corpus, rows, out, truth='consensus'):
+        assert rows.name in ('development.jsonl', 'holdout.jsonl')
+        self.truth = truth
         self.replays += 1
         self.seen_corpus = json.loads(Path(corpus).read_text())
         Path(out).write_text(json.dumps(self.replay_report))
+        return self.replay_report
 
     def decisions(self, config):
         return DECISIONS
@@ -246,3 +248,18 @@ def test_the_pilot_overlay_carries_thresholds_and_becomes_the_hosts_config(tmp_p
     assert fleet.pilot_env(pilot)['LYCAON_CONFIG_ROOT'] == fleet.PILOT_MOUNT + '/overlay'
     with pytest.raises(ValueError, match='no threshold'):
         fleet.stage_config_overlay(config, pilot, thresholds={'turn.tools.unload_at': 0.1})
+
+
+def test_the_holdout_comparison_is_read_once_against_the_fallback(tmp_path):
+    journal, assignment, run, workbench = campaign(tmp_path)
+    trained = selector.SelectorTraining(journal, run, workbench).execute(rows(assignment), 'a')
+    run.path('split', 'holdout.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in (
+        {'offered': {'loadable': ['read', 'edit', 'command']}, 'labels': {'tools': ['read']}},
+        {'offered': {'loadable': ['read', 'edit']}, 'labels': {'tools': ['edit', 'web']}})))
+    stage = selector.SelectorHoldout(journal, run, workbench)
+    output = stage.execute({'selector': trained}, 'h')
+    assert output['p0'] == {'recall': 0.9, 'precision': 0.7, 'bytes_saved_per_turn': None} and workbench.truth == 'called'
+    assert output['fallback'] == {'recall': 1.0, 'precision': 0.4, 'bytes_saved_per_turn': 0}
+    assert stage.execute({'selector': trained}, 'again') == output and workbench.replays == 1
+    stage.validate({'selector': trained}, output)
+    journal.close()

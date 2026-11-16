@@ -16,7 +16,7 @@ def test_every_profile_runs_the_same_student_stages(tmp_path):
         backend = Backend()
         campaign(journal, backend, name, ['e4b']).run()
         seen[name] = [stage for stage in backend.names() if stage not in (
-            'head_rows', 'selector_training', 'selector_qualification', 'host_adoption', 'student_host_qualification',
+            'head_rows', 'selector_training', 'selector_qualification', 'selector_holdout', 'host_adoption', 'student_host_qualification',
             'selector_supplied', 'compare_e4b')]
         journal.close()
     assert seen['dry-run'] == seen['pilot'] == seen['full']
