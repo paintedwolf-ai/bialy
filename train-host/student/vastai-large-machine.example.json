@@ -13,7 +13,7 @@
     "rental": "on-demand",
     "lifetime_hours": 72,
     "specification": {
-      "gpu_name": "H200_NVL",
+      "gpu_name": "H200",
       "num_gpus": 1,
       "gpu_memory_gib": 140,
       "memory_gib": 128,

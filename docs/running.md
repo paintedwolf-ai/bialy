@@ -761,7 +761,8 @@ positions.
 
 The requirement is the estimate with 15% headroom, and the student
 specification refuses to load if a requirement falls under it. E4B fits an
-80 GiB card; 12B and 26B-A4B do not at this length and need the next size up.
+80 GiB card; 12B and 26B-A4B do not at this length and train on an H200
+(140 GiB), which `train-host/student/vastai-large-machine.example.json` rents.
 The estimate assumes an attention kernel that never materializes the
 token-pair matrix (69 GB for E4B's eight heads at this length, twice that for
 the others); the trainer disables the kernel that does, so an unsupported
