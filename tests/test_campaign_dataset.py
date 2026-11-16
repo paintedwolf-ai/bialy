@@ -41,14 +41,14 @@ def bank(tmp_path, monkeypatch):
     for name, model in load()['models'].items():
         folder = tmp_path / name
         folder.mkdir()
-        candidates = folder / 'sft.receipts.jsonl'
+        candidates = folder / 'rows.jsonl'
         candidates.write_text(''.join(json.dumps(row) + '\n' for row in rows))
         manifest = folder / 'manifest.json'
-        manifest.write_text(json.dumps({'schema': 'pw-receipt-export/2', 'identity': {
+        manifest.write_text(json.dumps({'schema': 'pw-training-rows/1', 'identity': {
             'host_commit': 'host', 'epoch': 'epoch', 'student_model': model['directory']},
             'bundles': bundles, 'rows_sha256': file_sha256(candidates)}))
         manifests[name] = [manifest]
-    monkeypatch.setattr('bialy.campaign.dataset.training_eligible', lambda row: True)
+    monkeypatch.setattr('bialy.campaign.dataset.training_ready', lambda row: True)
     return journal, lineage, manifests
 
 

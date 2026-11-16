@@ -186,9 +186,9 @@ def test_fixture_reduction_thresholds_preserve_the_declared_window(tmp_path):
     assert yaml.safe_load(path.read_text())["keep_recent_messages"] == 16
 
 
-@pytest.mark.parametrize("counts, expected", [({"accepted_candidates": 4}, 4),
-    ({"excluded:request control needs a model-specific renderer": 4}, None),
-    ({"accepted_candidates": 1, "excluded:invalid receipt": 1}, None)])
+@pytest.mark.parametrize("counts, expected", [({"candidates": 4}, 4),
+    ({"unbuildable:request control needs a model-specific renderer": 4}, None),
+    ({"candidates": 1, "host_excluded": 1}, None)])
 def test_preflight_requires_receipt_admission_not_just_kept_payloads(factory, tmp_path, monkeypatch, counts, expected):
     run = collection(factory, tmp_path)
     shard = run.path("preflight-on/shards/fixture")

@@ -181,6 +181,8 @@ sqlite3 /cfg/store.db ".backup '$out/store.db'"
 sqlite3 "$out/store.db" "PRAGMA journal_mode=DELETE;" >/dev/null
 if [ "${BIALY_CAMPAIGN_CAPTURE:-}" = 1 ] && [ -d /cfg/projects ]; then
   cp -R /cfg/projects "$out/projects"
+else
+  /opt/bialy/retain-model-outputs.sh "$out"
 fi
 mv "$out/retention.part" "$out/retention.jsonl"
 mv "$out/requests.part" "$out/requests.jsonl"

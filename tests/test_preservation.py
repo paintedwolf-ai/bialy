@@ -27,7 +27,7 @@ def test_a_snapshot_of_a_live_wal_store_carries_its_committed_rows(tmp_path):
     assert not list(shard.glob("store.*.part")) and not (shard / preservation.FAULT).exists()
 
 
-@pytest.mark.parametrize("fail", ["backup", "journal"])
+@pytest.mark.parametrize("fail", ["backup", "journal", "retention"])
 def test_a_failed_backup_is_a_typed_fault_and_never_replaces_a_verified_store(tmp_path, fail):
     live = sqlite_store(tmp_path / "live.db", ["s1"])
     shard = tmp_path / "shard"
@@ -139,3 +139,12 @@ def test_each_attempt_keeps_its_own_evidence(tmp_path):
     sqlite_store(shard / preservation.STORE, ["s2"])
     assert preservation.archive_attempt(shard, []) == shard / "attempts" / "2"
     assert preservation.digest(first / preservation.STORE) != preservation.digest(shard / "attempts" / "2" / preservation.STORE)
+
+
+def test_a_snapshot_retains_the_model_output_bodies_its_store_names(tmp_path):
+    live = sqlite_store(tmp_path / "live.db", ["s1"])
+    shard = tmp_path / "shard"
+    shard.mkdir()
+    docker = FakeDocker(live, shard)
+    preservation.container_backup(docker, "c1", shard, "completed")
+    assert ("docker", "exec", "c1", "/opt/bialy/retain-model-outputs.sh", preservation.CONTAINER_SHARD) in docker.calls

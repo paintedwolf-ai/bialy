@@ -26,10 +26,3 @@ run:
     enabled: true
     epoch: command-1
     host_commit: <host commit>
-    quality_judge: true
-    passes: [on]                   # the student learns from engine-on trajectories only
-    student: gemma-4-e4b-it
-    teacher: gemma-4-26b-a4b-it-q4
-    preload_from_judge: false
-    shadow: false
-    repair: false

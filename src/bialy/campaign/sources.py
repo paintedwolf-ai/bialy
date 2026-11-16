@@ -32,7 +32,7 @@ def verified_exports(manifests, host_commit):
     for manifest in map(Path, manifests):
         exported = json.loads(manifest.read_text())
         identity = exported.get('identity', {})
-        if exported.get('schema') != 'pw-receipt-export/2' or identity.get('host_commit') != host_commit:
+        if exported.get('schema') != 'pw-training-rows/1' or identity.get('host_commit') != host_commit:
             raise CampaignFault('host_export_identity_mismatch')
         current = {key: identity.get(key) for key in ('epoch', 'host_commit', 'contract_sha256', 'student_provider', 'student_kind', 'student_model')}
         if binding is not None and binding != current:
@@ -42,7 +42,7 @@ def verified_exports(manifests, host_commit):
             if file_sha256(Path(name) / 'manifest.json') != checksum or name in inputs and inputs[name] != checksum:
                 raise CampaignFault('host_export_input_changed')
             inputs[name] = checksum
-        path = manifest.parent / 'sft.receipts.jsonl'
+        path = manifest.parent / 'rows.jsonl'
         if file_sha256(path) != exported.get('rows_sha256'):
             raise CampaignFault('host_export_rows_changed')
         for row in (json.loads(line) for line in path.read_text().splitlines() if line.strip()):
@@ -72,7 +72,11 @@ def seal_dataset(journal, lineage, files, export_manifests, decisions, checkout,
     episodes = Episodes(journal, lineage)
     for path in map(Path, files):
         for row in (json.loads(line) for line in path.read_text().splitlines() if line.strip()):
-            candidate = {key: value for key, value in row.items() if key not in {'meta', 'split_group'}}
+            # Assembly adds split_group and meta.task_id; the exported row is the rest.
+            meta = {key: value for key, value in row.get('meta', {}).items() if key != 'task_id'}
+            candidate = {key: value for key, value in row.items() if key not in ('split_group', 'meta')}
+            if meta:
+                candidate['meta'] = meta
             if digest(candidate) not in candidates:
                 raise CampaignFault('row_not_in_host_export')
             meta = row.get('meta', {})

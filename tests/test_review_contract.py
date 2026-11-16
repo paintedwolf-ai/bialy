@@ -3,24 +3,32 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from test_dpo_qualification import captured_row
+from test_training_rows import call, candidate
 
 from bialy.campaign import review_contract, reviewer_controls
 from bialy.campaign.grading import DIMENSIONS
 from bialy.campaign.journal import CampaignFault, Journal, digest
 
 
+def eligible_row():
+    """An eligible training row from session s1 whose call ran operation op-1."""
+    item = candidate(calls=[call(operation_ids=['op-1'])], session='s1')
+    item['execution']['receipt_id'] = 'validation-1'
+    target = item['target']
+    return {**item, 'schema': 'pw-training-row/1', 'response_sha256': digest(target), 'meta': {'model': 'teacher'},
+            'admission': {'eligibility': 'eligible', 'category': 'ordinary', 'semantic_outcome': 'success'}}
+
+
 def test_action_review_binds_request_response_and_any_reviewer(tmp_path):
-    row = captured_row()
-    row["meta"]["model"] = "teacher"
+    row = eligible_row()
     rows, transcripts, out = (tmp_path / name for name in ("rows", "transcripts", "quality"))
-    rows.write_text(json.dumps(row) + "\n")
+    rows.write_text(json.dumps(row) + "\n" + json.dumps({**row, "admission": {"eligibility": "excluded", "reason": "unknown_effects"}}) + "\n")
     transcripts.write_text(json.dumps({"session_id": "s1", "messages": []}) + "\n")
     calls = []
 
     class Chat:
         def turn(self, messages, **kwargs):
-            assert kwargs["schema"] == review_contract.ACTION.bound(["validation-1"])
+            assert kwargs["schema"] == review_contract.ACTION.bound(["validation-1", "op-1"])
             assert kwargs["max_tokens"] == 4096
             calls.append(json.loads(messages[1]["content"]))
             return {"text": json.dumps({"verdict": "pass", "evidence_ids": ["validation-1"], "reason": "fixture assessment"})}
@@ -28,15 +36,19 @@ def test_action_review_binds_request_response_and_any_reviewer(tmp_path):
     factory = SimpleNamespace(model=lambda _: SimpleNamespace(id="teacher", family="gemma", revision="a"),
                               reviewer=lambda: SimpleNamespace(id="judge", family="qwen", revision="b"),
                               chats=lambda _: [Chat()])
-    assert review_contract.judge_rows(factory, rows, transcripts, out) == {"pass": 1}
+    assert review_contract.judge_rows(factory, rows, transcripts, out) == {"pass": 1, "not_eligible": 1}
     quality = json.loads(out.read_text())
     assert quality["request_sha256"] == row["request_capture"]["sha256"]
-    assert quality["response_sha256"] == row["validation"]["response_sha256"]
+    assert quality["response_sha256"] == row["response_sha256"]
+    assert calls[0]["execution"] == row["execution"] and calls[0]["admission"] == row["admission"]
     assert calls[0]["response"] == row["target"]
     assert next(iter(calls[0])) == "session"
     assert quality["review_input_sha256"] == digest(calls[0])
     factory.reviewer = lambda: SimpleNamespace(id="judge", family="gemma", revision="b")
-    assert review_contract.judge_rows(factory, rows, transcripts, tmp_path / "same-family") == {"pass": 1}
+    assert review_contract.judge_rows(factory, rows, transcripts, tmp_path / "same-family") == {"pass": 1, "not_eligible": 1}
+    (tmp_path / "changed").write_text(json.dumps({**row, "response_sha256": "0" * 64}) + "\n")
+    with pytest.raises(ValueError, match="response binding changed"):
+        review_contract.judge_rows(factory, tmp_path / "changed", transcripts, tmp_path / "refused")
 
 
 @pytest.mark.parametrize("verdict", [
@@ -45,8 +57,7 @@ def test_action_review_binds_request_response_and_any_reviewer(tmp_path):
     {"verdict": "maybe", "evidence_ids": ["validation-1"], "reason": "uncertain"},
 ])
 def test_quality_review_rejects_invalid_verdicts(tmp_path, verdict):
-    row = captured_row()
-    row["meta"]["model"] = "teacher"
+    row = eligible_row()
     rows, transcripts, out = (tmp_path / name for name in ("rows", "transcripts", "quality"))
     rows.write_text(json.dumps(row) + "\n")
     transcripts.write_text(json.dumps({"session_id": "s1", "messages": []}) + "\n")
