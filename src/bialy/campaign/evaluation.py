@@ -5,6 +5,7 @@ import time
 from .execution import Executor, atomic_json
 from .grading import behavioral_result, effective_attempts, reviewed
 from .journal import CampaignFault, digest
+from .selector import plan_record
 
 
 class EvaluationPlan:
@@ -27,7 +28,7 @@ class EvaluationPlan:
             raise CampaignFault('collection_episode_requirements_invalid')
         return {'collection_episodes': collection, 'tasks': tasks, 'focuses': list(self.lineage.focuses), 'attempts_per_task': self.repetitions, 'bootstrap_samples': self.bootstrap_samples,
                 'bootstrap_seed': self.seed, 'lineage_sha256': self.lineage.freeze(),
-                'measurements_sha256': digest(inputs['measurements']),
+                'measurements_sha256': digest(inputs['measurements']), 'selector': plan_record(inputs['selector']),
                 'planned_attempts_per_arm': len(tasks) * self.repetitions}
 
     def execute(self, inputs, attempt):

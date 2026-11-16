@@ -42,7 +42,7 @@ DECISIONS = Path("overlay/config/packs/painted-wolf/platform/host/decisions.yaml
 COMPACTION = Path("overlay/config/packs/painted-wolf/platform/host/compaction.yaml")
 
 
-def stage_config_overlay(config_dir, engine_dir, deadline_ms=None, context_window=None):
+def stage_config_overlay(config_dir, engine_dir, deadline_ms=None, context_window=None, thresholds=None):
     """Stage `config_dir`, the lycaon/config tree of the commit the binaries were built
     from, with the run's runtime settings.
 
@@ -52,7 +52,10 @@ def stage_config_overlay(config_dir, engine_dir, deadline_ms=None, context_windo
 
     context_window is the true window of the model a collection trains. Sessions budget
     their context exactly as that model's sessions would (its window times the host's
-    live-budget share), so teachers act on the history a student will be given."""
+    live-budget share), so teachers act on the history a student will be given.
+
+    thresholds sets decision thresholds by dotted path, such as turn.tools.load_at; a
+    selector policy carries the ones it calibrated."""
     overlay = Path(engine_dir) / "overlay" / "config"
     shutil.rmtree(overlay, ignore_errors=True)
     shutil.copytree(config_dir, overlay, symlinks=False)
@@ -66,6 +69,18 @@ def stage_config_overlay(config_dir, engine_dir, deadline_ms=None, context_windo
             elif section in DECISION_SECTIONS and line.startswith("  deadline_ms:"):
                 lines[i] = "  deadline_ms: %d" % deadline_ms
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if thresholds:
+        path = Path(engine_dir) / DECISIONS
+        decisions = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for name, value in thresholds.items():
+            *parents, leaf = name.split(".")
+            node = decisions
+            for key in parents:
+                node = node[key]
+            if leaf not in node:
+                raise ValueError("decisions.yaml has no threshold %s" % name)
+            node[leaf] = value
+        path.write_text(yaml.safe_dump(decisions, sort_keys=False), encoding="utf-8")
     if context_window:
         path = Path(engine_dir) / COMPACTION
         compaction = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -91,7 +106,8 @@ PILOT_MOUNT = "/opt/decide"
 
 def pilot_env(pilot):
     """The sidecar's decision engine for a pass: off, or the engine and heads in `pilot`
-    (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT.
+    (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT. A pilot that
+    carries overlay/config, a selector policy's thresholds among it, is the host's config.
 
     Runners have only a CPU, so the engine is pinned to it. Picking a device itself, the
     engine refuses one slower than the product's reference speed, which a shared two-core
@@ -102,7 +118,8 @@ def pilot_env(pilot):
     heads = sorted(p.stem for p in (Path(pilot) / "heads").glob("*.safetensors"))
     if not heads:
         raise ValueError("pilot %s carries no heads" % pilot)
-    return {"LYCAON_DECIDE_BINARY": PILOT_MOUNT + "/bialy", "LYCAON_DECIDE_MODEL_DIR": PILOT_MOUNT + "/model",
+    configured = {"LYCAON_CONFIG_ROOT": PILOT_MOUNT + "/overlay"} if (Path(pilot) / "overlay" / "config").is_dir() else {}
+    return {**configured, "LYCAON_DECIDE_BINARY": PILOT_MOUNT + "/bialy", "LYCAON_DECIDE_MODEL_DIR": PILOT_MOUNT + "/model",
             "LYCAON_DECIDE_DEVICE": "cpu",
             "LYCAON_DECIDE_HEADS": ",".join("%s=%s/heads/%s.safetensors" % (h, PILOT_MOUNT, h) for h in heads)}
 
