@@ -276,6 +276,66 @@ review still decide which candidates train the student. Structured utility healt
 requires a host build carrying `pw-training-health/1` telemetry under the capture
 directory's `health/` subdirectory.
 
+## Campaign rehearsal
+
+Before money is spent on a campaign, the `dry-run` profile is run once for each
+tier. It qualifies mechanics only: collection, assembly, training with a pause
+and resume, the export of all three outputs, serving and teardown. Each run needs
+explicit authorization because it rents a GPU. The 26B-A4B run is the first
+evidence that the largest student fits at the declared context on the rented
+machine; if it runs out of memory, treat that as a finding to resolve before the
+campaign, not as a run to retry.
+
+Pin one current host `main` commit and check that the checkout, the runner image
+and the plan all name it:
+
+```bash
+git -C /path/to/paintedwolf-code fetch origin
+git -C /path/to/paintedwolf-code checkout --detach origin/main
+git -C /path/to/paintedwolf-code rev-parse HEAD              # the commit the configuration pins
+bialy run --run rehearsal-e4b --until image                  # builds bialy-runner:rehearsal-e4b-off
+docker image inspect --format '{{ index .Config.Labels "pw.host_commit" }}' bialy-runner:rehearsal-e4b-off
+```
+
+The campaign's host stage refuses a checkout, image label or exported training
+contract that names any other commit.
+
+Write one configuration per tier with `profile: dry-run`, `students: [e4b]`
+(then `[12b]`, then `[26b-a4b]`), the pinned `host_commit`, `epoch` set to that
+tier's run name (`rehearsal-e4b`, so the runner image is
+`bialy-runner:rehearsal-e4b-off`), `full_training: remote` and the training
+machine configuration as `remote`. Then, per tier:
+
+```bash
+bialy campaign plan --config rehearsal-e4b.yaml --out /path/to/rehearsal-e4b
+bialy campaign run --plan /path/to/rehearsal-e4b
+bialy campaign report --run /path/to/rehearsal-e4b/run
+```
+
+A run passes when it ends `mechanical_pipeline_complete` with a cleanup receipt,
+and the tier's export directory holds the GGUF, the MLX directory and the LoRA
+adapter whose digests `export_receipt.json` records. Record each run directory
+and its receipts in the campaign's status notes.
+
+Recovery:
+
+- **Controller stopped or disconnected.** Run `bialy campaign resume --run DIR`.
+  A stage that was running is reconciled against its receipt, the provider and
+  the replicated checkpoints; it never sends a second provider request or rents a
+  second machine.
+- **Waiting on a review.** Label with `bialy review --run DIR`, then resume.
+- **Awaiting host adoption** (full profile only). Check out the adopted commit,
+  build its runner image, and run
+  `bialy campaign resume --run DIR --host-commit FULL_COMMIT --host-image IMAGE`.
+  A refused commit leaves the run waiting with each differing pin or threshold.
+- **Out of memory.** The student's training ends as `student_out_of_memory` and is
+  not retried. Change the tier's hardware or recipe and plan a new directory.
+- **A rented machine outlives its run.** The installed reaper releases expired
+  leases; to sweep at once, run
+  `python -m bialy.student_host reap --configuration MACHINE.json --once`.
+- **A changed plan.** Planned files are read-only, and a run refuses a plan whose
+  files changed. Plan a new directory instead of editing one.
+
 ## Workspaces
 
 Every task runs in a workspace: a pinned repository, or a stack
