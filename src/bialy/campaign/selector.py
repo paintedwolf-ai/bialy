@@ -172,15 +172,15 @@ class Workbench:
     def engine(self):
         return self.run.path('build', 'host-engine', 'bialy')
 
-    def launcher(self, heads, path):
+    def launcher(self, heads, path, device=None):
         from .. import build
         from ..run import model_dir
-        return build.launcher(self.engine(), model_dir(self.run), heads, path, self.catalog())
+        return build.launcher(self.engine(), model_dir(self.run), heads, path, self.catalog(), device=device)
 
-    def host(self, script, arguments, python=sys.executable, accept=(0,)):
+    def host(self, script, arguments, python=sys.executable, accept=(0,), **environment):
         from .. import host_scripts, training
         result = self.process(host_scripts.command(python, script, arguments), cwd=str(self.run.checkout), capture_output=True, text=True,
-                              env=training.environment(self.run.factory.root, self.settings()))
+                              env={**training.environment(self.run.factory.root, self.settings()), **environment})
         if result.returncode not in accept:
             raise CampaignFault('selector_host_script_failed', details={'script': script, 'stderr': result.stderr[-2000:]})
         return result
@@ -193,14 +193,18 @@ class Workbench:
         self.host('replay_eval.py', ['--corpus', corpus, '--examples', rows, '--engine', launcher, '--tool-truth', truth, '--json', out])
         return json.loads(Path(out).read_text())
 
-    def parity(self, launcher, corpus, head, rows, turns, tolerance):
+    def parity(self, heads, corpus, rows, directory, turns, tolerance):
         """The host's probe of the turn-load head: the trainer's own forward against the
         engine on the same turns. It passes only when the head records the encoding the
-        engine serves at and every probability agrees within the tolerance."""
+        engine serves at and every probability agrees within the tolerance. Both sides
+        run on the CPU, so a gap is a difference in what was encoded, not in a device's
+        arithmetic."""
         from .. import training
         python = training.venv_python(self.run.factory.root, self.settings())
-        result = self.host('parity_probe.py', ['--model', training.BACKBONE[0], '--head', head, '--examples', rows, '--engine', launcher,
-                                               '--corpus', corpus, '--n', turns, '--tolerance', tolerance], python=python, accept=(0, 1, 2))
+        launcher = self.launcher(heads, Path(directory) / 'parity-launcher.sh', device='cpu')
+        result = self.host('parity_probe.py', ['--model', training.BACKBONE[0], '--head', heads['turn-load'], '--examples', rows,
+                                               '--engine', launcher, '--corpus', corpus, '--n', turns, '--tolerance', tolerance],
+                           python=python, accept=(0, 1, 2), LYCAON_DECIDE_DEVICE='cpu')
         lines = [line for line in result.stdout.splitlines() if line.startswith('parity:')]
         compared = PARITY_LINE.search(lines[-1]) if lines else None
         return {'passed': result.returncode == 0, 'tolerance': tolerance, 'summary': lines[-1] if lines else result.stderr[-400:],
@@ -334,7 +338,7 @@ def qualify(run, split, directory, trained, workbench, config):
     directory = Path(directory)
     policy, heads = frozen(directory, trained)
     rows = Path(split) / 'development.jsonl'
-    parity = workbench.parity(trained['launcher'], trained['corpus'], heads['turn-load'], rows, **config['parity'])
+    parity = workbench.parity(heads, trained['corpus'], rows, directory, **config['parity'])
     replay = workbench.replay(trained['launcher'], trained['corpus'], rows, directory / 'development.json')
     code_rank = workbench.rerank(heads['code-rank'], 'development', directory / 'rerank-development')
     atomic_json(directory / 'rerank-development.json', code_rank)

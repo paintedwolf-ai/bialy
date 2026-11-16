@@ -71,8 +71,8 @@ class Workbench:
         Path(out).write_text(json.dumps(self.replay_report))
         return self.replay_report
 
-    def parity(self, launcher, corpus, head, rows, turns, tolerance):
-        self.probed.append((Path(head).name, rows.name, turns, tolerance))
+    def parity(self, heads, corpus, rows, directory, turns, tolerance):
+        self.probed.append((Path(heads['turn-load']).name, rows.name, turns, tolerance))
         return self.parity_report
 
     def rerank(self, head, partition, out_dir):

@@ -258,17 +258,19 @@ def test_the_parity_probe_runs_the_hosts_script_in_the_trainers_environment(fact
     monkeypatch.setattr(training, 'venv_python', lambda root, settings: '/venv/python')
     passing = (0, 'truth []\nparity: worst gap 0.0004 over 24 turns\n', '')
     run, bench, host = real_bench(factory, tmp_path, monkeypatch, lambda args: passing)
-    report = bench.parity('/l.sh', '/corpus.json', '/heads/turn-load.safetensors', Path('/split/development.jsonl'), 24, 0.001)
+    report = bench.parity({'turn-load': '/heads/turn-load.safetensors'}, '/corpus.json', Path('/split/development.jsonl'), tmp_path, 24, 0.001)
     assert report == {'passed': True, 'tolerance': 0.001, 'summary': 'parity: worst gap 0.0004 over 24 turns', 'worst_gap': 0.0004, 'turns': 24}
     args, kw = host.calls[0]
     assert args[:2] == ['/venv/python', 'scripts/bialy/parity_probe.py'] and kw['cwd'] == str(tmp_path / 'co')
     assert args[args.index('--model') + 1] == 'convaiinnovations/laya-multilingual' and args[args.index('--n') + 1] == '24'
-    assert args[args.index('--engine') + 1] == '/l.sh' and args[args.index('--examples') + 1] == '/split/development.jsonl'
-    assert kw['env']['HF_HUB_OFFLINE'] == '1'
+    assert args[args.index('--examples') + 1] == '/split/development.jsonl' and args[args.index('--head') + 1] == '/heads/turn-load.safetensors'
+    launcher = Path(args[args.index('--engine') + 1]).read_text()
+    assert '--device cpu --head-max-len 512' in launcher and '--head turn-load=/heads/turn-load.safetensors' in launcher
+    assert kw['env']['HF_HUB_OFFLINE'] == '1' and kw['env']['LYCAON_DECIDE_DEVICE'] == 'cpu'
     for code, line in ((1, 'parity: worst gap 0.2100 over 24 turns'), (1, 'parity: the head was trained at max_len 512, head budget 192; the engine encodes at 1024, 512'),
                        (2, 'parity: unverified; no engine answers were compared')):
         _, failing, _ = real_bench(factory, tmp_path / str(len(line)), monkeypatch, lambda args, code=code, line=line: (code, line + '\n', ''))
-        report = failing.parity('/l.sh', '/c', '/h', Path('/d.jsonl'), 24, 0.001)
+        report = failing.parity({'turn-load': '/h'}, '/c', Path('/d.jsonl'), tmp_path, 24, 0.001)
         assert report['passed'] is False and report['summary'] == line
 
 
@@ -287,7 +289,7 @@ def test_every_host_script_is_called_with_flags_the_host_accepts(factory, tmp_pa
     assert bench.calibrate('/l.sh', Path('/split/val.jsonl')) == {'turn': {'tools': {'load_at': 0.55}}}
     assert bench.replay('/l.sh', '/corpus.json', Path('/split/development.jsonl'), tmp_path / 'replay.json', truth='called') == {'overall': {}}
     assert bench.preload() == PRELOAD
-    bench.parity('/l.sh', '/corpus.json', '/h', Path('/split/development.jsonl'), 24, 0.001)
+    bench.parity({'turn-load': '/h'}, '/corpus.json', Path('/split/development.jsonl'), tmp_path, 24, 0.001)
     assert sorted(args[1] for args, _ in host.calls) == ['scripts/bialy/' + name for name in sorted(answers)]
     for args, _ in host.calls:
         script = args[1][len('scripts/bialy/'):]
