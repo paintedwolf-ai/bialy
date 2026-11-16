@@ -2,9 +2,9 @@
 Painted Wolf Code checkout, the decision engine for this host, and the pilot an
 engine-on pass carries.
 
-Go builds run with the host's Go when it has one, otherwise inside a pinned Go
-image with the checkout mounted at its own path, so the same commands and
-relative paths hold either way. The runner platform is linux/amd64.
+Go builds run with the host's Go when it has one, otherwise inside the Go image
+of the toolchain the checkout's go.mod names, with the checkout mounted at its
+own path, so the same commands and relative paths hold either way. The runner platform is linux/amd64.
 """
 import hashlib
 import json
@@ -21,10 +21,11 @@ from pathlib import Path
 import yaml
 
 from .provenance import file_sha256
+from .training import BACKBONE
 
-GO_IMAGE = "golang:1.26"
 RUNNER_GOOS, RUNNER_GOARCH, RUNNER_TRIPLE = "linux", "amd64", "x86_64-unknown-linux-gnu"
 BINARIES = ("lycaon", "lycaon-debug", "decide-rerank")
+RELEASE = "packs/painted-wolf/platform/host/decision-release.json"
 
 
 class BuildError(RuntimeError):
@@ -50,8 +51,21 @@ def checkout_commit(checkout):
         return marker.read_text(encoding="utf-8").strip() if marker.exists() else None
 
 
+def go_image(checkout):
+    """The Go image of the toolchain the checkout builds with: go.mod's `toolchain`
+    line, or its `go` line when it names none."""
+    versions = {}
+    for line in (Path(checkout) / "lycaon/go.mod").read_text(encoding="utf-8").splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] in ("go", "toolchain"):
+            versions[words[0]] = words[1].removeprefix("go")
+    if not versions:
+        raise BuildError("lycaon/go.mod names no Go version")
+    return "golang:" + versions.get("toolchain", versions.get("go"))
+
+
 def go_run(checkout, cache_root, args, cwd, goos=None, goarch=None, mounts=()):
-    """Run a Go command in the checkout: the host's Go, or the pinned image with the
+    """Run a Go command in the checkout: the host's Go, or the checkout's Go image with the
     checkout, caches, and `mounts` at their own absolute paths."""
     checkout, cache_root = Path(checkout).resolve(), Path(cache_root).resolve()
     env = {"CGO_ENABLED": "0", "GOFLAGS": "-trimpath"}
@@ -71,7 +85,7 @@ def go_run(checkout, cache_root, args, cwd, goos=None, goarch=None, mounts=()):
     env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=str(checkout))
     for key, value in env.items():
         docker += ["-e", "%s=%s" % (key, value)]
-    return sh(docker + [GO_IMAGE] + list(args))
+    return sh(docker + [go_image(checkout)] + list(args))
 
 
 VERSION_SYMBOL = "github.com/lycaon/lycaon/internal/version.Version"
@@ -95,7 +109,7 @@ def binaries(checkout, out_dir, cache_root, goos=RUNNER_GOOS, goarch=RUNNER_GOAR
     core = document_core(checkout, out_dir, cache_root, goos, goarch)
     build = {"document_core": core, "lycaon_commit": checkout_commit(checkout), "goos": goos, "goarch": goarch, "version": version,
              "scanner_identity_sha256": hashlib.sha256(scanner_identity.encode()).hexdigest() if scanner_identity else None,
-             "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "go_image": None if shutil.which("go") else GO_IMAGE}
+             "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "go_image": None if shutil.which("go") else go_image(checkout)}
     (out_dir / "BUILD.json").write_text(json.dumps(build, indent=2) + "\n", encoding="utf-8")
     return build
 
@@ -181,7 +195,7 @@ def opengrep(checkout, engine_dir, cache_root, triple=RUNNER_TRIPLE):
     return {"artifact": artifact}
 
 
-def browser(lycaon_bin, engine_dir):
+def browser(lycaon_bin, engine_dir, image):
     """chrome-headless-shell for the runner platform, provisioned by the runner's own
     lycaon binary and laid flat under engine/browser/."""
     engine_dir = Path(engine_dir).resolve()
@@ -195,7 +209,7 @@ def browser(lycaon_bin, engine_dir):
             sh(args)
         else:
             sh(["docker", "run", "--rm", "-v", "%s:%s" % (Path(lycaon_bin).resolve().parent, Path(lycaon_bin).resolve().parent),
-                "-v", "%s:%s" % (tmp, tmp), GO_IMAGE] + args)
+                "-v", "%s:%s" % (tmp, tmp), image] + args)
         installs = [p for p in cache.glob("managed/*/*/chrome-headless-shell")]
         if not installs:
             raise BuildError("browser ensure left no chrome-headless-shell under %s" % cache)
@@ -242,16 +256,14 @@ def payload(checkout, engine_dir, bin_dir, cache_root, scanner=True, candidate=N
     else:
         shutil.rmtree(engine_dir / "opengrep", ignore_errors=True)
         report["opengrep"] = None
-    report["browser"] = browser(Path(bin_dir) / "lycaon", engine_dir)
+    report["browser"] = browser(Path(bin_dir) / "lycaon", engine_dir, go_image(checkout))
     return report
 
 
-def engine_features():
-    if os.environ.get("BIALY_FEATURES"):
-        return os.environ["BIALY_FEATURES"]
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
-        return "metal,mlx"
-    return ""
+def engine_features(checkout):
+    """The cargo features the checkout builds its engine with on this host, from its own
+    selection script, which also honours BIALY_FEATURES. Empty means CPU only."""
+    return sh(["bash", str(Path(checkout) / "scripts/decide-features.sh")]).strip()
 
 
 def rust_channel(checkout):
@@ -263,53 +275,74 @@ def rust_channel(checkout):
     raise BuildError("rust-toolchain.toml names no channel")
 
 
-# The Debian release the container build links against: its glibc (2.31) is older than
-# any host or runner image the engine then runs on.
-RUST_IMAGE_SUITE = "bullseye"
+# The Debian release of the Rust image the container builds run in, and its glibc: a
+# binary built there runs on that glibc or newer, which covers the runner image.
+RUST_IMAGE_SUITE, RUST_IMAGE_GLIBC = "bookworm", (2, 36)
 
 
 def rust_image(checkout):
     return "rust:%s-%s" % (rust_channel(checkout), RUST_IMAGE_SUITE)
 
 
-def cargo_engine(checkout, out_dir, target_dir, features, in_container):
-    """cargo build --release of the engine crate: on the host through rustup, which
-    installs the pinned toolchain itself, or in the Rust image of that toolchain with the
-    checkout mounted at its own path."""
+def container_engine(checkout, out_dir, target_dir, features):
+    """cargo build --release of the engine crate in the Rust image of the checkout's
+    toolchain, with the checkout mounted at its own path."""
     checkout = Path(checkout).resolve()
     native = checkout / "lycaon/internal/decide/native"
     out_dir, target_dir = Path(out_dir).resolve(), Path(target_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / "registry").mkdir(parents=True, exist_ok=True)
-    args = ["cargo", "build", "--release"] + (["--features", features] if features else [])
+    args = ["cargo", "build", "--locked", "--release", "--bin", "bialy"] + (["--features", features] if features else [])
     image = rust_image(checkout)
-    if in_container:
-        sh(["docker", "run", "--rm", "-v", "%s:%s" % (checkout, checkout), "-v", "%s:/target" % target_dir,
-            "-v", "%s:/usr/local/cargo/registry" % (target_dir / "registry"), "-e", "CARGO_TARGET_DIR=/target", "-w", str(native), image] + args)
-    else:
-        sh(args, cwd=native, env=dict(os.environ, CARGO_TARGET_DIR=str(target_dir)))
+    sh(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", "%s:%s" % (checkout, checkout), "-v", "%s:/target" % target_dir,
+        "-v", "%s:/usr/local/cargo/registry" % (target_dir / "registry"), "-e", "CARGO_TARGET_DIR=/target", "-w", str(native), image] + args)
     shutil.copy2(target_dir / "release" / "bialy", out_dir / "bialy")
     os.chmod(out_dir / "bialy", 0o755)
-    return {"binary": str(out_dir / "bialy"), "features": features or "cpu", "image": image if in_container else None}
+    return {"binary": str(out_dir / "bialy"), "features": features or "cpu", "image": image}
 
 
 def host_engine(checkout, out_dir, cache_root):
-    """The decision engine for this host: evaluation runs through it, and on the runner
-    platform the pilot carries it. A host without rustup builds in the toolchain's image,
-    so a distribution cargo older than the pin never decides the build."""
-    return cargo_engine(checkout, out_dir, Path(cache_root) / "cargo-host", engine_features(), in_container=not shutil.which("rustup"))
+    """The decision engine for this host, which calibration, replay and the parity probe
+    run through. With rustup it is the checkout's own build (scripts/build-decide.sh:
+    its feature selection, its toolchain pin, and on Apple silicon the Metal library
+    beside the binary). A Linux host without rustup builds the same features in the
+    toolchain's image, so a distribution cargo older than the pin never decides the build."""
+    checkout, out_dir = Path(checkout).resolve(), Path(out_dir).resolve()
+    features = engine_features(checkout)
+    if shutil.which("rustup"):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        sh(["bash", str(checkout / "scripts/build-decide.sh"), str(out_dir / "bialy")], cwd=checkout)
+        return {"binary": str(out_dir / "bialy"), "features": features or "cpu", "image": None}
+    if platform.system() != "Linux":
+        raise BuildError("building the decision engine on %s needs rustup; the container build is Linux only" % platform.system())
+    library, version = platform.libc_ver()
+    if library == "glibc" and tuple(int(part) for part in version.split(".")[:2]) < RUST_IMAGE_GLIBC:
+        raise BuildError("this host's glibc %s is older than the %s Rust image's; install rustup to build the engine here"
+                         % (version, RUST_IMAGE_SUITE))
+    return container_engine(checkout, out_dir, Path(cache_root) / "cargo-host", features)
 
 
 def runner_engine(checkout, out_dir, cache_root):
-    """A CPU engine for linux/amd64 runners, built in the pinned Rust image."""
-    return cargo_engine(checkout, out_dir, Path(cache_root) / "cargo-runner", "", in_container=True)
+    """The engine a pilot carries into linux/amd64 runners, built in the pinned Rust image.
+    Runners have no GPU and pin the engine to their CPU, so it is built without features."""
+    return container_engine(checkout, out_dir, Path(cache_root) / "cargo-runner", "")
 
 
-def launcher(engine_bin, model_dir, heads, out_path, device=None):
-    """A one-line launcher replay_eval.py and the audits start the engine with: the same
-    serve arguments the host uses, with the checkpoint's own head budget."""
-    line = "exec %s serve --model %s --model-id convaiinnovations/laya-multilingual%s %s \"$@\"\n" % (
-        engine_bin, model_dir, " --device " + device if device else "",
+def head_tokens(corpus):
+    """The engine's token budget for a question head, as the host's exported corpus
+    declares it (decisions.yaml state.head_tokens)."""
+    value = (json.loads(Path(corpus).read_text(encoding="utf-8")).get("state") or {}).get("head_tokens")
+    if not isinstance(value, int) or value <= 0:
+        raise BuildError("corpus %s declares no state.head_tokens" % corpus)
+    return value
+
+
+def launcher(engine_bin, model_dir, heads, out_path, corpus, device=None):
+    """A one-line launcher the host's scripts start the engine with: the serve arguments
+    the host itself uses, with the head budget of the corpus the heads were trained on.
+    The trainer and the host read that budget from the same corpus field."""
+    line = "exec %s serve --model %s --model-id %s%s --head-max-len %d %s \"$@\"\n" % (
+        engine_bin, model_dir, BACKBONE[0], " --device " + device if device else "", head_tokens(corpus),
         " ".join("--head %s=%s" % (name, path) for name, path in sorted(heads.items())))
     out_path = Path(out_path)
     out_path.write_text("#!/bin/sh\n" + line, encoding="utf-8")
@@ -338,9 +371,9 @@ def model_dir(snapshot, out_dir):
     return out_dir
 
 
-def pilot(engine_bin, model, heads_dir, out_dir):
+def pilot(engine_bin, model, heads, out_dir):
     """What an engine-on runner mounts at /opt/decide: the linux engine, the installed
-    checkpoint, and the pilot heads."""
+    checkpoint, and the named head files."""
     out_dir = Path(out_dir)
     shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True)
@@ -349,8 +382,16 @@ def pilot(engine_bin, model, heads_dir, out_dir):
     if not (out_dir / "model" / MODEL_COMPLETE_MARKER).exists():
         raise BuildError("checkpoint %s is not an installed model directory (see model_dir)" % model)
     (out_dir / "heads").mkdir()
-    names = []
-    for path in sorted(Path(heads_dir).glob("*.safetensors")):
-        shutil.copy2(path, out_dir / "heads" / path.name)
-        names.append(path.stem)
-    return {"heads": names}
+    for name, path in sorted(heads.items()):
+        shutil.copy2(path, out_dir / "heads" / (name + ".safetensors"))
+    return {"heads": sorted(heads)}
+
+
+def serve_vocabulary(config_dir, preload):
+    """Make a staged lycaon/config tree serve `preload`, the option vocabulary the mounted
+    turn-load head was trained with, in place of the vocabulary the checkout's own
+    release pins."""
+    path = Path(config_dir) / RELEASE
+    release = json.loads(path.read_text(encoding="utf-8"))
+    release["preload"] = preload
+    path.write_text(json.dumps(release, indent=2) + "\n", encoding="utf-8")

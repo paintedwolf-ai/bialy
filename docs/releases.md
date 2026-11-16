@@ -27,10 +27,14 @@ release's provenance names the Painted Wolf Code commit it trained against.
    and the tags with a pull request, and uploads to the Hub, which tags the
    upload with the version. A tag that already names other code is refused:
    a released version is never re-made.
-3. Painted Wolf Code adopts a heads release by updating `decision-release.json`:
-   the heads' sha256s from the release, and `source` from the Hub tags and the
-   Bialy tag. Its staging refuses a manifest whose source is incomplete, and CI
-   downloads the heads from `source.heads`.
+3. A heads release is one qualified selector policy: its `policy.json` binds the
+   three heads' sha256s, the backbone, the option vocabulary the turn-load head
+   was trained with (`preload`), and the thresholds. Painted Wolf Code adopts it
+   whole with `scripts/bialy/adopt_heads.py --policy policy.json`, which writes
+   the pins and that vocabulary into `decision-release.json`, `source` from the
+   Hub tags and the Bialy tag, and the thresholds into `decisions.yaml`. Its
+   staging refuses a manifest whose source is incomplete, and CI downloads the
+   heads from `source.heads`.
 4. Add the release, and the Painted Wolf Code versions that ship it, to the
    table below.
 
@@ -40,9 +44,10 @@ Check out the tag the release names, and Painted Wolf Code at its
 `engine_commit` (heads) or recipe `lycaon_commit` (dataset). Fetch the dataset
 from the Hub at the revision `source.dataset` pins, or rebuild it with
 `bialy run` from the tag; sessions are sampled, so a rebuild reproduces the
-process rather than the bytes (`docs/verify.md`). Heads train with
-`train-host/train.sh` from that dataset, and `bialy verify` checks a release's
-bytes against its anchor.
+process rather than the bytes (`docs/verify.md`). Heads are fitted, qualified
+and packaged by the selector (`bialy run`'s `train`, `evaluate` and
+`release_heads` stages, or a campaign's selector segment), and `bialy verify`
+checks a release's bytes against its anchor.
 
 ## Ledger
 

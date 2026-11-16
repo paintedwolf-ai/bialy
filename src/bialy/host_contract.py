@@ -1,8 +1,10 @@
-"""What the factory asks of the host's binaries, checked against a host checkout.
+"""What the factory asks of the host's binaries and trainer scripts, checked against a
+host checkout.
 
 `config/host-contract.json` records every environment variable, subcommand, flag,
 row schema and workflow version the runner and the fleet rely on, and every flag the
-student path passes the host's trainer, export and conversion scripts. `check` holds this
+factory and the student path pass the host's trainer, calibration, probe, export and
+conversion scripts. `check` holds this
 repository to the record: the names its sources pass must be recorded. `verify` holds
 the record to a host checkout: that checkout's sources must declare each one. A name
 the host stopped reading, or never read, therefore fails before a container starts.
@@ -25,7 +27,8 @@ FACTORY_SCHEMAS = frozenset((
     "pw-campaign-plan/1", "pw-campaign-run/1", "pw-campaign-source-preflight/2", "pw-campaign-waiting/1",
     "pw-custom-run/2", "pw-data-report/1", "pw-decide-anchor/1", "pw-episode-verdict/2", "pw-evaluation-policy/1",
     "pw-human-review-decision/1", "pw-load-probe/1", "pw-remote-training/1", "pw-resource-lease/2", "pw-review-finished/1",
-    "pw-review-item/1", "pw-review-queue/1", "pw-runner-preflight/1", "pw-selector-holdout/1", "pw-selector-policy/1",
+    "pw-review-item/1", "pw-review-queue/1", "pw-runner-preflight/1", "pw-selector-holdout/2", "pw-selector-policy/2",
+    "pw-selector-qualification/1",
     "pw-student-artifact/3", "pw-student-export/2", "pw-student-job/1", "pw-student-release/1", "pw-student-requirements/1",
     "pw-student-source/1",
     "pw-students/2", "pw-teacher-policy/1", "pw-tier-decision/1", "pw-training-campaign-result/2",
@@ -41,6 +44,7 @@ FLAG_DEFINITION = re.compile(r'\.(?:String|Int|Int64|Uint|Uint64|Float64|Bool|Du
 SHELL_COMMAND = re.compile(re.escape(BINARIES) + r"(lycaon(?:-debug)?)((?:[ \t]+[a-z][a-z-]*)+)")
 PYTHON_COMMAND = re.compile(r"""["']""" + re.escape(BINARIES) + r"""(lycaon(?:-debug)?)["']((?:\s*,\s*["'][a-z][a-z-]*["'])+)""")
 WORD = re.compile(r"[a-z][a-z-]*")
+SCRIPT_IMPORT = re.compile(r"^(?:import|from)\s+(\w+)", re.M)
 
 
 class HostContractError(Exception):
@@ -88,6 +92,17 @@ def script(checkout, path, arguments, record=None):
     if passed - set(known):
         raise HostContractError("host_flag_unrecorded", ["%s --%s" % (path, flag) for flag in sorted(passed - set(known))])
     return [str(Path(checkout) / path), *map(str, arguments)]
+
+
+def script_source(checkout, path):
+    """A host script's text with that of the modules beside it that it imports, which may
+    declare arguments for it. None when the checkout has no such script."""
+    source = Path(checkout) / path
+    if not source.is_file():
+        return None
+    text = source.read_text(encoding="utf-8")
+    beside = [source.with_name(module + ".py") for module in SCRIPT_IMPORT.findall(text)]
+    return text + "".join(module.read_text(encoding="utf-8") for module in beside if module.is_file())
 
 
 def shell_commands(text):
@@ -220,12 +235,11 @@ def verify(checkout, record=None):
         if host["workflows"].get(name) != version:
             missing.append("workflow %s@%s (the checkout serves %s live)" % (name, version, host["workflows"].get(name)))
     for path, flags in sorted(record["scripts"].items()):
-        source = Path(checkout) / path
-        if not source.is_file():
+        text = script_source(checkout, path)
+        if text is None:
             missing.append("script %s" % path)
             continue
         # A script names a flag in full or, where it declares several in a loop, bare.
-        text = source.read_text(encoding="utf-8")
         missing += ["flag %s --%s" % (path, flag) for flag in flags if not re.search(r"""["'](?:--)?%s["']""" % re.escape(flag), text)]
     if missing:
         raise HostContractError("host_contract_drift", missing)

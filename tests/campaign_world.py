@@ -4,8 +4,11 @@ import json
 
 from bialy.campaign.journal import CampaignFault
 
+PRELOAD = {'catalog_revision': 'c0ffee', 'encoding': 'independent', 'option_words': 60, 'max_len': 1024, 'head_tokens': 512,
+           'options': {'command': 'Run a command'}}
+BACKBONE = {'model': 'convaiinnovations/laya-multilingual', 'revision': 'e' * 40}
 POLICY = {'identity': 'p0', 'decision_contract': 3, 'heads': {'turn-load': {'sha256': 'a' * 64}},
-          'thresholds': {'turn.tools.load_at': 0.55}}
+          'backbone': {**BACKBONE, 'sha256': 'f' * 64}, 'preload': PRELOAD, 'thresholds': {'turn.tools.load_at': 0.55}}
 
 
 class World:
@@ -63,7 +66,7 @@ def outputs(students, selector_qualified=True):
              'selector_training': {'policy': POLICY, 'heads': {}, 'launcher': '/launcher', 'corpus': '/corpus', 'pilot': '/pilot'},
              'selector_qualification': {'qualified': selector_qualified,
                                         'configuration': {'pilot': '/pilot', 'policy': 'p0', 'fallback_rate': 0.1}},
-             'selector_holdout': {'schema': 'pw-selector-holdout/1', 'policy': 'p0'},
+             'selector_holdout': {'schema': 'pw-selector-holdout/2', 'policy': 'p0'},
              'selector_supplied': {'qualified': False},
              'collection': {'episodes': ['shared']}, 'dataset': {'data_status': 'data_ready'}, 'evaluation_plan': {'tasks': []},
              'cleanup': {'reaped': True}}
@@ -88,5 +91,5 @@ def git(files):
 
 
 def adopted_files(selector_config_path, release_path, load_at):
-    return {release_path: json.dumps({'release': 'r1', 'heads': {'turn-load': {'sha256': 'a' * 64}}}),
+    return {release_path: json.dumps({'release': 'r1', 'heads': {'turn-load': {'sha256': 'a' * 64}}, 'backbone': BACKBONE, 'preload': PRELOAD}),
             selector_config_path: 'version: 3\nturn:\n  tools:\n    load_at: %s\n' % load_at}

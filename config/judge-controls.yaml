@@ -1,0 +1,63 @@
+# Controls a reviewer slot must score correctly before it labels head rows
+# (src/bialy/judge.py). Each control is one judge call of a unit, with that unit's
+# own prompt: a request, candidate cards, and the scores a competent judge gives.
+# `at_least` marks a card the request plainly needs (3 or 4); `at_most` marks one
+# it plainly does not (0 or 1). A slot that misses any expectation labels nothing.
+# The cards are written for these controls and name no catalog entry, so the
+# controls hold under any catalog.
+
+version: 1
+controls:
+  - id: skill-direct-match
+    unit: skills
+    request: The checkout tests fail on main since yesterday. Find out why the payment rounding test breaks and fix it.
+    cards:
+      debugging: "debugging: reproduce a failing test, isolate the cause, fix it, and confirm the test passes."
+      release-notes: "release-notes: write user-facing release notes from the merged changes of a version."
+      logo-design: "logo-design: produce vector logo concepts from a brand brief."
+    expect:
+      debugging: {at_least: 3}
+      release-notes: {at_most: 1}
+      logo-design: {at_most: 1}
+  - id: skill-none-applies
+    unit: skills
+    request: What does the acronym CORS stand for?
+    cards:
+      database-migration: "database-migration: plan and apply a schema migration with a rollback path."
+      load-testing: "load-testing: run a load test against a service and report latency percentiles."
+    expect:
+      database-migration: {at_most: 1}
+      load-testing: {at_most: 1}
+  - id: tool-must-load
+    unit: tools
+    request: Open the running app at localhost:3000 in a browser and take a screenshot of the login page.
+    available: [read, grep, command]
+    cards:
+      capture_page: "capture_page: open a URL in a headless browser and return a screenshot and the page structure."
+      git_blame: "git_blame: show which commit last changed each line of a file."
+      spreadsheet_export: "spreadsheet_export: write tabular data to a spreadsheet file."
+    expect:
+      capture_page: {at_least: 3}
+      git_blame: {at_most: 1}
+      spreadsheet_export: {at_most: 1}
+  - id: tool-available-suffices
+    unit: tools
+    request: Show me the contents of README.md.
+    available: [read, grep, command]
+    cards:
+      image_resize: "image_resize: resize or crop an image file."
+      deploy_service: "deploy_service: deploy a built service to a hosting environment."
+    expect:
+      image_resize: {at_most: 1}
+      deploy_service: {at_most: 1}
+  - id: need-direct-match
+    unit: requests
+    request: I need to rename a symbol everywhere it is used across the project.
+    cards:
+      code_rewrite: "code_rewrite: rewrite a code pattern across many files, such as renaming a symbol at every use."
+      audio_transcribe: "audio_transcribe: transcribe speech from an audio file into text."
+      calendar_invite: "calendar_invite: create a calendar invitation for a meeting."
+    expect:
+      code_rewrite: {at_least: 3}
+      audio_transcribe: {at_most: 1}
+      calendar_invite: {at_most: 1}

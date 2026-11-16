@@ -192,28 +192,34 @@ def rejudge(release, base_url, model, sample=50, seed=7, units=("skills",)):
     return {"model": model, "rows": len(picked), "pairs": len(pairs), "exact": round(exact, 4), "weighted_kappa": judge.weighted_kappa(pairs)}
 
 
-METRICS = (("tools", "precision"), ("tools", "recall"), ("tools", "f1"), ("kind", "accuracy"))
+METRICS = (("tools", "precision"), ("tools", "recall"), ("tools", "f1"))
 
 
-def heads(release, dataset_release, lycaon, engine, split="holdout", tolerance=0.01):
-    """Replay the released heads over the dataset's held-out split with the engine and
-    compare every headline metric with the report the heads release ships for that set.
+def heads(release, dataset_release, lycaon, engine_bin, model, tolerance=0.01):
+    """Replay the released heads over the dataset's held-out split and compare every
+    headline metric with the held-out report the heads release ships.
 
-    `engine` is a bialy launcher loading the released heads (`bialy serve --device
-    cpu --head turn-load=<release>/turn-load.safetensors ...`); `lycaon` is a Painted Wolf
-    Code checkout at the heads' `engine_commit`."""
+    The engine is started as the release was measured: the release's own catalog gives
+    the thresholds and the head budget. `engine_bin` is a `bialy` built from `lycaon`, a
+    Painted Wolf Code checkout at the heads' `engine_commit`; `model` is the installed
+    backbone checkpoint."""
     import subprocess
     import sys
     import tempfile
 
+    from . import build, host_contract
+
     release, dataset_release = Path(release), Path(dataset_release)
     check("heads", release)
-    shipped = json.loads((release / "eval" / ("%s.json" % split)).read_text(encoding="utf-8"))["overall"]
+    policy = json.loads((release / "policy.json").read_text(encoding="utf-8"))
+    shipped = json.loads((release / "eval" / "holdout.json").read_text(encoding="utf-8"))["overall"]
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "replay.json"
-        subprocess.run([sys.executable, str(Path(lycaon) / "scripts/bialy/replay_eval.py"), "--corpus", str(dataset_release / "corpus.json"),
-                        "--examples", str(dataset_release / "holdout.jsonl"), "--engine", str(engine), "--json", str(out)],
-                       check=True, stdout=subprocess.DEVNULL)
+        launcher = build.launcher(engine_bin, model, {name: release / (name + ".safetensors") for name in policy["heads"]},
+                                  Path(tmp) / "launcher.sh", release / "corpus.json")
+        subprocess.run([sys.executable, *host_contract.script(lycaon, "scripts/bialy/replay_eval.py", [
+            "--corpus", release / "corpus.json", "--examples", dataset_release / "holdout.jsonl", "--engine", launcher,
+            "--tool-truth", "called", "--json", out])], cwd=str(lycaon), check=True, stdout=subprocess.DEVNULL)
         replayed = json.loads(out.read_text(encoding="utf-8"))["overall"]
     diffs = {}
     for family, metric in METRICS:
@@ -224,4 +230,4 @@ def heads(release, dataset_release, lycaon, engine, split="holdout", tolerance=0
         if a is None or b is None or abs(a - b) > tolerance:
             raise AuditError("%s %s: shipped %s, replayed %s" % (family, metric, a, b))
         diffs["%s.%s" % (family, metric)] = {"shipped": a, "replayed": b}
-    return {"split": split, "metrics": diffs, "tolerance": tolerance}
+    return {"split": "holdout", "metrics": diffs, "tolerance": tolerance}

@@ -1,10 +1,13 @@
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 from conftest import FIXTURES, layout_ancestry
+from selector_bench import qualified
 
 from bialy import anchor, audit, heads, hub, release
+from bialy.campaign import selector
 
 
 def retention_split(tmp_path):
@@ -178,29 +181,68 @@ def test_an_anchored_version_is_never_rebuilt_differently(factory, split_dir, co
         build_release(factory, split_dir, corpus_file, tmp_path)
 
 
-def fake_report(precision, recall, f1):
-    return {"overall": {"tools": {"_all": {"precision": precision, "recall": recall, "f1": f1, "macro_recall": 0.5, "loads_per_turn": 2.1}},
-                        "kind": {"accuracy": 0.6}, "requests": {"mrr": 0.6}}}
+def selector_directory(tmp_path, holdout=True, **changes):
+    """A selector directory as a run or a campaign leaves it: fitted, qualified, and compared."""
+    journal, run, workbench, trained = qualified(tmp_path, **changes)
+    selector.SelectorQualification(journal, run, workbench).execute({"selector": trained}, "q")
+    if holdout:
+        run.path("split", "holdout.jsonl").write_text(json.dumps({"offered": {"loadable": ["read"]}, "labels": {"tools": ["read"]}}) + "\n")
+        selector.SelectorHoldout(journal, run, workbench).execute({"selector": trained}, "h")
+    journal.close()
+    return journal.directory / "selector", trained
 
 
-def test_heads_release_ships_its_evidence(tmp_path):
-    heads_dir = tmp_path / "heads"
-    heads_dir.mkdir()
-    header = json.dumps({"__metadata__": {"label": "turn-load@test", "backbone": "enc", "seed": "11"}}).encode()
-    (heads_dir / "turn-load.safetensors").write_bytes(len(header).to_bytes(8, "little") + header)
-    (tmp_path / "new.json").write_text(json.dumps(fake_report(0.3, 0.7, 0.42)))
-    (tmp_path / "off.json").write_text(json.dumps(fake_report(0.0, 0.0, 0.0)))
-    (tmp_path / "rerank.json").write_text(json.dumps({"pairs": 10, "lexical": {"mrr": 0.4, "hit_1": 0.3}, "blended": {"mrr": 0.5, "hit_1": 0.4},
-                                                      "improved": 3, "regressed": 1}))
-    out = heads.build(heads_dir, "v1", "v1", "abc123", {"holdout": tmp_path / "new.json"}, {"holdout": tmp_path / "off.json"}, "base checkpoint",
-                      {"definitions-zod": tmp_path / "rerank.json"}, tmp_path / "dist")
+def test_a_heads_release_is_the_qualified_policy_with_its_evidence(tmp_path, anchors):
+    directory, trained = selector_directory(tmp_path)
+    out = heads.build(directory, "v1", "v1", "abc123", tmp_path / "dist")
+    policy = json.loads((out / "policy.json").read_text())
+    assert policy == trained["policy"] and policy["preload"]["options"]
+    assert sorted(p.name for p in out.glob("*.safetensors")) == ["code-rank.safetensors", "turn-load.safetensors", "unit-rank.safetensors"]
     card = (out / "README.md").read_text()
-    assert "| holdout | this release | 0.30 / 0.70 / 0.42 |" in card and "| holdout | base checkpoint | 0.00 / 0.00 / 0.00 |" in card
-    assert "| definitions-zod | 10 | 0.400 / 0.500 | 0.300 / 0.400 | 3 / 1 |" in card and "abc123" in card
-    assert (out / "eval" / "holdout.baseline.json").exists() and (out / "eval" / "rerank-definitions-zod.json").exists()
+    assert "| holdout | 0.70 / 0.90 / 0.79 |" in card and "| held-out | 240 | 0.410 / 0.520 | 0.300 / 0.400 | 60 / 12 |" in card
+    assert "| `code-rank` | mrr_gain | 0.11 | 0.01 |" in card and "worst gap 0.0002" in card and "abc123" in card
+    assert policy["identity"] in card and "`turn.tools.load_at` 0.55" in card
     provenance = json.loads((out / "PROVENANCE.json").read_text())
-    assert provenance["engine_commit"] == "abc123" and provenance["heads"][0]["metadata"]["seed"] == "11"
-    assert "eval/holdout.json" in hub.check("heads", out)
+    assert provenance["engine_commit"] == "abc123" and provenance["policy"] == policy["identity"]
+    assert provenance["heads"][0]["metadata"]["seed"] == "11"
+    names = hub.check("heads", out)
+    assert {"eval/qualification.json", "eval/development.json", "eval/holdout.json", "eval/holdout-comparison.json", "corpus.json"} <= set(names)
+    assert json.loads((out / "corpus.json").read_text())["questions"]["tools"]["load_at"] == 0.55
+
+
+def test_nothing_is_released_without_a_qualification_or_the_held_out_comparison(tmp_path, anchors):
+    directory, _ = selector_directory(tmp_path / "a", holdout=False)
+    with pytest.raises(heads.ReleaseError, match="held-out comparison"):
+        heads.build(directory, "v1", "v1", "abc123", tmp_path / "dist")
+    directory, _ = selector_directory(tmp_path / "b")
+    (directory / "qualification.json").unlink()
+    with pytest.raises(heads.ReleaseError, match="no recorded qualification"):
+        heads.build(directory, "v1", "v1", "abc123", tmp_path / "dist")
+    directory, _ = selector_directory(tmp_path / "c")
+    (directory / "heads" / "unit-rank.safetensors").write_bytes(b"retrained after qualifying")
+    with pytest.raises(heads.ReleaseError, match="no intact selector policy"):
+        heads.build(directory, "v1", "v1", "abc123", tmp_path / "dist")
+    with pytest.raises(heads.ReleaseError, match="no intact selector policy"):
+        heads.build(tmp_path / "heads-only", "v1", "v1", "abc123", tmp_path / "dist")
+    assert not (tmp_path / "dist").exists() and not list(anchors.glob("heads-*"))
+
+
+def test_the_heads_audit_replays_as_the_release_was_measured(tmp_path, anchors, monkeypatch):
+    directory, _ = selector_directory(tmp_path)
+    out = heads.build(directory, "v1", "v1", "abc123", tmp_path / "dist")
+    seen = {}
+
+    def replay(args, cwd=None, check=None, stdout=None):
+        seen.update(args=args, cwd=cwd, launcher=Path(args[args.index("--engine") + 1]).read_text())
+        Path(args[args.index("--json") + 1]).write_text((out / "eval" / "holdout.json").read_text())
+    monkeypatch.setattr("subprocess.run", replay)
+    report = audit.heads(out, tmp_path / "dataset", "/lycaon", "/engine/bialy", "/model")
+    args = seen["args"]
+    assert args[1] == "/lycaon/scripts/bialy/replay_eval.py" and seen["cwd"] == "/lycaon" and args[args.index("--tool-truth") + 1] == "called"
+    assert args[args.index("--corpus") + 1] == str(out / "corpus.json") and args[args.index("--examples") + 1] == str(tmp_path / "dataset" / "holdout.jsonl")
+    assert "/engine/bialy serve --model /model" in seen["launcher"] and "--head-max-len 512" in seen["launcher"]
+    assert "--head turn-load=%s" % (out / "turn-load.safetensors") in seen["launcher"]
+    assert report["metrics"]["tools.recall"] == {"shipped": 0.9, "replayed": 0.9}
 
 
 def test_a_release_names_its_stacks_and_anchors_every_held_out_workspace(factory, split_dir, corpus_file, tmp_path, anchors):

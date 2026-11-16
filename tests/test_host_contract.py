@@ -118,6 +118,9 @@ def edit(path, old, new):
     ("lycaon/cmd/lycaon-debug/decide.go", '"pw-request-row/1"', '"pw-request-row/2"', "schema pw-request-row/1"),
     ("lycaon/config/packs/painted-wolf/plan/workflows/plan/workflow.yaml", "version: 1.0.1", "version: 1.0.2",
      "workflow plan@1.0.1 (the checkout serves 1.0.2 live)"),
+    ("scripts/bialy/replay_eval.py", '"--tool-truth"', '"--truth"', "flag scripts/bialy/replay_eval.py --tool-truth"),
+    ("scripts/bialy/train.py", '"--tool-negatives"', '"--negatives"', "flag scripts/bialy/train.py --tool-negatives"),
+    ("scripts/bialy/rerank/partition.py", '"--val-dump"', '"--validation"', "flag scripts/bialy/rerank/train_rerank.py --val-dump"),
     ("scripts/bialy/custom_model/train.py", '"--accumulation"', '"--gradient-accumulation"',
      "flag scripts/bialy/custom_model/train.py --accumulation"),
     ("scripts/bialy/custom_model/gguf_export.py", '"server"', '"loader"', "flag scripts/bialy/custom_model/gguf_export.py --server"),
@@ -131,6 +134,22 @@ def test_a_checkout_that_stopped_declaring_a_recorded_name_fails_verification(tm
     with pytest.raises(host_contract.HostContractError, match="host_contract_drift") as refused:
         host_contract.verify(checkout)
     assert refused.value.missing == [missing]
+
+
+def test_no_head_script_takes_a_flag_the_host_dropped():
+    for path, flag in (("scripts/bialy/replay_eval.py", "--holdout-pack"), ("scripts/bialy/calibrate.py", "--dump"),
+                       ("scripts/bialy/train.py", "--guides")):
+        with pytest.raises(host_contract.HostContractError, match="host_flag_unrecorded") as refused:
+            host_contract.script("/host", path, ["--corpus", "c", flag, "x"])
+        assert refused.value.missing == ["%s %s" % (path, flag)]
+    with pytest.raises(host_contract.HostContractError, match="host_script_unrecorded"):
+        host_contract.script("/host", "scripts/bialy/retention_eval.py", [])
+
+
+def test_a_script_takes_the_flags_a_module_beside_it_declares_for_it():
+    source = host_contract.script_source(CHECKOUT, "scripts/bialy/rerank/train_rerank.py")
+    assert '"--val-dump"' in source and '"--dump"' in source
+    assert host_contract.script_source(CHECKOUT, "scripts/bialy/rerank/absent.py") is None
 
 
 def test_a_sealed_workflow_version_is_not_served_live():

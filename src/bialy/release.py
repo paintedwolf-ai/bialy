@@ -80,7 +80,9 @@ sessions wrote none has no `retention/` directory.
 request names its unit, since text matching already finds a named one. Each
 pair points at its unit by file, line, and symbol at the pinned commit;
 `bialy coderank` harvests the units and candidate sets from the
-repositories again.
+repositories again. A repository's pairs train the head, select its epoch, or
+measure it according to the partition `ancestry.json` gives that repository;
+only train and validation repositories ever have candidate sets.
 
 ## Tasks
 

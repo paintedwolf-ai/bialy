@@ -152,7 +152,7 @@ override them for one run.
 ```bash
 export FIREWORKS_API_KEY=…
 bialy run --run pass3 --dry-run            # the stages this invocation would run
-bialy run --run pass3                      # build → tasks → drive → judge → pilot heads → drive again → release → heads → report
+bialy run --run pass3                      # build → tasks → drive → judge → pilot policy → drive again → release → qualified heads → report
 bialy run --run pass3 --until tasks --task-cap 2 --workspace cobra --workspace react-vite   # a small check of the generation stages
 bialy run --run pass3 --task-cap 1 --workspace cobra --runners 1 --epochs 1                 # the whole chain, small
 bialy run-status --run pass3
@@ -163,17 +163,21 @@ bialy run --run pass3 --push               # the same pass, publishing at the en
 
 Stages, in order: `check`, `repos`, `build`, `image`, `corpus`, `tasks`,
 `ancestry`, `skillreq`, `warm`, `preflight`, `plan`, `drive`, `collect`,
-`judge`, `judge_skillreq`, `split_pilot`, `train_pilot`, `engine`, `pilot`,
-`preflight_on`, `plan_on`, `drive_on`, `collect_on`, `compare`, `judge_on`,
-`split`, `coderank`, `release`, `train`, `evaluate`, `release_heads`,
-`report`. Each writes under `<root>/runs/<name>/` and its
-status to `run.json` there; a failed stage stops the run with its error in
+`judge`, `judge_skillreq`, `coderank`, `engine`, `split_pilot`, `train_pilot`,
+`pilot`, `preflight_on`, `plan_on`, `drive_on`, `collect_on`, `judge_on`,
+`split`, `release`, `train`, `evaluate`, `release_heads`, `report`. Each writes
+under `<root>/runs/<name>/` and its status to `run.json` there; a failed stage
+stops the run with its error in
 `REPORT.md`, and the next invocation starts from it.
 
 - `build` cross-compiles `lycaon`, `lycaon-debug`, and `decide-rerank` for the
   runners, builds `pw-document-core` from the same checkout, and assembles the engine payload (schemas, the pinned git, the
   headless browser, Opengrep) from the checkout; `engine` builds the decision
-  engine for this host with cargo. The checkout pins Opengrep releases per
+  engine for this host with the checkout's own `scripts/build-decide.sh` (MLX
+  on Apple silicon, Vulkan on Linux) and a CPU engine for the runners. The
+  host contract `check` holds to the checkout also records every flag the
+  factory passes the checkout's `scripts/bialy/` trainers, calibration, replay
+  and probes, read from their argument parsers. The checkout pins Opengrep releases per
   platform, including linux/amd64, and stages the pinned one at
   `bundled/opengrep-<version>/`, where the sidecar finds it under
   `LYCAON_ENGINE_ROOT`. `run.scanner: candidate` with `run.scanner_candidate`
@@ -188,18 +192,29 @@ status to `run.json` there; a failed stage stops the run with its error in
   family to its partition before anything is driven. `preflight` and
   `preflight_on` qualify each pass's runner image with a mock turn, and for a
   custom-model collection a capture fixture, before its paid driving starts.
-- The first pass drives with the engine off. `train_pilot` trains the recipes
-  on its rows, `pilot` packs them with a linux engine and the checkpoint, and
-  the `_on` stages drive the same tasks with those heads deciding. Turn
-  `run.engine_on` off (or pass `--no-engine-on`) for a single pass.
+- Heads come from the selector (`src/bialy/campaign/selector.py`), the same
+  code a campaign's selector segment runs. The first pass drives with the
+  engine off. `train_pilot` fits a pilot policy on its rows: the three heads,
+  thresholds the host's calibration sets on validation rows, and the option
+  vocabulary the turn-load head was trained with. `pilot` mounts that policy
+  with a linux engine and the checkpoint, and the `_on` stages drive the same
+  tasks with it deciding. Turn `run.engine_on` off (or pass `--no-engine-on`)
+  for a single pass.
 - `skillreq` writes requests for every skill and `coderank` harvests units and
   writes request pairs, both through the writer model, so the unit-rank and
-  code-rank recipes have their data; `train` runs every recipe in
-  `run.train.recipes` under `run.train.max_hours` on this machine's
-  accelerator (ROCm, CUDA, Apple silicon, or CPU, with the torch index chosen
-  from what it finds).
-- `evaluate` replays validation and holdout rows through the host engine
-  loading the trained heads, and `release_heads` puts the results on the card.
+  code-rank recipes have their data. Code-rank candidate dumps are written only
+  for the repositories the run's ancestry puts in train and validation.
+- `train` fits the final policy over the rows of both passes under
+  `run.train.max_hours` on this machine's accelerator (ROCm, CUDA, Apple
+  silicon, or CPU, with the torch index chosen from what it finds).
+  `run.train.recipes` names the policy's three recipes together, or none of
+  them for a run that only collects rows.
+- `evaluate` qualifies the policy on the development split, which trained and
+  selected nothing: the host's parity probe, replay and rerank measure against
+  the bars in `config/campaign/selector.yaml`. A policy short of one fails the
+  stage. A qualified policy is then compared once on the held-out split, and
+  `release_heads` packages it; it refuses a policy without that record, so a
+  small check run (`--task-cap`) ends at `evaluate`.
 - With `--push`, `report` commits the release anchors on `release/<version>`,
   tags that commit `dataset-<version>` and `heads-<version>`, pushes the branch
   and tags, opens a pull request with `gh`, and uploads both releases to the
@@ -246,7 +261,7 @@ bialy judge --corpus corpus.json --rows runs/pass1/rows.jsonl --out pass1.judged
 bialy split --ancestry ancestry.json --out split/ pass1.judged.jsonl   # ancestry.json: a run's ancestry stage writes it
 bialy coderank harvest --decide-rerank bin/decide-rerank --out coderank/units
 bialy coderank pairs --units coderank/units --out coderank/pairs
-bialy coderank dumps --decide-rerank bin/decide-rerank --units coderank/units --pairs coderank/pairs --out coderank/dumps
+bialy coderank dumps --decide-rerank bin/decide-rerank --units coderank/units --pairs coderank/pairs --ancestry runs/pass1/ancestry.json --out coderank/dumps
 bialy release --split split/ --version v1 --code-ref v1 --out dist/v1 --schema <lycaon>/scripts/bialy/row.schema.json \
   --ancestry ancestry.json --corpus corpus.json --agreement pass1.judged.jsonl.agreement.jsonl --driven runs/pass1/tasks-driven.jsonl \
   --coderank coderank/pairs --stage tasks/provenance.json --stage runs/pass1/provenance.json \
@@ -256,7 +271,7 @@ bialy release --split split/ --version v1 --code-ref v1 --out dist/v1 --schema <
 `corpus.json` comes from the same build (`lycaon-debug decide corpus`), so
 option texts match the sidecars that produced the rows.
 
-The engine-on pass runs the first pass's heads in every runner. A runner's
+The engine-on pass runs a selector policy in every runner. A runner's
 CPUs answer a turn in seconds where Apple silicon or a GPU answers in a
 quarter of one, and past its deadline the engine abstains, so that pass's
 image raises the turn decisions' deadlines (the deadline decides whether an
@@ -265,7 +280,8 @@ answer arrives, never what it is):
 ```bash
 bialy fleet image --lycaon-bin bin --engine engine --tag bialy-runner-pilot --decide-deadline-ms 60000 \
   --config-dir <lycaon>/lycaon/config
-# pilot/: bialy (built for linux), model/ (the Laya checkpoint), heads/{turn-load,unit-rank,code-rank}.safetensors
+# pilot/ is a selector's runner mount (runs/<name>/pilot-policy/pilot): bialy built for linux, model/,
+# heads/, and overlay/config with the policy's thresholds and option vocabulary
 bialy fleet plan --run pass2 --tasks tasks-pass2 --pilot pilot
 bialy fleet run --run pass2 --pilot pilot --image bialy-runner-pilot
 ```
@@ -353,10 +369,7 @@ prepared historical bundle directly instead of rebuilding it with the
 generic release commands.
 
 ```bash
-bialy release-heads --heads heads/ --version v1 --dataset-version v1 --engine-commit <sha> --out dist/heads-v1 \
-  --eval val=replay-val.json --eval holdout=replay-holdout.json \
-  --baseline val=replay-val-base.json --baseline holdout=replay-holdout-base.json \
-  --rerank definitions-zod=rerank-definitions-zod.json
+bialy release-heads --selector runs/pass1/selector --version v1 --dataset-version v1 --engine-commit <sha> --out dist/heads-v1
 bialy publish dataset --release dist/v1 --version v1          # lists what it would send
 bialy publish dataset --release dist/v1 --version v1 --push   # uploads, tags v1
 bialy publish heads --release dist/heads-v1 --version v1 --push

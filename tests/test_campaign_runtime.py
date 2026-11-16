@@ -13,9 +13,14 @@ from bialy.campaign.handlers import Adoption, Cleanup, HeadRows, SuppliedSelecto
 from bialy.campaign.journal import CampaignFault, Journal, StageWaiting
 from bialy.campaign.orchestration import BOUNDARY
 
+PRELOAD = {'catalog_revision': 'c0ffee', 'encoding': 'independent', 'option_words': 60, 'max_len': 1024, 'head_tokens': 512,
+           'options': {'command': 'Run a command', 'edit': 'Edit a file'}}
+BACKBONE = {'model': 'convaiinnovations/laya-multilingual', 'revision': 'e' * 40}
 POLICY = {'identity': 'p0', 'decision_contract': 3, 'heads': {'turn-load': {'sha256': 'a' * 64}, 'unit-rank': {'sha256': 'b' * 64}},
+          'backbone': {**BACKBONE, 'sha256': 'f' * 64}, 'preload': PRELOAD,
           'thresholds': {'turn.tools.load_at': 0.55, 'request.max_loads': 3}}
-RELEASE = {'release': 'r1', 'heads': {'turn-load': {'sha256': 'a' * 64}, 'unit-rank': {'sha256': 'b' * 64}}}
+RELEASE = {'release': 'r1', 'heads': {'turn-load': {'sha256': 'a' * 64}, 'unit-rank': {'sha256': 'b' * 64}}, 'backbone': BACKBONE,
+           'preload': PRELOAD}
 DECISIONS = {'version': 3, 'turn': {'tools': {'load_at': 0.55}}, 'request': {'max_loads': 3}}
 
 
@@ -104,6 +109,23 @@ def test_adoption_accepts_only_a_commit_with_p0s_pins_and_thresholds():
     assert raised.value.details['differences'] == [{'threshold': 'request.max_loads', 'expected': 3, 'found': 4}]
     with pytest.raises(CampaignFault, match='adopted_commit_invalid'):
         adoption.check('/host', 'main', POLICY, same)
+
+
+def test_adoption_refuses_a_commit_that_serves_another_vocabulary_or_backbone():
+    from bialy.campaign import selector
+    decisions_path = selector.load()['decisions']
+
+    def differences(**release):
+        files = git({adoption.RELEASE: json.dumps({**RELEASE, **release}), decisions_path: yaml.safe_dump(DECISIONS)})
+        with pytest.raises(CampaignFault, match='adopted_commit_differs_from_p0') as raised:
+            adoption.check('/host', 'c' * 40, POLICY, files)
+        return raised.value.details['differences']
+    stale = {**PRELOAD, 'catalog_revision': 'dc3bf921', 'options': {'command': 'Run a command', 'edit': 'Edit one file', 'chmod': 'Change bits'}}
+    assert differences(preload=stale) == [{'preload': 'catalog_revision', 'expected': 'c0ffee', 'found': 'dc3bf921'},
+                                          {'preload': 'options', 'tools': ['chmod', 'edit']}]
+    assert differences(preload={**PRELOAD, 'head_tokens': 256}) == [{'preload': 'head_tokens', 'expected': 512, 'found': 256}]
+    assert {'preload': 'options', 'tools': ['command', 'edit']} in differences(preload=None)
+    assert differences(backbone={**BACKBONE, 'revision': '0' * 40}) == [{'backbone': BACKBONE, 'found': {**BACKBONE, 'revision': '0' * 40}}]
     with pytest.raises(CampaignFault, match='adopted_commit_unreadable'):
         adoption.check('/host', 'c' * 40, POLICY, git({}))
 
@@ -147,7 +169,7 @@ def test_cleanup_does_not_pass_while_a_lease_is_unconfirmed(tmp_path):
 def test_the_head_row_pass_reports_its_split_assignment(tmp_path):
     run = SimpleNamespace(name='heads', path=lambda *parts: tmp_path.joinpath(*parts))
     def stages(run, until):
-        assert until == 'coderank'
+        assert until == 'split'
         (tmp_path / 'ancestry.json').write_text(json.dumps({'assignment_sha256': 'e' * 64}))
     handler = HeadRows(run, stages)
     output = handler.execute({}, 'a')

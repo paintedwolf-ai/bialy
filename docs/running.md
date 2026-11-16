@@ -117,16 +117,19 @@ workload:
 | `pilot` | student | 32 training and 16 validation episodes, at least two groups per focus; a supplied `P0` (`selector_policy`) or the engine disabled, stamped as fallback |
 | `full` | selector, student | the head-row pass, `P0`, the adoption boundary, then student collection, training, export and paired evaluation on the adopted commit |
 
-The full profile stops after `P0` in the state `awaiting_host_adoption`. Once
-the host has adopted `P0`'s heads and thresholds, check out the adopted commit,
-build its runner image, and resume:
+The full profile stops after `P0` in the state `awaiting_host_adoption`. Cut the
+heads release from the campaign's `run/selector` directory (`bialy
+release-heads --selector`), publish it, and have the host adopt `selector/p0.json`
+with its `scripts/bialy/adopt_heads.py`, which writes the heads, the option
+vocabulary the turn-load head was trained with, and the thresholds. Then check
+out the adopted commit, build its runner image, and resume:
 
 ```bash
 bialy campaign resume --run /path/to/plan/run --host-commit FULL_COMMIT --host-image RUNNER_IMAGE
 ```
 
-A commit whose decision release or thresholds differ from `P0` is refused, and
-the run keeps waiting with the differences listed. A run that ended in
+A commit whose head pins, backbone, option vocabulary or thresholds differ from
+`P0` is refused, and the run keeps waiting with the differences listed. A run that ended in
 `selector_unqualified` has no boundary to resume from. No training machine is
 requested before every student's rows are measured, and running out of memory
 ends that student's training as a terminal failure that is never retried.
@@ -174,15 +177,30 @@ adapter result, and drives paired host evaluations with thinking off. Its result
 separates pipeline completion from behavioral success and never qualifies a model
 for promotion. The multi-turn probe does not establish long-context behavior.
 
-A full campaign trains its decision heads before it collects student episodes.
-The selector stage fits the turn-load, unit-rank and code-rank heads with the
-existing recipes on the shared training split, and the host's calibration sets
-the thresholds it calibrates from the validation split. The host's replay then
-measures the heads on development against the bars in
+A full campaign trains its decision heads before it collects student episodes,
+through the selector (`src/bialy/campaign/selector.py`), the one way the factory
+trains, gates and releases heads; `bialy run` reaches it through its `train`,
+`evaluate` and `release_heads` stages. The selector fits the turn-load, unit-rank
+and code-rank heads on the shared training split, each choosing its epoch on
+validation, and the host's calibration sets the thresholds it calibrates from
+the validation split. Qualification then measures every head on development,
+which trained and selected nothing: the host's parity probe compares the
+trainer's forward with the engine on the turn-load head, the host's replay
+measures turn-load and unit-rank, and the host's rerank evaluator measures
+code-rank on the development repositories, all against
 `config/campaign/selector.yaml`. The result, `P0`, binds the heads, backbone,
-catalog, decision contract and every threshold, and is whole or absent: one head
-short of its bar ends the stage as `selector_unqualified`, and collection runs on
-the conservative reference instead. Under `P0`, one training variant in ten is
+catalog, the option vocabulary the turn-load head was trained with, the decision
+contract and every threshold, and is whole or absent: one head short of the
+probe or a bar ends the stage as `selector_unqualified`, no qualification is
+recorded, and no heads release can be cut. Collection then runs on the
+conservative reference instead.
+
+Every engine the selector starts is the host's own build
+(`scripts/build-decide.sh`), launched with the head budget the training corpus
+declares (`state.head_tokens`), the same field the trainer and the host read.
+The runner mount a policy is served from carries the checkout's config with the
+policy's thresholds and its option vocabulary in place of the ones the checkout
+pins, so runners ask the heads the option texts they were trained on. Under `P0`, one training variant in ten is
 collected with the engine off as a planned fallback, and the evaluation plan
 records the rate.
 
@@ -434,8 +452,9 @@ Recovery:
 
 After `P0` qualifies, the selector segment writes one held-out comparison
 (`selector/holdout.json`). It sets `P0`'s tool recall, precision and saved bytes
-on the held-out split beside the engine-off fallback measured on the same rows.
-It is read once and decides nothing.
+on the held-out split beside the engine-off fallback measured on the same rows,
+and code-rank's blended order on the held-out repositories beside their
+text-match order. It is read once and decides nothing.
 
 When the student segment finishes, each tier is decided on its own:
 
@@ -570,9 +589,9 @@ real ambiguity between tools that do the same job.
 - A provider refusing the account stops the pass for a resume instead of
   failing every remaining session. Driving spend is not metered here; writing
   and judging are.
-- Evaluation replays rows through the host engine one at a time on the CPU,
-  about 51 seconds a row, so it replays a seeded sample of each split
-  (`run.evaluate.rows`, 500) and runs code-rank sites side by side.
+- Qualification replays every development row through the host engine, and the
+  held-out comparison every held-out row; on a CPU a row takes about 51
+  seconds. Code-rank sites are measured side by side.
 - A snapshot of a live run (`fleet salvage`) can read a shard twice; keep one
   copy per (root session, session, receipt), and merge second-judge samples
   when judging new rows later.
@@ -581,72 +600,59 @@ real ambiguity between tools that do the same job.
 
 - Train at the checkpoint's full context. Pass 1's first heads trained at 512
   tokens, where the tool options left about 1% of the request; the engine
-  serves at 1,024, and `parity_probe.py` refuses a head whose encoding differs.
+  serves at 1,024, and the host's `parity_probe.py` refuses a head whose
+  encoding differs. Qualification runs the probe, so such a head is never
+  released.
 - Start from the unweighted tool recipe: rare-tool weighting lowered calibrated
   preload F0.5 (0.37 to 0.28 on called labels, 0.58 to 0.40 on judged).
   Compare candidates by calibrated result and per-tool AUC, never raw
   precision at the default threshold.
 - Code-rank trains only on requests that describe a unit without naming it
   (text matching already finds named ones); named requests are kept in their
-  own file for measuring the blend. Human-written doc pairs are the neutral
-  held-out measure.
+  own file for measuring the blend. A repository's pairs serve the partition the
+  run's ancestry gives it: candidate dumps are written for train and validation
+  repositories only, under `coderank/dumps/<partition>/`, so a development or
+  held-out repository has nothing on disk a trainer could read. The head is
+  qualified on the development repositories and compared once on the held-out
+  ones, both through the engine.
 - Skills need their own coverage: `skillreq` writes clear, near-miss,
   two-skill, and no-skill requests for every skill, and the rubric scores a
   generic procedure likely only when the request asks for that step. Measure
   discovery with `skill_discovery.py` by band of training support.
+- A reviewer slot labels head rows only after it scores the versioned controls
+  in `config/judge-controls.yaml` correctly, asked with each unit's own prompt
+  and decoding: a card the request plainly needs at 3 or 4, one it plainly does
+  not at 0 or 1. The first qualified slot judges every row and the next one the
+  second-judge sample; with none, the judge stage fails before a row is scored.
+  Each slot's result is kept beside the judged rows (`.qualification.json`).
 - Checkpoints are chosen by tool validation loss. More worker rows of the
   right kinds, not heavier ones, is the worker fix.
 - Retention rows capture later use as positive observational evidence. Missing use
-  is not a negative label. R1 qualification requires verified task truth or an
-  independent judge for every held-out label; unverified hindsight cannot qualify
-  a head. The host reconstructs every retention row at export from the session's
-  messages (`reconstructed: true`, engine `abstained`/`observations_only`): it
-  records no retention decision while a session runs, and no setting changes that.
+  is not a negative label; unverified hindsight cannot qualify a head. The host
+  reconstructs every retention row at export from the session's messages
+  (`reconstructed: true`, engine `abstained`/`observations_only`): it records no
+  retention decision while a session runs, and no setting changes that.
 
-## Retention pilot
+## Retention observations
 
-The pilot collects observations and replays experimental candidates. It does
-not qualify a compaction head until verified labels and recovery outcomes are
-available. The compaction head remains optional and is not part of the runtime
-baseline.
+The factory collects compaction observations and trains no retention head. The
+host names a `retention` head but asks it nothing, so a trained one could change
+no session and no pass could measure it.
 
 ```bash
-bialy run --run retention-observations --recipes R1 --no-judge --until collect \
+bialy run --run retention-observations --recipes "" --no-judge --no-engine-on --until collect \
   --follow-up-rate 1.0 --follow-ups 3 --task-cap 2 --runners 4 --spend-ceiling 40
 ```
 
 Follow-ups collect longer sessions and canonical recovery observations. Missing
-later use is unknown, and successful recall is part of the recovery path. This
-collection run does not train a head.
-
-R1 is an explicit experiment, excluded from the default recipes. Training needs
-verified positive and negative labels in both splits. Negative labels must have
-scenario or judge provenance; repetition and file mutation do not establish
-irrelevance. Unjudged observational rows cannot qualify a head.
-
-The search grid trains the optional retention head and evaluates it on separate
-validation and held-out workspaces. Replay reports a counterfactual token proxy,
-not provider savings, and emits no runtime policy or structural deletion rule.
-A deployed comparison must separately demonstrate provider-reported savings,
-task continuity, and successful recovery. The host's deterministic compaction
-remains complete without the head.
-
-The `compare` stage matches the complete requests both passes drove and reads
-what the retention head's releases did to prompt tokens, recalls and repeated
-calls. It needs the host's record of each engine-on request's retention decision
-(`retention.recorded` on the request row). The host writes
-`{"recorded": false, "asked": false, "dropped": 0}` on every request row, so the
-stage records `refused: retention_not_recorded` and writes no `compare.json`; it
-also refuses a pass without request rows (`request_rows_missing`) and passes that
-share no request (`no_matched_requests`). A refused comparison never counts
-toward a head's verdict.
+later use is unknown, and successful recall is part of the recovery path. The
+rows are split and released with the dataset (`retention/`).
 
 - A run that stops at a failed stage still writes the report; `bialy run`
   with the same name resumes it. When the host or factory code changed under
   a run, `bialy fleet reexport --run <name>/fleet-off --lycaon-debug <binary>`
   rewrites every driven shard's rows from the store it kept, so the pass is
-  never driven twice; `train-host/retention_pilot.sh resume` rebuilds, does
-  that, and continues the run.
+  never driven twice.
 - A prompt that times out is aborted with a two-minute bound; a session that
   will not stop (a dev server the model left running) is recorded on its task
   and the shard moves on, instead of holding the runner until the fleet's

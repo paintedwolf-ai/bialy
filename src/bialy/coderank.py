@@ -15,9 +15,11 @@ A request that shares a word with its unit's identifier or file name is
 dropped from both sources: text matching already ranks that unit first, so the
 pair would teach the head nothing.
 
-`decide-rerank eval --no-engine` then turns each repository's pairs into the
-candidate sets a site would rank (the dumps `train_rerank.py` reads). Held-out
-repositories contribute evaluation pairs only.
+`decide-rerank eval --no-engine` then turns a repository's pairs into the
+candidate sets a site would rank (the dumps `train_rerank.py` reads). Dumps are
+written only for the repositories the run's ancestry puts in `train` and
+`validation`, each under its partition's directory; a development or held-out
+repository has pairs to be measured on and no dump to train on.
 """
 
 import concurrent.futures
@@ -25,8 +27,12 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 from pathlib import Path
+
+from .campaign import ancestry
+from .campaign.journal import CampaignFault
 
 LANGUAGES = ["en", "en", "en", "de", "es", "fr", "pt", "ja", "zh", "ko"]
 REGISTERS = [
@@ -201,16 +207,37 @@ def hash_seed(seed, name):
     return random.Random("%s:%s" % (seed, name)).randrange(1 << 30)
 
 
-def dumps(factory, decide_rerank, units_dir, pairs_dir, out_dir):
-    """Every site's lexical candidate sets for every repository's pairs, without an engine:
-    the rows `train_rerank.py` labels from the site's own structure."""
+DUMP_PARTITIONS = ("train", "validation")
+
+
+def repositories(factory, assignment):
+    """The factory's repositories by the partition the ancestry gives them. A repository
+    the ancestry does not hold belongs to no partition."""
+    out = {partition: [] for partition in ancestry.PARTITIONS}
+    for repo in factory.repos:
+        try:
+            out[assignment.partition("repository:" + repo.name)].append(repo)
+        except CampaignFault:
+            continue
+    return out
+
+
+def dumps(factory, decide_rerank, units_dir, pairs_dir, out_dir, assignment):
+    """Every site's lexical candidate sets for the pairs of the train and validation
+    repositories, without an engine, into out_dir/<partition>/: the rows
+    `train_rerank.py` labels from the site's own structure. The directory is rebuilt
+    whole, so no dump outlives the ancestry it was written under."""
     units_dir, pairs_dir, out_dir = Path(units_dir), Path(pairs_dir), Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    jobs = [(repo, site, source) for repo in factory.repos for site in SITES for source in ("docs", "model")]
+    shutil.rmtree(out_dir, ignore_errors=True)
+    by_partition = repositories(factory, assignment)
+    jobs = [(partition, repo, site, source) for partition in DUMP_PARTITIONS for repo in by_partition[partition]
+            for site in SITES for source in ("docs", "model")]
+    for partition in DUMP_PARTITIONS:
+        (out_dir / partition).mkdir(parents=True)
 
     def one(job):
-        repo, site, source = job
-        dump = out_dir / ("%s-%s-%s.jsonl" % (site, source, repo.name))
+        partition, repo, site, source = job
+        dump = out_dir / partition / ("%s-%s-%s.jsonl" % (site, source, repo.name))
         result = subprocess.run([decide_rerank, "eval", "--no-engine", "--site", site, "--repo", str(factory.root / "repos" / repo.name),
                                  "--name", repo.name, "--units", str(units_dir / (repo.name + ".jsonl")),
                                  "--pairs", str(pairs_dir / ("%s-%s.jsonl" % (source, repo.name))),
@@ -219,5 +246,11 @@ def dumps(factory, decide_rerank, units_dir, pairs_dir, out_dir):
         return job, result.returncode, (result.stdout + result.stderr).strip().splitlines()[-1:] or [""]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        for (repo, site, source), code, tail in pool.map(one, jobs):
-            print("%s %s %s exit=%d %s" % (repo.name, site, source, code, tail[0][:120]), flush=True)
+        for (partition, repo, site, source), code, tail in pool.map(one, jobs):
+            print("%s %s %s %s exit=%d %s" % (partition, repo.name, site, source, code, tail[0][:120]), flush=True)
+    return training_dumps(out_dir)
+
+
+def training_dumps(out_dir):
+    """The dumps a code-rank head trains on and those that select its epoch."""
+    return {partition: sorted((Path(out_dir) / partition).glob("*.jsonl")) for partition in DUMP_PARTITIONS}

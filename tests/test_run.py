@@ -1,11 +1,14 @@
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from bialy import config, custom_model_run
+from bialy import build, config, custom_model_run, heads
 from bialy import run as runmod
+from bialy.campaign import selector
+from bialy.campaign.journal import CampaignFault
 
 
 def make_run(factory, tmp_path, **settings):
@@ -64,6 +67,9 @@ def test_every_stage_has_a_function_and_the_engine_on_stages_are_between_the_pas
     assert set(runmod.STAGE_FUNCS) == set(runmod.STAGES)
     order = [runmod.STAGES.index(s) for s in runmod.ENGINE_ON_STAGES]
     assert order == sorted(order) and runmod.STAGES.index("judge") < order[0] < runmod.STAGES.index("split")
+    # A pilot policy is fitted like the final one: it needs the site dumps and the engine that calibrates it.
+    assert runmod.STAGES.index("coderank") < runmod.STAGES.index("engine") < runmod.STAGES.index("train_pilot")
+    assert runmod.STAGES.index("train") < runmod.STAGES.index("evaluate") < runmod.STAGES.index("release_heads")
 
 
 def test_execute_records_every_stage_and_resumes(factory, tmp_path):
@@ -92,7 +98,7 @@ def test_execute_stops_at_a_failure_and_after_until(factory, tmp_path):
     assert not reported(run)
     record.clear()
     runmod.execute(run, until="split_pilot", funcs=stub_funcs(record))
-    assert record == ["judge", "judge_skillreq", "split_pilot"]
+    assert record == ["judge", "judge_skillreq", "coderank", "engine", "split_pilot"]
     assert [a for _, a in runmod.plan(run, until="split_pilot")] == ["skip"] * (runmod.STAGES.index("split_pilot") + 1)
 
 
@@ -105,9 +111,9 @@ def test_redo_reruns_one_stage_and_keeps_the_rest(factory, tmp_path):
     assert record == ["image"] and reported(run)
 
 
-def test_a_retention_only_run_needs_no_judge_or_writer(factory, tmp_path):
-    run = make_run(factory, tmp_path, train={"recipes": ["R1"]}, judge={"enabled": False})
-    assert runmod.stage_skillreq(run)["skipped"] and runmod.stage_judge_skillreq(run)["skipped"]
+def test_a_collection_only_run_needs_no_judge_or_writer(factory, tmp_path):
+    run = make_run(factory, tmp_path, train={"recipes": []}, judge={"enabled": False})
+    assert runmod.stage_skillreq(run)["skipped"] and runmod.stage_judge_skillreq(run)["skipped"] and runmod.stage_coderank(run)["skipped"]
     rows = run.path("fleet-off", "rows.jsonl")
     rows.parent.mkdir(parents=True)
     rows.write_text('{"receipt": 1}\n')
@@ -115,89 +121,10 @@ def test_a_retention_only_run_needs_no_judge_or_writer(factory, tmp_path):
     assert out["skipped"] and run.path("judged-off.jsonl").read_text() == '{"receipt": 1}\n'
     assert runmod.judged_files(run) == [run.path("judged-off.jsonl")]
     # Follow-up overrides reach every archetype of the scaled factory.
-    pilot = make_run(factory, tmp_path, retention={"follow_up_rate": 1.0, "follow_ups": 4})
-    shaped = runmod.scaled_factory(pilot).archetypes
+    shaped_run = make_run(factory, tmp_path, retention={"follow_up_rate": 1.0, "follow_ups": 4})
+    shaped = runmod.scaled_factory(shaped_run).archetypes
     assert {a.follow_up_rate for a in shaped} == {1.0} and {a.max_follow_ups for a in shaped} == {4}
     assert {a.follow_up_rate for a in runmod.scaled_factory(run).archetypes} == {a.follow_up_rate for a in factory.archetypes}
-
-
-def replay_report(objective, released=5, needed=0, low=50):
-    """A retention_eval.py --fit --holdout report as the selection reads it."""
-    tally = {"candidates": 500, "released": released, "needed_released": needed, "objective_tokens": objective,
-             "objective_per_request": objective // 50, "objective_share": 0.2}
-    return {"overall": {"rows": 60, "auc": 0.8, "needed_rate": 0.2, "abstained": 0, "engine": tally, "structural": {"none": dict(tally, objective_tokens=0)}},
-            "fitted": {"drop_below": 0.2, "confidence_floor": 0.7, "tally": tally},
-            "holdout": {"rows": 50, "verified_label_rows": 50, "auc": 0.78, "needed_rate": 0.19, "abstained": 0, "engine": tally, "policy": {"drop_below": 0.2, "confidence_floor": 0.7},
-                        "structural": {"none": dict(tally, objective_tokens=0), "repeated": dict(tally, objective_tokens=-400), "stale": dict(tally, objective_tokens=100)},
-                        "bootstrap": {"engine": {"low": low, "median": 200, "high": 400, "draws": 500}}},
-            "recommendation": {"facts": [], "fragment": "retention:\n  drop_below: 0.2\n  confidence_floor: 0.7\n"}}
-
-
-def test_evaluate_selects_the_searched_retention_head_and_reads_the_verdict(factory, tmp_path, monkeypatch):
-    run = make_run(factory, tmp_path, train={"recipes": ["R1"]})
-    search = run.path("heads", "search")
-    search.mkdir(parents=True)
-    for name in ("lr0.001-pw6-needed", "lr0.0005-pw6-needed"):
-        (search / ("retention-%s.safetensors" % name)).write_bytes(name.encode())
-    monkeypatch.setattr(runmod, "model_dir", lambda run: tmp_path)
-    monkeypatch.setattr(runmod.build, "launcher", lambda engine, model, heads, out, device=None: Path(out))
-    for split in ("val", "holdout"):
-        rows = run.path("split", "retention", "%s.jsonl" % split)
-        rows.parent.mkdir(parents=True, exist_ok=True)
-        rows.write_text(json.dumps({"schema": "pw-retention-row/1", "partial": False}) + "\n")
-    objectives = {"lr0.001-pw6-needed": 9000, "lr0.0005-pw6-needed": 12000}
-    calls = []
-
-    def fake_run(args, cwd=None, capture_output=None, text=None, env=None):
-        calls.append(args)
-        name = Path(args[args.index("--json") + 1]).stem
-        Path(args[args.index("--json") + 1]).write_text(json.dumps(replay_report(objectives[name])))
-        return subprocess.CompletedProcess(args, 0, "", "")
-    monkeypatch.setattr(runmod.subprocess, "run", fake_run)
-    out = runmod.stage_evaluate(run)
-    assert len(calls) == 2 and all("--fit" in a and "--holdout" in a for a in calls)
-    retained = out["retention"]
-    assert retained["chosen"] == "lr0.0005-pw6-needed" and run.path("heads", "retention.safetensors").read_bytes() == b"lr0.0005-pw6-needed"
-    assert retained["fitted"] == {"drop_below": 0.2, "confidence_floor": 0.7} and retained["facts"] == []
-    assert not retained["viability"]["viable"]
-    assert "matched deployed comparison" in retained["viability"]["reasons"][0]
-    selection = json.loads(Path(retained["selection"]).read_text())
-    assert selection["chosen"] == "lr0.0005-pw6-needed" and set(selection["search"]) == set(objectives)
-    assert "drop_below: 0.2" in Path(retained["fragment"]).read_text()
-    # The turn replay has no heads to score, and the report carries the section.
-    assert out["evals"]["skipped"]
-    state = run.load_state()
-    state["stages"]["evaluate"] = {"status": "done", "at": "now", "outputs": out}
-    run.save_state(state)
-    text = Path(runmod.stage_report(run, publish=False)["report"]).read_text()
-    assert "## Retention head" in text and "matched deployed comparison" in text and "| Search point |" in text and "lr0.001-pw6-needed" in text
-
-
-def test_compare_matches_requests_across_passes(factory, tmp_path):
-    run = make_run(factory, tmp_path)
-    off = run.path("fleet-off", "requests.jsonl")
-    on = run.path("fleet-on", "requests.jsonl")
-    off.parent.mkdir(parents=True)
-    on.parent.mkdir(parents=True)
-
-    def row(task, index, tokens, recalls, dropped, recorded=True):
-        return {"schema": "pw-request-row/1", "host": "coordinator", "surface": "implement_investigate", "partial": False, "request_index": index,
-                "calls": 4, "prompt_tokens": tokens, "recall_calls": recalls, "repeated_calls": 0, "meta": {"task_id": task},
-                "retention": {"recorded": recorded, "asked": dropped is not None, "dropped": dropped or 0}}
-    off.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 10000, 0, None), row("t1", 1, 20000, 0, None), row("t2", 0, 5000, 0, None))))
-    on.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 9000, 0, 1), row("t1", 1, 15000, 1, 2), row("t3", 0, 1, 0, 0))))
-    out = runmod.stage_compare(run)
-    c = out["comparison"]
-    assert c["requests"] == 2 and c["off_only"] == 1 and c["on_only"] == 1 and c["released_results"] == 3 and c["released_requests"] == 2
-    assert c["measures"]["prompt_tokens"] == {"off": 15000.0, "on": 12000.0, "delta": -3000.0, "delta_median": -3000, "wants": "down"}
-    assert c["measures"]["recall_calls"]["delta"] == 0.5
-    assert json.loads(run.path("compare.json").read_text()) == c
-    assert runmod.stage_compare(make_run(factory, tmp_path / "other", engine_on={"enabled": False, "deadline_ms": 1}))["skipped"]
-    on.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 9000, 0, None, recorded=False), row("t1", 1, 15000, 0, None, recorded=False))))
-    assert runmod.stage_compare(run) == {"refused": "retention_not_recorded", "requests": 2, "unrecorded": 2}
-    assert not run.path("compare.json").exists()
-    on.unlink()
-    assert runmod.stage_compare(run) == {"refused": "request_rows_missing", "off": 3, "on": 0}
 
 
 def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):
@@ -208,20 +135,119 @@ def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):
     assert runmod.stage_pilot(run)["skipped"]
 
 
-def test_released_heads_drive_the_engine_on_pass_only(factory, tmp_path):
-    heads = tmp_path / "heads"
-    heads.mkdir()
-    run = make_run(factory, tmp_path, engine_on={"enabled": True, "deadline_ms": 1, "heads": str(heads)})
+def test_released_heads_drive_the_engine_on_pass_only_under_the_release_that_pins_them(factory, tmp_path):
+    released = tmp_path / "heads"
+    released.mkdir()
+    checkout = tmp_path / "co"
+    release = checkout / "lycaon/config" / build.RELEASE
+    release.parent.mkdir(parents=True)
+    (released / "turn-load.safetensors").write_bytes(b"shipped")
+    release.write_text(json.dumps({"release": "r1", "heads": {"turn-load": {"sha256": runmod.provenance.file_sha256(released / "turn-load.safetensors")}}}))
+    run = make_run(factory, tmp_path, engine_on={"enabled": True, "deadline_ms": 1, "heads": str(released)}, lycaon_checkout=str(checkout))
     assert run.engine_on_only
     for name in ("plan", "drive", "collect", "judge", "split_pilot", "train_pilot"):
         assert runmod.STAGE_FUNCS[name](run) == {"skipped": "run.engine_on.heads drives the engine-on pass only"}
-    with pytest.raises(runmod.RunError, match="safetensors"):
-        runmod.pilot_heads_dir(run)
-    (heads / "b5.safetensors").write_bytes(b"")
-    assert runmod.pilot_heads_dir(run) == heads
-    plain = make_run(factory, tmp_path)
-    assert not plain.engine_on_only
-    assert runmod.pilot_heads_dir(plain) == plain.path("pilot-heads")
+    assert runmod.released_heads(run) == {"turn-load": released / "turn-load.safetensors"}
+    # Heads the checkout does not pin would be served another release's option vocabulary.
+    (released / "turn-load.safetensors").write_bytes(b"retrained")
+    with pytest.raises(runmod.RunError, match="decision release r1 pins"):
+        runmod.released_heads(run)
+    assert not make_run(factory, tmp_path).engine_on_only
+
+
+class Selector:
+    """selector.fit, qualify and holdout, faked: what a run's stages asked of them."""
+
+    def __init__(self, monkeypatch, unqualified=None):
+        self.calls, self.unqualified = [], unqualified
+        monkeypatch.setattr(selector, "Workbench", lambda run: "bench")
+        monkeypatch.setattr(selector, "fit", self.fit)
+        monkeypatch.setattr(selector, "qualify", self.qualify)
+        monkeypatch.setattr(selector, "holdout", self.holdout)
+
+    def fit(self, run, split, directory, workbench, config, label):
+        self.calls.append(("fit", split.name, directory.name, label))
+        (directory / "pilot" / "heads").mkdir(parents=True)
+        (directory / "pilot" / "heads" / "turn-load.safetensors").write_bytes(b"h")
+        return {"policy": {"identity": "p-" + label}, "heads": {"turn-load": "h"}, "pilot": str(directory / "pilot")}
+
+    def qualify(self, run, split, directory, trained, workbench, config):
+        self.calls.append(("qualify", split.name, directory.name))
+        if self.unqualified:
+            raise CampaignFault("selector_unqualified", details={"failures": [self.unqualified]})
+        return {"policy": trained["policy"]["identity"], "measures": {}, "parity": {"passed": True}}
+
+    def holdout(self, run, split, directory, trained, workbench):
+        self.calls.append(("holdout", split.name, directory.name))
+        return {"policy": trained["policy"]["identity"]}
+
+
+def trained_run(factory, tmp_path, stage="train", **settings):
+    run = make_run(factory, tmp_path, **settings)
+    state = run.load_state()
+    state["stages"][stage] = {"status": "done", "at": "now", "outputs": runmod.STAGE_FUNCS[stage](run)}
+    run.save_state(state)
+    return run
+
+
+def test_both_policies_come_from_the_selector_over_their_own_split(factory, tmp_path, monkeypatch):
+    fake = Selector(monkeypatch)
+    run = make_run(factory, tmp_path)
+    assert runmod.stage_train_pilot(run)["selector"]["policy"] == {"identity": "p-pilot"}
+    assert runmod.stage_train(run)["selector"]["policy"] == {"identity": "p-final"}
+    assert fake.calls == [("fit", "split-pilot", "pilot-policy", "pilot"), ("fit", "split", "selector", "final")]
+    collecting = make_run(factory, tmp_path / "r", train={"recipes": []})
+    assert runmod.stage_train(collecting)["skipped"] and runmod.stage_evaluate(collecting)["skipped"]
+    with pytest.raises(runmod.RunError, match="no policy to serve"):
+        runmod.stage_pilot(collecting)
+
+
+def test_evaluate_qualifies_then_compares_and_an_unqualified_policy_fails_the_stage(factory, tmp_path, monkeypatch):
+    fake = Selector(monkeypatch)
+    run = trained_run(factory, tmp_path)
+    out = runmod.stage_evaluate(run)
+    assert out["policy"] == "p-final" and out["holdout"] == {"policy": "p-final"}
+    assert fake.calls[1:] == [("qualify", "split", "selector"), ("holdout", "split", "selector")]
+    failing = Selector(monkeypatch, unqualified={"head": "code-rank", "metric": "mrr_gain", "value": -0.02, "at_least": 0.01})
+    with pytest.raises(runmod.RunError, match="selector_unqualified.*mrr_gain"):
+        runmod.stage_evaluate(run)
+    assert failing.calls == [("qualify", "split", "selector")]
+
+
+def test_no_heads_release_is_cut_from_an_unqualified_policy(factory, tmp_path, monkeypatch):
+    Selector(monkeypatch)
+    run = trained_run(factory, tmp_path)
+    with pytest.raises(runmod.RunError, match="selector policy"):
+        runmod.stage_release_heads(run)
+    assert not run.path("dist").exists()
+    built = []
+    monkeypatch.setattr(heads, "build", lambda directory, version, dataset, commit, out: built.append((directory.name, version, commit)))
+    monkeypatch.setattr(runmod.build, "checkout_commit", lambda checkout: "c0")
+    assert runmod.stage_release_heads(run)["version"] == "t" and built == [("selector", "t", "c0")]
+    assert runmod.stage_release_heads(make_run(factory, tmp_path / "none"))["skipped"]
+
+
+def test_the_engine_on_pass_mounts_the_pilot_policy(factory, tmp_path, monkeypatch):
+    Selector(monkeypatch)
+    run = trained_run(factory, tmp_path, stage="train_pilot")
+    monkeypatch.setattr(runmod.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, "", ""))
+    out = runmod.stage_pilot(run)
+    assert out["pilot"] == str(run.path("pilot-policy", "pilot")) and out["policy"] == "p-pilot"
+    state = run.load_state()
+    state["stages"]["pilot"] = {"status": "done", "outputs": out}
+    run.save_state(state)
+    assert runmod.pilot_mount(run) == run.path("pilot-policy", "pilot")
+
+
+def test_check_refuses_part_of_a_policy_and_a_checkout_that_dropped_a_flag(factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "k")
+    shutil.copytree(Path(__file__).parent / "fixtures" / "host-checkout", tmp_path / "co")
+    replay = tmp_path / "co" / "scripts/bialy/replay_eval.py"
+    replay.write_text(replay.read_text().replace('"--tool-truth"', '"--truth"'))
+    run = make_run(factory, tmp_path, train={"recipes": ["B5", "E4"]}, lycaon_checkout=str(tmp_path / "co"))
+    with pytest.raises(runmod.RunError) as exc:
+        runmod.stage_check(run)
+    assert "a selector policy is whole or absent" in str(exc.value) and "replay_eval.py --tool-truth" in str(exc.value)
 
 
 def test_report_lists_publish_commands_without_pushing(factory, tmp_path):
@@ -359,48 +385,6 @@ def test_a_stale_judge_manifest_is_cleared_and_a_matching_one_resumes(factory, t
     Path(str(out) + ".partial.jsonl").write_text("resume")
     runmod.judge_rows(run, rows, out)
     assert seen["partial_exists"] is True
-
-
-def test_evaluation_replays_a_seeded_sample_in_file_order(tmp_path):
-    rows = tmp_path / "holdout.jsonl"
-    rows.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(50)))
-    out = tmp_path / "holdout.sample.jsonl"
-    picked, total = runmod.sample_rows(rows, out, 10, "7:evaluate:holdout")
-    kept = [json.loads(line)["n"] for line in out.read_text().splitlines()]
-    assert picked == out and total == 50 and len(kept) == 10 and kept == sorted(kept)
-    assert runmod.sample_rows(rows, tmp_path / "again.jsonl", 10, "7:evaluate:holdout")[0].read_text() == out.read_text()
-    # A split no larger than the sample, or no limit, replays as it is.
-    assert runmod.sample_rows(rows, tmp_path / "x.jsonl", 50, "s") == (rows, 50)
-    assert runmod.sample_rows(rows, tmp_path / "x.jsonl", 0, "s") == (rows, 50)
-
-
-def test_code_rank_sites_are_evaluated_side_by_side(factory, tmp_path, monkeypatch):
-    import threading
-
-    run = make_run(factory, tmp_path, workspaces=["zod", "sinatra"])
-    for repo in ("zod", "sinatra"):
-        for kind, name in (("units", repo + ".jsonl"), ("pairs", "docs-%s.jsonl" % repo)):
-            path = run.path("coderank", kind, name)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("{}\n")
-    running, peak, lock = [0], [0], threading.Lock()
-    release = threading.Barrier(runmod.RERANK_WORKERS, timeout=5)
-
-    def eval_site(args, **kw):
-        with lock:
-            running[0] += 1
-            peak[0] = max(peak[0], running[0])
-        release.wait()
-        with lock:
-            running[0] -= 1
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    import subprocess
-    monkeypatch.setattr(runmod, "model_dir", lambda run: tmp_path / "model")
-    monkeypatch.setattr(runmod.subprocess, "run", eval_site)
-    reports = runmod.rerank_evals(run, {"code-rank": "head"})
-    assert sorted(reports) == sorted("%s-%s" % (s, r) for s in runmod.coderank.SITES for r in ("zod", "sinatra"))
-    assert peak[0] == runmod.RERANK_WORKERS
 
 
 def test_a_section_setting_takes_its_keys():
