@@ -21,15 +21,21 @@ bound:
   lookup: [read_at, margin]
   tool_event: [read_at, pointer_at, margin]
 # The host's parity probe of the turn-load head on development turns: the trainer's
-# forward and the engine must agree on every tool probability within the tolerance.
+# forward and the engine, both on the CPU, must agree on every tool probability
+# within the tolerance. It measures no quality. It tells an encoding mismatch (the
+# probe fails) from a weak head (the probe passes and a bar does not).
 parity:
   turns: 24
   tolerance: 0.001
 # Floors each head must clear on the development partition, which neither trains a
-# head nor selects its epoch or thresholds: the host's replay for turn-load and
-# unit-rank, and for code-rank the host's rerank measure over the development
-# repositories, where mrr_gain is the blended order's mean reciprocal rank less the
-# text-match order's.
+# head nor selects its epoch or thresholds. Every bar is measured through the engine,
+# none in Python: the host's replay for turn-load and unit-rank, and for code-rank
+# the host's rerank evaluator over the development repositories. A head is thus
+# measured as the engine would serve it, whatever its trainer encoded.
+# code-rank: pairs is the number of requests measured, and mrr_gain the blended
+# order's mean reciprocal rank less the text-match order's. Both are floors, not
+# measured targets: enough support to read a gain, and a gain over the engine-off
+# order.
 bars:
   turn-load:
     - {metric: overall.tools._all.recall, at_least: 0.85}
