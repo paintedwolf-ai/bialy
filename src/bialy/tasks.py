@@ -406,15 +406,14 @@ def finalize(factory, workspace, raw, files, out_path, seed, scenarios=()):
         return workspace.kind == "stack" or mentioned_paths_exist(text, files, arch.new_files)
 
     def build(prompt, follow_ups, follow_up_rate, arch, group_key, meta):
+        tid = hashlib.sha1(("%s\n%s" % (workspace.name, prompt)).encode()).hexdigest()[:16]
         names = sorted(arch.workflows)
         pick = rng.choices([None, *names], [1 - sum(arch.workflows.values()), *(arch.workflows[n] for n in names)])[0]
         follow = follow_ups if rng.random() < follow_up_rate else []
-        tid = hashlib.sha1(("%s\n%s" % (workspace.name, prompt)).encode()).hexdigest()[:16]
         model = pick_generator(factory, arch.id, generators, rng)
-        prompt_text = maybe_reference(prompt, files, getattr(arch, "reference_rate", 0.0), attach_rng) if files else prompt
         meta = {"task_id": tid, "workspace": workspace.name, "workspace_kind": workspace.kind, "split": workspace.split,
                 "archetype": arch.id, "prompt_group": group_key, **meta, "workflow": pick, "prompt_timeout": arch.timeout(pick)}
-        task = {"id": tid, "prompt": prompt_text, "follow_ups": [{"prompt": f} for f in follow],
+        task = {"id": tid, "prompt": prompt, "follow_ups": [{"prompt": f} for f in follow],
                 "provider_id": factory.provider_id(factory.model(model)), "model": model, "meta": meta}
         if pick:
             task["workflow"] = pick
@@ -440,7 +439,10 @@ def finalize(factory, workspace, raw, files, out_path, seed, scenarios=()):
         seen_groups.add(group_key)
         meta = {"lang": t["lang"], "author_model": t["author"], **({"seed": t["seed"]} if t.get("seed") else {})}
         arch = archetypes[t["archetype"]]
-        tasks.append(build(t["prompt"], t["follow_ups"], arch.follow_up_rate, arch, group_key, meta))
+        task = build(t["prompt"], t["follow_ups"], arch.follow_up_rate, arch, group_key, meta)
+        if files:
+            task["prompt"] = maybe_reference(task["prompt"], files, getattr(arch, "reference_rate", 0.0), attach_rng)
+        tasks.append(task)
     # Written follow-ups are always kept.
     for s in scenarios:
         for v in s.variants:
