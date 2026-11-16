@@ -164,7 +164,7 @@ def rejudge(release, base_url, model, sample=50, seed=7, units=("skills",)):
     return {"model": model, "rows": len(picked), "pairs": len(pairs), "exact": round(exact, 4), "weighted_kappa": judge.weighted_kappa(pairs)}
 
 
-METRICS = (("tools", "precision"), ("tools", "recall"), ("tools", "f1"), ("guides", "omission_precision"), ("kind", "accuracy"))
+METRICS = (("tools", "precision"), ("tools", "recall"), ("tools", "f1"), ("kind", "accuracy"))
 
 
 def heads(release, dataset_release, lycaon, engine, split="holdout", tolerance=0.01):
@@ -184,8 +184,7 @@ def heads(release, dataset_release, lycaon, engine, split="holdout", tolerance=0
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "replay.json"
         subprocess.run([sys.executable, str(Path(lycaon) / "scripts/bialy/replay_eval.py"), "--corpus", str(dataset_release / "corpus.json"),
-                        "--examples", str(dataset_release / "holdout.jsonl"), "--engine", str(engine),
-                        "--holdout-pack", "painted-wolf/browser", "--json", str(out)],
+                        "--examples", str(dataset_release / "holdout.jsonl"), "--engine", str(engine), "--json", str(out)],
                        check=True, stdout=subprocess.DEVNULL)
         replayed = json.loads(out.read_text(encoding="utf-8"))["overall"]
     diffs = {}

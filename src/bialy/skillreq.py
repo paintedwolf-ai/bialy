@@ -73,17 +73,17 @@ def family_id(seed, skill, kind, n):
 
 
 def row(request, fam, i, writer, workspace, lang, revision, meta, offered=None):
-    """A pw-decide-row/1 row the judge and the rank trainer read: one coordinator turn with
+    """A pw-decide-row/2 row the judge and the rank trainer read: one coordinator turn with
     the request as its only state, and no behaviour. `offered` carries a real turn's
     candidates when the row's tools are to be judged too."""
     session = "skillreq-" + fam
     return {
-        "schema": "pw-decide-row/1", "receipt": i, "session": session, "root_session": session, "opening_message_id": "%s-%d" % (fam, i),
+        "schema": "pw-decide-row/2", "receipt": i, "session": session, "root_session": session, "opening_message_id": "%s-%d" % (fam, i),
         "host": "coordinator", "surface": "implement_investigate", "catalog_revision": revision, "project": workspace.name, "model": writer,
-        "partial": False, "lang": lang, "engine": {"state": "abstained", "reason": "generated request", "preloaded": [], "omitted": []},
-        "offered": offered or {"floor": [], "loadable": [], "guides": []},
+        "partial": False, "lang": lang, "engine": {"state": "abstained", "reason": "generated request", "preloaded": []},
+        "offered": offered or {"floor": [], "loadable": []},
         "state": {"host": "coordinator", "user": request, "surface": "implement_investigate", "posture": "build", "root_count": 1, "workers_in_flight": 0},
-        "labels": {"tools": [], "requests": [], "requested_names": [], "requested_groups": [], "skills": [], "kind": None, "guides": {}},
+        "labels": {"tools": [], "requests": [], "requested_names": [], "requested_groups": [], "skills": [], "kind": None},
         "meta": dict(meta, source="skillreq", family=fam, workspace=workspace.name, workspace_kind=workspace.kind),
     }
 

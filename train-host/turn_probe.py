@@ -1,9 +1,9 @@
-"""Score every option of a turn head with the trainer's own forward, tools and guides alike.
+"""Score every tool option of a turn head with the trainer's own forward.
 
 Writes one row per complete example: the row's key, offered candidates and labels, and
-the head's probability for every tool and guide option, encoded exactly as the engine
-encodes them (one option per row for an independent head, the roster for a joint one).
-The output feeds `guide_audit.py` and `turn_score.py` without an engine build.
+the head's probability for every tool option, encoded exactly as the engine encodes
+them (one option per row for an independent head, the roster for a joint one). The
+output feeds `turn_score.py` without an engine build.
 
 Usage: turn_probe.py --trainer DIR --corpus FILE --rows FILE --head FILE --out FILE [--limit N]
 """
@@ -15,11 +15,11 @@ import sys
 from pathlib import Path
 
 
-def option_probs(agent, model, corpus, ex, device, kind, qid, family, torch, multi_item, precompute, forward_head, state_text):
-    """Probabilities per option of one multi question, encoded as the engine would."""
+def option_probs(agent, model, corpus, ex, device, torch, multi_item, precompute, forward_head, state_text):
+    """Probabilities per option of the tools question, encoded as the engine would."""
     context = int(agent.cfg.get("max_len", 512))
     head_max_len = min(int(corpus.state_spec.get("head_tokens", 512)), context - 64)
-    question = corpus.multi_question(kind, ex["offered"]["loadable" if kind == "tool" else "guides"])
+    question = corpus.tools_question(ex["offered"]["loadable"])
     if not question["options"]:
         return {}
     state = state_text(ex["state"])
@@ -27,10 +27,10 @@ def option_probs(agent, model, corpus, ex, device, kind, qid, family, torch, mul
         items, names = [], []
         for name, text in question["options"].items():
             one = dict(question, options={name: text})
-            items.append(multi_item(agent.tok, state, one, {name: 0}, context, head_max_len, family))
+            items.append(multi_item(agent.tok, state, one, {name: 0}, context, head_max_len, "tools"))
             names.append(name)
     else:
-        item = multi_item(agent.tok, state, question, {k: 0 for k in question["options"]}, context, head_max_len, family)
+        item = multi_item(agent.tok, state, question, {k: 0 for k in question["options"]}, context, head_max_len, "tools")
         items, names = [item], list(question["options"].keys())[: len(item["markers"])]
     features = precompute(agent, items, device, batch_size=64)
     out = {}
@@ -79,19 +79,13 @@ def main():
     examples = [r for r in load(args.rows) if not r["partial"]]
     if args.limit:
         examples = examples[: args.limit]
-    families = set((meta.get("families") or "tools,guides").split(","))
     signature = {name: hashlib.sha256(Path(getattr(args, name)).read_bytes()).hexdigest() for name in ("head", "corpus", "rows")}
     helpers = (torch, multi_item, precompute, forward_head, state_text)
     with Path(args.out).open("x") as out:
         for n, row in enumerate(examples, 1):
-            answers = {}
-            if "tools" in families:
-                answers["tools"] = {"probabilities": option_probs(agent, agent.model, corpus, row, device, "tool", "tools", "tools", *helpers)}
-            if "guides" in families:
-                answers["guides"] = {"probabilities": option_probs(agent, agent.model, corpus, row, device, "guide", "guides", "guides", *helpers)}
+            answers = {"tools": {"probabilities": option_probs(agent, agent.model, corpus, row, device, *helpers)}}
             json.dump({"key": "%s:%s" % (row["session"], row["receipt"]), "host": row["host"], "offered": row["offered"],
-                       "labels": {"tools": row["labels"].get("tools", []), "guides": row["labels"].get("guides", {})},
-                       "answers": answers}, out)
+                       "labels": {"tools": row["labels"].get("tools", [])}, "answers": answers}, out)
             out.write("\n")
             if n % 100 == 0:
                 out.flush()

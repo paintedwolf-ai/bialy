@@ -158,7 +158,7 @@ def test_extract_strips_thinking_preloads_judge_tools_and_pairs_rejections(tmp_p
     sft_rows = [json.loads(line) for line in sft_out.read_text().splitlines()]
     first_sft = sft_rows[0]
     assert "summarize" in first_sft["surface"]["active_tools"]
-    assert "commit" in first_sft["surface"]["preloaded_guides"]
+    assert "commit" in first_sft["surface"]["preloaded_skills"]
     # Redundant request_tools for preloaded summarize was stripped, and thinking was removed.
     call_names = [c["name"] for c in first_sft["target"]["tool_calls"]]
     assert "request_tools" not in call_names

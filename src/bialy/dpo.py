@@ -462,7 +462,7 @@ def _openai_messages(prefix):
 
 
 def load_judged_index(rows_paths):
-    """Index judged pw-decide-row/1 records by session_id and opening_message_id."""
+    """Index judged pw-decide-row/2 records by session_id and opening_message_id."""
     by_session = {}
     by_opening = {}
     paths = [rows_paths] if isinstance(rows_paths, (str, Path)) else list(rows_paths or [])
@@ -641,7 +641,7 @@ def synthesized_surface(row, min_score=3, preload_from_judge=True, observed_tool
         legacy = obs & {"read", "write", "edit", "list_dir", "grep", "find_by_name"}
         base = sorted({"command", "command_output", "command_stop", "summarize", "update_progress", "request_tools", "skills_read"} | legacy | obs)
         return {"floor": base, "active_tools": base, "loadable": [],
-                "preloaded_guides": [], "required_tools": [], "required_skills": []}
+                "preloaded_skills": [], "required_tools": [], "required_skills": []}
     offered = row.get("offered") or {}
     loadable = list(offered.get("loadable") or [])
     floor = sorted(set(offered.get("floor") or []) | (obs & (WORKFLOW_CONTROL_TOOLS | {"update_progress"})))
@@ -664,7 +664,7 @@ def synthesized_surface(row, min_score=3, preload_from_judge=True, observed_tool
         "floor": floor,
         "active_tools": active,
         "loadable": loadable,
-        "preloaded_guides": sorted(set(required_skills) | {g for g, v in (labels.get("guides") or {}).items() if v == "kept"}),
+        "preloaded_skills": required_skills,
         "required_tools": required_tools,
         "required_skills": required_skills,
     }
