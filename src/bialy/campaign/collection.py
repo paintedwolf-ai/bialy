@@ -5,52 +5,8 @@ from collections import Counter
 
 from ..provenance import file_sha256
 from .execution import Executor
-from .grading import reviewed, teacher_routes
+from .grading import reviewed
 from .journal import CampaignFault, digest
-
-
-class TeacherBaseline:
-    def __init__(self, journal, lineage, driver, teachers, sleep=time.sleep, minimum_tasks=4, repetitions=2):
-        self.journal, self.lineage, self.teachers = journal, lineage, teachers
-        self.executor = Executor(journal, driver, sleep)
-        if type(minimum_tasks) is not int or minimum_tasks < 1 or type(repetitions) is not int or repetitions < 1:
-            raise CampaignFault('teacher_baseline_sampling_invalid')
-        self.minimum_tasks, self.repetitions = minimum_tasks, repetitions
-
-    def execute(self, inputs, attempt):
-        tasks = [json.loads(row[0]) for row in self.journal.db.execute(
-            "SELECT spec FROM tasks WHERE partition='development' AND parent IS NULL ORDER BY id")]
-        if any(sum(task['focus'] == focus for task in tasks) < self.minimum_tasks for focus in self.lineage.focuses):
-            raise CampaignFault('teacher_development_bank_incomplete')
-        measurements, evidence = [], []
-        for teacher in self.teachers:
-            counts, successes = Counter(), Counter()
-            for task in tasks:
-                for repetition in range(self.repetitions):
-                    trial = {**inputs, 'task': task, 'repetition': repetition, 'actor': teacher,
-                             'selector': inputs['host']['conservative_reference']}
-                    name = 'teacher_trial_' + digest({'teacher': teacher['id'], 'task': task['id'], 'repetition': repetition})
-                    result = self.executor.run(name, trial)
-                    if result['status'] != 'passed':
-                        raise CampaignFault('teacher_episode_incomplete', details={'stage': name, 'fault': result['fault']})
-                    counts[task['focus']] += 1
-                    successes[task['focus']] += result['output']['success'] is True
-                    evidence.append({'stage': name, 'sha256': digest(result)})
-            for focus in self.lineage.focuses:
-                measurements.append({'teacher_id': teacher['id'], 'focus': focus, 'attempts': counts[focus],
-                                     'qualified': successes[focus],
-                                     'capture_qualified': inputs['host']['teacher_capture_qualified'].get(teacher['id']) is True})
-        return {**teacher_routes(measurements, self.lineage.focuses), 'measurements': measurements, 'evidence': evidence,
-                'teachers': self.teachers, 'lineage_sha256': self.lineage.freeze()}
-
-    def reconcile(self, inputs, attempt):
-        return self.execute(inputs, attempt)
-
-    def validate(self, inputs, output):
-        routes = teacher_routes(output['measurements'], self.lineage.focuses)
-        if (output['focuses'] != routes['focuses'] or output['lineage_sha256'] != self.lineage.freeze()
-                or any(digest(self.journal.stage(item['stage'])) != item['sha256'] for item in output['evidence'])):
-            raise CampaignFault('teacher_baseline_changed')
 
 
 class Collection:
@@ -79,7 +35,8 @@ class Collection:
         for task, partition in tasks:
             if counts[partition] >= minimum[partition] and covered[partition] == set(self.lineage.focuses):
                 continue
-            teacher = teachers[inputs['teachers']['focuses'][task['focus']]['teacher_id']]
+            # The policy's first route for the focus collects it.
+            teacher = teachers[inputs['teachers']['focuses'][task['focus']][0]['teacher_id']]
             for repetition in range(3):
                 trial = {'host': inputs['host'], 'selector': inputs['selector'], 'task': task,
                          'repetition': repetition, 'actor': teacher}

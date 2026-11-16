@@ -43,7 +43,7 @@ def run(source, directory):
         manifest = json.loads(db.execute('SELECT body FROM manifest WHERE id=1').fetchone()[0])
         cfg = manifest['configuration']
         host = qualified(db, 'host_qualification')
-        teachers = qualified(db, 'teacher_baseline')
+        teachers = qualified(db, 'teacher_qualification')
         baseline = qualified(db, 'baseline_e4b')
         base = qualified(db, 'evaluate_base_e4b')
     cfg = runtime_configuration(cfg, directory, host)

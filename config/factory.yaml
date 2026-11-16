@@ -71,7 +71,7 @@ run:
     greenfield_auth: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
     port: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
   local_workers_only: false              # when true, sidecar lite and agent_pool use local served generators
-  judges: [gemma-4-26b-a4b-it, beam-1.0-501b, mistral-large-4]  # local Gemma card judge + cross-family independent reviewers
+  judges: [gemma-4-26b-a4b-it, beam-1.0-501b, mistral-large-4]  # independent reviewer slots, each qualified on controls
   runners: 4                       # concurrent runner containers on this machine
   task_timeout: null               # optional whole-task wall-clock cap, including follow-ups, e.g. 45m
   tasks_per_runner: null           # optional shard size override; use 1 for smokes

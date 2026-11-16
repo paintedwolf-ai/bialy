@@ -5,13 +5,13 @@ import sys
 import uuid
 from pathlib import Path
 
-from .. import custom_quality
 from ..custom_model_run import student_binding
 from ..dpo import training_eligible
 from ..host_bundle import Episode
 from ..provenance import file_sha256
 from .execution import atomic_json
 from .journal import CampaignFault, canonical, digest
+from .review_contract import ACTION, judge_rows
 from .sources import verified_exports
 
 
@@ -68,8 +68,8 @@ class Exports:
                 reviewed = review_directory / 'review.json'
                 annotated = {**row, 'meta': {'model': inputs['actor']['id']}}
                 validation = row['validation']
-                schema = custom_quality.review_schema([validation['receipt_id'], *validation.get('operation_ids', [])])
-                expected = digest({'row': annotated, 'transcript': transcript_body, 'system': custom_quality.SYSTEM, 'schema': schema, 'seed': 7, 'reviewer': {'id': self.factory.reviewer().id, 'revision': self.factory.reviewer().revision}})
+                schema = ACTION.bound([validation['receipt_id'], *validation.get('operation_ids', [])])
+                expected = digest({'row': annotated, 'transcript': transcript_body, 'system': ACTION.system, 'schema': schema, 'seed': 7, 'reviewer': {'id': self.factory.reviewer().id, 'revision': self.factory.reviewer().revision}})
                 if reviewed.exists():
                     record = json.loads(reviewed.read_text())
                     if record['inputs_sha256'] != expected:
@@ -93,7 +93,7 @@ class Exports:
                         rows.write_text(canonical(annotated) + '\n')
                         destination = review_directory / (uuid.uuid4().hex + '.jsonl')
                         atomic_json(intent_path, {'inputs_sha256': expected, 'output': str(destination)})
-                        custom_quality.judge_rows(self.factory, rows, transcript, destination)
+                        judge_rows(self.factory, rows, transcript, destination)
                         reports = [json.loads(line) for line in destination.read_text().splitlines() if line.strip()]
                     atomic_json(reviewed, {'inputs_sha256': expected, 'reports': reports})
                 reviews.extend(reports)

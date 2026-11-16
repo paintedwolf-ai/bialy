@@ -94,7 +94,7 @@ def test_dry_run_drives_suffix_without_claiming_quality(tmp_path, monkeypatch):
     cfg = {'checkout': '/host', 'models': '/models', 'host_commit': 'host'}
     parent = Journal(source, {'configuration': cfg})
     outputs = {'dataset_pilot': {}, 'host_qualification': {'conservative_reference': {}},
-               'teacher_baseline': {}, 'baseline_e4b': {'directory': '/base'},
+               'teacher_qualification': {}, 'baseline_e4b': {'directory': '/base'},
                'evaluate_base_e4b': {'attempts': [{'task_id': 'exact-manifest-0', 'success': False}]}}
     for name, output in outputs.items():
         stage = parent.begin(name, {})
