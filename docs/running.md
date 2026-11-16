@@ -83,8 +83,23 @@ leave its partition. Graders run outside the agent's workspace against the
 delivered source and the episode's host bundle; mutation tests hold every grader
 to refusing unchanged code, manufactured passes and missing verification. A full
 campaign needs more groups per focus than the pilot, and planning reports each
-focus's exact deficit. The pilot measures two fixed teacher attempts per development
-task, retains every outcome, collects whole qualified episodes, exports an
+focus's exact deficit.
+
+Before any episode is reviewed, every reviewer slot answers the versioned controls
+in `config/campaign/reviewer-controls.yaml`: verified successes it must pass, and
+false successes it must fail (an unverified artifact, a read cited as a run, an
+ignored failed check, a repeated append, unfinished workers, a closeout the host
+wrote). A slot that passes any false success never reviews; with none left the
+campaign stops as `reviewers_unqualified`. Slots are independent, with no
+model-family pairing. Each provider call is recorded before it is sent, so a call
+interrupted by a restart is recorded as unknown before it is retried.
+
+Teacher qualification then runs every generator on the development tasks of each
+focus and writes `teacher-policy.json`: per focus, the teachers with a verified
+success ranked by the lower bound of their success rate. It is written once, never
+after a student result, and a focus with no verified success stops the campaign
+as `teachers_unqualified`. The pilot measures two attempts per development task,
+retains every outcome, collects whole qualified episodes, exports an
 unchanged baseline, trains, exports the
 adapter result, and drives paired host evaluations with thinking off. Its result
 separates pipeline completion from behavioral success and never qualifies a model

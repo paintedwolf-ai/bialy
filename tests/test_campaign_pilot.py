@@ -19,7 +19,7 @@ class Handler:
 
 
 def handlers():
-    return {name: Handler() for name in ('host_qualification', 'reviewer_qualification', 'teacher_baseline',
+    return {name: Handler() for name in ('host_qualification', 'reviewer_qualification', 'teacher_qualification',
         'collection_pilot', 'dataset_pilot', 'baseline_e4b', 'evaluate_base_e4b', 'pilot_e4b', 'export_e4b', 'evaluate_trained_e4b')}
 
 
@@ -77,7 +77,7 @@ def test_pilot_composition_uses_only_the_declared_teacher(tmp_path, monkeypatch)
            'corpus': str(corpus), 'server_image': 'server'}
     journal = Journal(tmp_path / 'journal', {'configuration': cfg})
     stages, _ = compose(journal, cfg)
-    assert stages['teacher_baseline'].repetitions == 2
+    assert stages['teacher_qualification'].repetitions == 2
     factory = stages['host_qualification'].run.factory
     assert [model.id for model in factory.generators()] == cfg['teachers']
     assert factory.generators()[0].hosted is not None
