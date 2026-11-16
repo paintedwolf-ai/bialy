@@ -66,7 +66,7 @@ class Campaign:
         collection, pilot_data = self.dataset('collection_pilot', {**common, 'teachers': teachers['output'], 'selector': selected})
         if pilot_data['status'] != 'passed':
             return self.finish('insufficient_qualified_data', selector_status)
-        plan = self.stage('evaluation_plan', {**common, 'measurements': collection['output']})
+        plan = self.stage('evaluation_plan', {**common, 'selector': selected, 'measurements': collection['output']})
         if plan['status'] != 'passed':
             return self.finish('evaluation_plan_unavailable', selector_status)
         frozen = {**common, 'plan': plan['output'], 'selector': selected, 'teachers': teachers['output']}

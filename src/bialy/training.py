@@ -210,12 +210,17 @@ def train(recipe, inputs, checkout, root, settings, heads_dir, label, budget_sec
         args = [str(python), "scripts/bialy/train.py", "--corpus", str(inputs["corpus"]), "--train", str(mixed),
                 "--val", str(inputs.get("skillreq_eval") or inputs["val"]), *RANK_ARGS, "--label", label, "--out", str(out)]
     else:
-        dumps = sorted(Path(inputs["dumps"]).glob("*.jsonl")) if inputs.get("dumps") else []
+        # A campaign names the dumps of each partition; a run trains on every dump it wrote.
+        dumps = inputs.get("dumps_train") or (sorted(Path(inputs["dumps"]).glob("*.jsonl")) if inputs.get("dumps") else [])
         if not dumps:
             return {"skipped": "code-rank needs site dumps; the coderank stage did not run"}
         args = [str(python), "scripts/bialy/rerank/train_rerank.py", "--out", str(out), "--label", label, "--seed", "7"]
         for dump in dumps:
             args += ["--dump", str(dump)]
+        for dump in inputs.get("dumps_val") or ():
+            args += ["--val-dump", str(dump)]
+        if inputs.get("dumps_val"):
+            args += ["--metrics", str(out.with_suffix(".metrics.json"))]
     args = with_epochs(args, settings.get("epochs"))
     try:
         run(args, cwd=str(checkout), env=env, timeout=budget_seconds, log=log)
