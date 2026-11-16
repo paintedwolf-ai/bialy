@@ -5,6 +5,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+from conftest import FakeDocker, sqlite_store
 
 from bialy import faults, fleet
 
@@ -124,7 +125,7 @@ def test_first_failed_turn_stops_only_this_runs_active_containers_and_retains_ev
     monkeypatch.setattr(fleet.time, "sleep", lambda _: None)
     monkeypatch.setattr(fleet, "sh", command)
     monkeypatch.setattr(fleet, "release_work", lambda _: None)
-    monkeypatch.setattr(fleet, "export_live", lambda name, *_: exported.append(name))
+    monkeypatch.setattr(fleet, "export_live", lambda name, *_, **__: exported.append(name))
     monkeypatch.setattr(faults, "snapshot", lambda shard, container: {"shard": shard.name, "failed_turns": 1})
     with pytest.raises(faults.RunFault, match="turn_failed"):
         fleet.run(factory, directory, runners=2)
@@ -185,7 +186,7 @@ def test_isolated_model_miss_stops_one_task_continues_pending_and_survives_resum
             self.name = args[0]
             started.append(self.name)
             (directory / "shards" / self.name / "ready.json").write_text('{}')
-            (directory / "shards" / self.name / "store.db").touch()
+            sqlite_store(directory / "shards" / self.name / "store.db", ["s1"])
         def poll(self):
             if self.name == "a":
                 return None
@@ -196,6 +197,9 @@ def test_isolated_model_miss_stops_one_task_continues_pending_and_survives_resum
     def command(*args, **kw):
         if args[:2] == ("docker", "stop"):
             stopped.append(args[-1])
+        if args[:2] == ("docker", "exec"):
+            live = sqlite_store(tmp_path / ("live-%s.db" % args[2]), ["s1"])
+            return FakeDocker(live, directory / "shards" / args[2])(*args, **kw)
         return SimpleNamespace(returncode=0, stdout="")
     monkeypatch.setattr(fleet, "running_containers", lambda _: {})
     monkeypatch.setattr(fleet, "container_args", lambda f, r, s, m, i: (s.name, None, [s.name]))
@@ -203,7 +207,7 @@ def test_isolated_model_miss_stops_one_task_continues_pending_and_survives_resum
     monkeypatch.setattr(fleet.time, "sleep", lambda _: None)
     monkeypatch.setattr(fleet, "sh", command)
     monkeypatch.setattr(fleet, "release_work", lambda _: None)
-    monkeypatch.setattr(fleet, "export_live", lambda name, *_: exported.append(name))
+    monkeypatch.setattr(fleet, "export_live", lambda name, *_, **__: exported.append(name))
     monkeypatch.setattr(faults, "snapshot", lambda shard, container: {"failed_turns": 1, "codes": {"turn_closeout_tool_call": {"count": 1}}} if shard.name == "a" else {})
     assert fleet.run(factory, directory, runners=2) == (2, 1)
     assert started == ["a", "b", "c"]
