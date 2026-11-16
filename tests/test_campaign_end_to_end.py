@@ -1,32 +1,13 @@
 from argparse import Namespace
 
-import pytest
 import yaml
 from campaign_world import Stage, World, adopted_files, git, outputs
 
-from bialy.campaign import adoption, profiles, runtime, selector
+from bialy.campaign import adoption, runtime, selector
 from bialy.campaign.handlers import Adoption
-from bialy.campaign.journal import CampaignFault
 
 STUDENTS = ['e4b', '12b', '26b-a4b']
 GOOD, BAD = 'c' * 40, 'd' * 40
-
-
-@pytest.fixture(autouse=True)
-def bank_sized_profiles(tmp_path, monkeypatch):
-    """The full profile on the pilot quota, which the current scenario bank satisfies."""
-    document = yaml.safe_load(profiles.CONFIG.read_text())
-    document['profiles']['full']['quota'] = 'pilot'
-    path = tmp_path / 'profiles.yaml'
-    path.write_text(yaml.safe_dump(document))
-    monkeypatch.setattr(profiles, 'CONFIG', path)
-
-
-def test_the_full_quota_is_refused_with_the_banks_exact_deficit(tmp_path, monkeypatch):
-    monkeypatch.undo()
-    with pytest.raises(CampaignFault, match='coverage_short') as raised:
-        runtime.plan(configuration(tmp_path), tmp_path / 'plan')
-    assert raised.value.details['deficits']
 
 
 def configuration(tmp_path, profile='full'):
@@ -57,7 +38,8 @@ def files():
 
 
 def test_a_full_campaign_plans_offline_stops_at_the_boundary_and_finishes_on_the_adopted_host(tmp_path):
-    runtime.plan(configuration(tmp_path), tmp_path / 'plan')
+    body = runtime.plan(configuration(tmp_path), tmp_path / 'plan')
+    assert body['profile']['quota'] == 'full'
     world = World()
     compose = composer(world, outputs(STUDENTS), files())
     first = runtime.drive(tmp_path / 'plan', composer=compose)

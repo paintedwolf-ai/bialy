@@ -61,7 +61,7 @@ def plan(path, out):
             'sources': {'host_commit': cfg['host_commit'], 'factory_commit': factory_commit(), 'llama_revision': cfg['llama_revision']},
             'students': cfg['students'], 'teachers': cfg['teachers'], 'reviewers': cfg['reviewers'],
             'split': {'assignment_sha256': assignment.sha256, 'tasks_sha256': file_sha256(out / 'bank' / 'tasks.json'),
-                      'catalog_sha256': file_sha256(scenarios.CATALOG)},
+                      'catalog_sha256': catalog.sha256},
             'fallback_rate': selector.load()['fallback_rate'], 'selector_sha256': digest(selector.load()),
             'evaluation_policy_sha256': digest(evaluation_policy.load())}
     body['plan_sha256'] = digest(body)
