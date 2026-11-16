@@ -1,7 +1,8 @@
 """What the factory asks of the host's binaries, checked against a host checkout.
 
 `config/host-contract.json` records every environment variable, subcommand, flag,
-row schema and workflow version the runner and the fleet rely on. `check` holds this
+row schema and workflow version the runner and the fleet rely on, and every flag the
+student path passes the host's trainer, export and conversion scripts. `check` holds this
 repository to the record: the names its sources pass must be recorded. `verify` holds
 the record to a host checkout: that checkout's sources must declare each one. A name
 the host stopped reading, or never read, therefore fails before a container starts.
@@ -21,13 +22,13 @@ BINARIES = "/opt/bialy/bin/"
 # Row and receipt shapes this factory defines itself; every other pw-*/N id in its
 # sources is one the host emits and the record names.
 FACTORY_SCHEMAS = frozenset((
-    "pw-base-checkpoint/1", "pw-campaign-plan/1", "pw-campaign-run/1", "pw-campaign-source-preflight/2", "pw-campaign-waiting/1",
+    "pw-campaign-plan/1", "pw-campaign-run/1", "pw-campaign-source-preflight/2", "pw-campaign-waiting/1",
     "pw-custom-run/2", "pw-data-report/1", "pw-decide-anchor/1", "pw-episode-verdict/2", "pw-evaluation-policy/1",
     "pw-human-review-decision/1", "pw-load-probe/1", "pw-remote-training/1", "pw-resource-lease/2", "pw-review-finished/1",
     "pw-review-item/1", "pw-review-queue/1", "pw-runner-preflight/1", "pw-selector-holdout/1", "pw-selector-policy/1",
-    "pw-student-artifact/2", "pw-student-export/1", "pw-student-job/1", "pw-student-release/1", "pw-student-requirements/1",
+    "pw-student-artifact/3", "pw-student-export/2", "pw-student-job/1", "pw-student-release/1", "pw-student-requirements/1",
     "pw-student-source/1",
-    "pw-students/1", "pw-teacher-policy/1", "pw-tier-decision/1", "pw-training-campaign-result/2",
+    "pw-students/2", "pw-teacher-policy/1", "pw-tier-decision/1", "pw-training-campaign-result/2",
     "pw-training-campaign-status/1", "pw-training-rows/1"))
 
 ENVIRONMENT = re.compile(r"\b(?:LYCAON|PW)_[A-Z][A-Z0-9_]*\b")
@@ -73,6 +74,20 @@ def arguments(binary, command, record=None, **flags):
         if value is not None:
             out += ["--" + flag, str(value)]
     return out
+
+
+def script(checkout, path, arguments, record=None):
+    """The argument list that runs one recorded host script with `arguments`: its path in
+    the checkout, then the arguments. An unrecorded script or flag is refused, so every
+    flag the factory passes a trainer or export script is one `verify` holds the host to."""
+    record = record or load()
+    known = record["scripts"].get(path)
+    if known is None:
+        raise HostContractError("host_script_unrecorded", [path])
+    passed = {str(item)[2:] for item in arguments if str(item).startswith("--")}
+    if passed - set(known):
+        raise HostContractError("host_flag_unrecorded", ["%s --%s" % (path, flag) for flag in sorted(passed - set(known))])
+    return [str(Path(checkout) / path), *map(str, arguments)]
 
 
 def shell_commands(text):
@@ -204,6 +219,14 @@ def verify(checkout, record=None):
     for name, version in sorted(record["workflows"].items()):
         if host["workflows"].get(name) != version:
             missing.append("workflow %s@%s (the checkout serves %s live)" % (name, version, host["workflows"].get(name)))
+    for path, flags in sorted(record["scripts"].items()):
+        source = Path(checkout) / path
+        if not source.is_file():
+            missing.append("script %s" % path)
+            continue
+        # A script names a flag in full or, where it declares several in a loop, bare.
+        text = source.read_text(encoding="utf-8")
+        missing += ["flag %s --%s" % (path, flag) for flag in flags if not re.search(r"""["'](?:--)?%s["']""" % re.escape(flag), text)]
     if missing:
         raise HostContractError("host_contract_drift", missing)
     return record

@@ -14,7 +14,9 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from .. import host_contract
 from ..provenance import file_sha256
+from ..student_host.jobs import PIPE
 from .containers import Container
 from .execution import atomic_json
 from .journal import CampaignFault, digest
@@ -35,10 +37,10 @@ class Serving:
     def rendered(self, plan):
         """The host's rendering check against the running server, bound to this plan."""
         receipt = self.directory / 'rendering.json'
-        script = Path(self.configuration['checkout']) / 'scripts/bialy/custom_model/serving_check.py'
+        check = host_contract.script(self.configuration['checkout'], PIPE + '/serving_check.py',
+                                     ['--url', plan['url'], '--revision', self.configuration['llama_revision'], '--out', str(receipt)])
         try:
-            self.run([sys.executable, str(script), '--url', plan['url'], '--revision', self.configuration['llama_revision'],
-                      '--out', str(receipt)],
+            self.run([sys.executable, *check],
                      check=True, capture_output=True, text=True)
         except (subprocess.SubprocessError, OSError) as exc:
             raise CampaignFault('serving_rendering_mismatch', details={'stderr': (getattr(exc, 'stderr', '') or '')[-2000:]}) from None

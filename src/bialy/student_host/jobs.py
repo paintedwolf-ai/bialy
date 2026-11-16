@@ -6,9 +6,13 @@ import time
 import uuid
 from pathlib import Path
 
+from .. import host_contract
 from ..provenance import file_sha256
 from .resources import write
 from .specification import arguments, identity, training_config
+
+# The host's student pipeline, relative to its checkout.
+PIPE = 'scripts/bialy/custom_model'
 
 
 class JobError(RuntimeError):
@@ -124,7 +128,7 @@ def train(directory, run=subprocess.run, sleep=time.sleep):
 def train_owned(directory, run, sleep):
     plan = json.loads((directory / 'plan.json').read_text())
     validate_inputs(plan)
-    pipe = Path(plan['checkout']) / 'scripts/bialy/custom_model'
+    pipe = Path(plan['checkout']) / PIPE
     state_path = directory / 'execution.json'
     state = json.loads(state_path.read_text()) if state_path.exists() else {'attempts': 0, 'status': 'pending'}
     terminal_path = Path(plan['out']) / 'terminal.json'
@@ -153,7 +157,8 @@ def train_owned(directory, run, sleep):
         write(state_path, state)
         previous_terminal = file_sha256(terminal_path) if terminal_path.exists() else None
         with (directory / ('attempt-%d.log' % state['attempts'])).open('x') as log:
-            result = run(['uv', 'run', '--project', str(pipe), '--locked', 'python', str(pipe / 'train.py'), *args],
+            result = run(['uv', 'run', '--project', str(pipe), '--locked', 'python',
+                          *host_contract.script(plan['checkout'], PIPE + '/train.py', args)],
                          cwd=plan['checkout'], stdout=log, stderr=subprocess.STDOUT)
         if not terminal_path.exists():
             raise JobError('trainer did not publish a terminal receipt')

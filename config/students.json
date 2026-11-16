@@ -26,7 +26,7 @@
       "repository": "google/gemma-4-E4B-it",
       "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2",
       "directory": "gemma-4-E4B-it",
-      "adapted_modules": 168,
+      "adapted_modules": 132,
       "architecture": {"parameters": 7996157418, "layers": 42, "hidden_size": 2560, "mlp_width": 10240, "vocabulary": 262144}
     },
     "12b": {

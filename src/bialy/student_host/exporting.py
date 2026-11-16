@@ -12,8 +12,9 @@ import struct
 import subprocess
 from pathlib import Path
 
+from .. import host_contract
 from ..provenance import file_sha256
-from .jobs import JobError, tree, validate_inputs, validate_result
+from .jobs import PIPE, JobError, tree, validate_inputs, validate_result
 from .resources import write
 
 UNQUANTIZED = 'model-f16.gguf'
@@ -36,27 +37,26 @@ def export(directory, llama, revision, run=subprocess.run):
     directory, llama = Path(directory), Path(llama)
     plan = checked_plan(directory)
     checkout = Path(plan['checkout'])
-    pipe = checkout / 'scripts/bialy/custom_model'
+    pipe = checkout / PIPE
     prefix = ['uv', 'run', '--project', str(pipe), '--locked', 'python']
     merged, gguf, mlx = directory / 'merged', directory / 'gguf', directory / 'mlx'
     model = Path(plan['models']) / plan['specification']['models'][plan['student']]['directory']
-    args = [*prefix, str(pipe / 'export.py'), '--model', str(model), '--run', plan['out'], '--out', str(merged)]
-    if merged.exists():
-        args.append('--resume')
-    run(args, check=True)
-    args = [*prefix, str(pipe / 'gguf_export.py'), '--merge', str(merged), '--llama-cpp', str(llama),
+    args = ['--model', str(model), '--run', plan['out'], '--out', str(merged), *(['--resume'] if merged.exists() else [])]
+    run([*prefix, *host_contract.script(checkout, PIPE + '/export.py', args)], check=True)
+    args = ['--merge', str(merged), '--llama-cpp', str(llama),
             '--revision', revision, '--quantizer', str(llama / 'build/bin/llama-quantize'),
             '--server', str(llama / 'build/bin/llama-server'), '--out', str(gguf)]
     if gguf.exists():
         args.append('--resume')
-    run(args, check=True)
+    run([*prefix, *host_contract.script(checkout, PIPE + '/gguf_export.py', args)], check=True)
     source = mlx_source(merged)
     if not (mlx / 'conversion.json').exists():
         # The converter removes its output on failure; a killed conversion leaves a partial one.
         shutil.rmtree(mlx, ignore_errors=True)
         generation = checkout / 'scripts/generation'
-        run(['uv', 'run', '--project', str(generation), '--locked', 'python', str(generation / 'convert_mlx.py'),
-             '--source', str(merged / 'model'), '--output', str(mlx), '--source-sha256', source], check=True)
+        run(['uv', 'run', '--project', str(generation), '--locked', 'python',
+             *host_contract.script(checkout, 'scripts/generation/convert_mlx.py',
+                                   ['--source', str(merged / 'model'), '--output', str(mlx), '--source-sha256', source])], check=True)
     retain_adapter(Path(plan['out']), directory / 'lora_adapter')
     write(directory / 'export_receipt.json', describe(directory, plan, source))
     return publish(directory, revision, unquantized=True)

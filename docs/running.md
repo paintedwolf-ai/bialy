@@ -359,8 +359,10 @@ run continues it exactly.
 towers with projections of the same names. One anchored pattern adapts the
 language model's `q_proj`, `k_proj`, `v_proj` and `o_proj` in every tier; the
 trainer refuses to start unless it matches exactly the declared number of
-modules (168, 184 and 115; the larger two share keys and values in some layers
-and have no `v_proj` there), none outside the language model.
+modules, none outside the language model: 132, 184 and 115, counted on each
+pinned configuration as the trainer loads it. E4B's eighteen layers that reuse
+an earlier layer's keys and values have no `k_proj` or `v_proj`, and the larger
+two have no `v_proj` in the layers whose keys and values are one projection.
 
 ## Campaign rehearsal
 

@@ -9,9 +9,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .. import host_contract
 from ..provenance import file_sha256
 from ..student_host import exporting
-from ..student_host.jobs import checkpoint, rendering, tree
+from ..student_host.jobs import PIPE, checkpoint, rendering, tree
 from .execution import atomic_json
 from .journal import CampaignFault, digest
 
@@ -37,21 +38,22 @@ class Baseline:
             raise CampaignFault('baseline_inputs_changed')
         atomic_json(root / 'binding.json', binding)
         model = Path(cfg['models']) / self.specification['models'][self.student]['directory']
-        pipe = Path(cfg['checkout']) / 'scripts/bialy/custom_model'
-        prefix = ['uv', 'run', '--project', str(pipe), '--locked', 'python']
+        prefix = ['uv', 'run', '--project', str(Path(cfg['checkout']) / PIPE), '--locked', 'python']
         llama, staged, gguf = Path(cfg['llama']), root / 'checkpoint', root / 'gguf'
         with (root / 'export.log').open('a') as log:
             if not (staged / 'manifest.json').exists():
                 # A staging the host did not finish has no manifest and is staged again.
                 shutil.rmtree(staged, ignore_errors=True)
-                self.run([*prefix, str(pipe / 'base_checkpoint.py'), '--model', str(model), '--out', str(staged)],
+                self.run([*prefix, *host_contract.script(cfg['checkout'], PIPE + '/base_checkpoint.py',
+                                                         ['--model', str(model), '--out', str(staged)])],
                          check=True, stdout=log, stderr=subprocess.STDOUT)
-            args = [*prefix, str(pipe / 'gguf_export.py'), '--merge', str(staged), '--llama-cpp', str(llama),
+            args = ['--merge', str(staged), '--llama-cpp', str(llama),
                     '--revision', cfg['llama_revision'], '--quantizer', str(llama / 'build/bin/llama-quantize'),
                     '--server', str(llama / 'build/bin/llama-server'), '--out', str(gguf)]
             if gguf.exists():
                 args.append('--resume')
-            self.run(args, check=True, stdout=log, stderr=subprocess.STDOUT)
+            self.run([*prefix, *host_contract.script(cfg['checkout'], PIPE + '/gguf_export.py', args)],
+                     check=True, stdout=log, stderr=subprocess.STDOUT)
         template = binding['rendering']['template_sha256']
         base, manifest = (json.loads((path / 'manifest.json').read_text()) for path in (staged, gguf))
         if (base.get('source') != binding['model_files'] or base.get('template_sha256') != template
