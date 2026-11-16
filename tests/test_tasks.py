@@ -140,7 +140,7 @@ def test_worker_archetypes_start_their_workflow_on_their_share(factory, tmp_path
 
 def test_follow_ups_pass_the_same_gate_as_the_request(factory, tmp_path):
     files = ["src/flask/ctx.py"]
-    raw = [{"prompt": "Explain what src/flask/ctx.py does with the app context.", "archetype": "question", "lang": "en", "author": "m",
+    raw = [{"prompt": "Explain what src/flask/ctx.py does with the app context.", "archetype": "repository_question", "lang": "en", "author": "m",
             "follow_ups": ["Now fix the bug in src/flask/router.py.", "ok", "And how is it torn down in src/flask/ctx.py?"]}]
     factory_all = factory.__class__(**{**factory.__dict__, "archetypes": [
         a.__class__(**{**a.__dict__, "follow_up_rate": 1.0}) for a in factory.archetypes]})

@@ -37,10 +37,14 @@ defaults:
     choices: [es, de, fr, pt, ja, zh, ko, it]
 
 archetypes:
-  - id: question
-    per_workspace: 10
+  - id: conceptual_question
+    per_workspace: 5
     reference_rate: 0.2
-    brief: A question about the project that can be answered by explaining, sometimes without opening any file (concepts, design choices, how to use the library, or terse questions like "Tell me about this repo" or "What does this file do?").
+    brief: A question answerable from what the request itself supplies or from general knowledge, without opening any file (concepts, design trade-offs, how a library is meant to be used, or a pasted snippet asked about directly).
+  - id: repository_question
+    per_workspace: 5
+    reference_rate: 0.2
+    brief: A question about this project that only observed source answers (terse ones like "Tell me about this repo" or "What does this file do?", or how the project is organised), so the answer must rest on files the assistant actually read.
   - id: explain_code
     per_workspace: 10
     reference_rate: 0.3

@@ -2,13 +2,13 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from conftest import FOCUSES
 
-from bialy.campaign import dry_run
+from bialy.campaign import dry_run, scenarios
 from bialy.campaign.dry_run_data import import_evidence, qualified, read_source
 from bialy.campaign.episodes import Episodes
 from bialy.campaign.journal import CampaignFault, Journal, canonical
 from bialy.campaign.lineage import Lineage
-from bialy.campaign.pilot_bank import assignment, build
 from bialy.student_host.select_rows import select
 from bialy.student_host.specification import arguments, load
 
@@ -38,9 +38,10 @@ def test_dry_run_pauses_after_one_update_and_resumes_without_that_bound():
 
 
 def prepare_evidence(journal, bank):
-    lineage = Lineage(journal)
-    tasks = build(bank)
-    lineage.roots(tasks, assignment(tasks, 'seed'))
+    lineage = Lineage(journal, FOCUSES)
+    catalog = scenarios.load()
+    tasks = scenarios.tasks(catalog, bank, lambda name: '/work/' + name)
+    lineage.roots(tasks, scenarios.assignment(catalog, tasks, 'seed', 'pilot'))
     lineage.freeze()
     Episodes(journal, lineage)
     journal.db.execute('CREATE TABLE judge_controls(identity TEXT PRIMARY KEY, receipt TEXT NOT NULL)')
@@ -51,7 +52,7 @@ def prepare_evidence(journal, bank):
 def test_source_evidence_is_copied_without_rewriting_parent_or_terminal_failure(tmp_path):
     parent = Journal(tmp_path / 'parent', {})
     lineage = prepare_evidence(parent, tmp_path / 'bank')
-    closeout = lineage.db.execute("SELECT id FROM tasks WHERE partition='train' AND family='structured_closeout'").fetchone()[0]
+    closeout = lineage.db.execute("SELECT id FROM tasks WHERE partition='train' AND focus='evidence_closeout'").fetchone()[0]
     lineage.bind_session('epoch', 'session', closeout)
     stage = parent.begin('dataset_pilot', {})
     parent.settle('dataset_pilot', stage['attempt'], 'passed', output={'qualified': True})
@@ -94,7 +95,7 @@ def test_dry_run_drives_suffix_without_claiming_quality(tmp_path, monkeypatch):
     parent = Journal(source, {'configuration': cfg})
     outputs = {'dataset_pilot': {}, 'host_qualification': {'conservative_reference': {}},
                'teacher_baseline': {}, 'baseline_e4b': {'directory': '/base'},
-               'evaluate_base_e4b': {'attempts': [{'task_id': 'system_test-structured_closeout', 'success': False}]}}
+               'evaluate_base_e4b': {'attempts': [{'task_id': 'exact-manifest-0', 'success': False}]}}
     for name, output in outputs.items():
         stage = parent.begin(name, {})
         parent.settle(name, stage['attempt'], 'passed', output=output)
@@ -102,7 +103,7 @@ def test_dry_run_drives_suffix_without_claiming_quality(tmp_path, monkeypatch):
     attempt = {'stage_status': 'passed', 'effective_thinking': False, 'success': False}
     handlers = {'export_e4b': Handler({'directory': '/artifact'}),
                 'evaluate_trained_e4b': Handler({'attempts': [attempt]})}
-    plan = {'tasks': [{'id': 'system_test-structured_closeout'}], 'lineage_sha256': 'frozen'}
+    plan = {'tasks': [{'id': 'exact-manifest-0', 'focus': 'evidence_closeout'}], 'lineage_sha256': 'frozen'}
     monkeypatch.setattr(dry_run, 'runtime_configuration', lambda cfg, directory, host: cfg)
     monkeypatch.setattr(dry_run, 'compose', lambda *args: (handlers, plan))
     monkeypatch.setattr(dry_run, 'import_evidence', lambda *args: SimpleNamespace())
