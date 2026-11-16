@@ -40,8 +40,8 @@ For code and configuration changes, run what CI runs:
 |---|---|
 | `uv run ruff check src tests` | Lint |
 | `uv run pytest -q tests` | Tests |
-| `uv run bialy check` | The configuration loads and every pin is valid |
-| `shellcheck runner/*.sh` | Runner scripts |
+| `uv run bialy check` | The configuration loads, every pin is valid, and the sources name nothing of the host that `config/host-contract.json` lacks |
+| `shellcheck runner/*.sh && shellcheck -x train-host/student/*.sh` | Runner and training-host scripts |
 
 Tests use fakes for every model and provider call; no test calls a real model.
 Do not write tests that assert documentation wording. Prose-only changes need a
@@ -64,13 +64,21 @@ lectures. Measurements and the history behind a default belong in
 - **Published releases never change.** An anchor in `releases/` and its
   `<kind>-<version>` tag are written once; a different release is a new
   version. `bialy publish` refuses to move a tag.
-- **Rows are `pw-decide-row/1`**, defined by Painted Wolf Code's
+- **Rows are `pw-decide-row/2`**, defined by Painted Wolf Code's
   `scripts/bialy/row.schema.json`. Change the schema there and bump the row
-  version for breaking changes.
+  version for breaking changes. Custom-model training rows are
+  `pw-training-row/1`, defined by its
+  `scripts/bialy/custom_model/contracts/training-row.schema.json`.
+- **What the runner asks of the host is recorded** in
+  `config/host-contract.json`: environment variables, subcommands and flags,
+  row schemas, and live workflow versions. Pass the host a new name only
+  together with its record, checked against a host checkout
+  (`bialy check --host-checkout DIR`).
 - **A model enters `config/models.yaml` only after a person reads its license**
   and records that its outputs may train an Apache-2.0 model (`reviewed`,
   `outputs_trainable`). Repositories are pinned by commit and license text.
-- **Painted Wolf Code pins what it ships** in `decision-release.json`
+- **Painted Wolf Code pins what it ships** in
+  `lycaon/config/packs/painted-wolf/platform/host/decision-release.json`
   (`release`, head sha256s, and `source`). Adopting a release updates that file,
   and `docs/releases.md` records which versions ship it.
 
@@ -82,4 +90,6 @@ lectures. Measurements and the history behind a default belong in
   never from matching prose.
 - Reviewer slots use explicit model assignments from the approved pool. Each slot
   is independent and qualified on the versioned controls alone: no model-family
-  pairing, and no prompt that compares candidates.
+  pairing, and no prompt that compares candidates. A slot reviews episodes or
+  judges training rows only after passing that role's controls, and a judge sees
+  nothing produced after the turn it judges.

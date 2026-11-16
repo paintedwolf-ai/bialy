@@ -207,7 +207,7 @@ def heads(release, dataset_release, lycaon, engine_bin, model, tolerance=0.01):
     import sys
     import tempfile
 
-    from . import build, host_scripts
+    from . import build, host_contract
 
     release, dataset_release = Path(release), Path(dataset_release)
     check("heads", release)
@@ -217,7 +217,7 @@ def heads(release, dataset_release, lycaon, engine_bin, model, tolerance=0.01):
         out = Path(tmp) / "replay.json"
         launcher = build.launcher(engine_bin, model, {name: release / (name + ".safetensors") for name in policy["heads"]},
                                   Path(tmp) / "launcher.sh", release / "corpus.json")
-        subprocess.run(host_scripts.command(sys.executable, "replay_eval.py", [
+        subprocess.run(host_contract.script(sys.executable, "replay_eval.py", [
             "--corpus", release / "corpus.json", "--examples", dataset_release / "holdout.jsonl", "--engine", launcher,
             "--tool-truth", "called", "--json", out]), cwd=str(lycaon), check=True, stdout=subprocess.DEVNULL)
         replayed = json.loads(out.read_text(encoding="utf-8"))["overall"]

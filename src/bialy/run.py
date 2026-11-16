@@ -33,7 +33,7 @@ from . import (
     custom_model_run,
     fleet,
     heads,
-    host_scripts,
+    host_contract,
     judge,
     preflight,
     provenance,
@@ -51,8 +51,8 @@ from .campaign.journal import CampaignFault
 
 STAGES = ("check", "repos", "build", "image", "corpus", "tasks", "ancestry", "skillreq", "warm", "preflight", "plan", "drive", "collect", "judge",
           "judge_skillreq", "coderank", "engine", "split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on",
-          "compare", "judge_on", "split", "release", "train", "evaluate", "release_heads", "report")
-ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "compare", "judge_on")
+          "judge_on", "split", "release", "train", "evaluate", "release_heads", "report")
+ENGINE_ON_STAGES = ("split_pilot", "train_pilot", "pilot", "preflight_on", "plan_on", "drive_on", "collect_on", "judge_on")
 
 
 class RunError(RuntimeError):
@@ -293,6 +293,10 @@ def stage_check(run):
     for rel in CHECKOUT_FILES:
         if not (run.checkout / rel).exists():
             faults.append("run.lycaon_checkout lacks %s" % rel)
+    try:
+        host_contract.verify(run.checkout)
+    except host_contract.HostContractError as exc:
+        faults.append("run.lycaon_checkout does not declare what the runner asks of it: %s" % "; ".join(exc.missing))
     if shutil.which("docker") is None:
         faults.append("docker is not on PATH")
     if run.runs("warm") and hasattr(os, "geteuid") and os.geteuid() != 0:
@@ -304,7 +308,6 @@ def stage_check(run):
     except RunError as exc:
         scanner = None
         faults.append(str(exc))
-    faults += host_scripts.verify(run.checkout)
     recipes = run.setting("train", {}).get("recipes") or []
     for recipe in recipes:
         if recipe not in training.RECIPES:
@@ -367,7 +370,7 @@ def stage_corpus(run):
     """corpus.json from the runners' own build, so option texts match the rows."""
     out = run.path("corpus.json")
     debug = run.host_bin_dir / "lycaon-debug"
-    result = subprocess.run([str(debug), "decide", "corpus", "--out", str(out)], capture_output=True, text=True)
+    result = subprocess.run([str(debug), *host_contract.arguments("lycaon-debug", "decide corpus", out=out)], capture_output=True, text=True)
     if result.returncode != 0:
         raise RunError("lycaon-debug decide corpus failed: %s" % result.stderr.strip()[-300:])
     revision = json.loads(out.read_text(encoding="utf-8")).get("catalog_revision")
@@ -685,21 +688,6 @@ def judged_files(run):
 def retention_files(run):
     """Observational retention rows collected by each pass."""
     return [p for p in (run.path("fleet-off", "retention.jsonl"), run.path("fleet-on", "retention.jsonl")) if training.has_rows(p)]
-
-
-def stage_compare(run):
-    """The engine-on pass against the engine-off pass over the requests both drove:
-    what the retention head's releases did to prompt tokens, recalls, and repeated
-    calls (retention.compare)."""
-    if not run.engine_on:
-        return {"skipped": "run.engine_on is off"}
-    off = retention.load_rows(run.path("fleet-off", "requests.jsonl"))
-    on = retention.load_rows(run.path("fleet-on", "requests.jsonl"))
-    if not off or not on:
-        return {"skipped": "a pass wrote no request rows; the host that drove it predates them"}
-    comparison = retention.compare(off, on)
-    run.path("compare.json").write_text(json.dumps(comparison, indent=2) + "\n", encoding="utf-8")
-    return {"comparison": comparison, "report": str(run.path("compare.json"))}
 
 
 def stage_split(run):

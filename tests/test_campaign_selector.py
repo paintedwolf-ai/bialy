@@ -7,7 +7,7 @@ import pytest
 import yaml
 from selector_bench import CATALOG, DECISIONS, PARITY, PRELOAD, RERANK, campaign, qualified, rows
 
-from bialy import build, coderank, fleet, host_scripts
+from bialy import build, coderank, fleet, host_contract
 from bialy import run as runmod
 from bialy.campaign import ancestry, selector
 from bialy.campaign.journal import CampaignFault
@@ -278,7 +278,7 @@ def test_every_host_script_is_called_with_flags_the_host_accepts(factory, tmp_pa
     from bialy import training
     monkeypatch.setattr(training, 'venv_python', lambda root, settings: '/venv/python')
     checkout = Path(__file__).parent / 'fixtures' / 'host-checkout'
-    recorded = {script: host_scripts.declared(checkout, script) for script in host_scripts.FLAGS}
+    declared = {script: host_contract.script_flags(checkout, script) for script in host_contract.load()['scripts']}
     answers = {'calibrate.py': 'turn:\n  tools:\n    load_at: 0.55\n', 'preload.py': json.dumps(PRELOAD), 'parity_probe.py': '', 'replay_eval.py': ''}
 
     def answer(args):
@@ -294,7 +294,7 @@ def test_every_host_script_is_called_with_flags_the_host_accepts(factory, tmp_pa
     assert sorted(args[1] for args, _ in host.calls) == ['scripts/bialy/' + name for name in sorted(answers)]
     for args, _ in host.calls:
         script = args[1][len('scripts/bialy/'):]
-        assert {a for a in args if a.startswith('--')} <= set(recorded[script]) and {a for a in args if a.startswith('--')} <= set(host_scripts.FLAGS[script])
+        assert {a[2:] for a in args if a.startswith('--')} <= declared[script]
     preload = next(args for args, _ in host.calls if args[1].endswith('preload.py'))
     assert preload[preload.index('--corpus') + 1] == str(run.path('corpus.json')) and preload[preload.index('--model') + 1] == str(tmp_path / 'model')
     _, failing, _ = real_bench(factory, tmp_path / 'f', monkeypatch, lambda args: (2, '', 'usage: replay_eval.py: error: unrecognized arguments'))

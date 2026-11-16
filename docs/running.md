@@ -32,7 +32,9 @@ overdue, and the shard is not driven again.
 Runner containers permit the application's own user namespaces, mount isolation,
 and syscall supervision. Their security profiles retain the Docker syscall
 allowlist and protect system paths through AppArmor. AppArmor must be enabled on
-the runner machine. Profiles are content-addressed and loaded before a shard
+the runner machine, and its parser must know policy ABI 4.0, which the profile
+declares (AppArmor 4, as Ubuntu 24.04 ships; a 3.x parser refuses the profile
+and no shard starts). Profiles are content-addressed and loaded before a shard
 starts. `SETFCAP` permits the nested namespace to map the container's root user;
 the container receives no `SYS_ADMIN` capability. Root and non-root sessions are
 both valid execution configurations, subject to behavioral qualification.
@@ -49,9 +51,29 @@ scanner probe alone does not establish behavioral fidelity. Unattended approval
 settings and fixed question answers are explicit collection assumptions, and the
 mechanical pilot does not establish equivalence to every human configuration.
 
+Everything the runner and the fleet ask of the host's binaries is recorded in
+`config/host-contract.json`: each environment variable, each subcommand and its
+flags, each row schema the factory reads, and the live version of each workflow
+the runner's own workflows extend. `bialy check` holds this repository to the
+record, and `bialy check --host-checkout DIR` holds the record to a host
+checkout's sources. `bialy run`'s `check` stage and the campaign's source check
+do the same against the checkout they build from, so a name the host stopped
+declaring, or a workflow version it now serves only from a sealed archive,
+stops a run before any container starts. Adopting a host commit that changes
+one of these names means changing the record and the caller together.
+
+The runner makes its sidecar's bearer token itself, one per shard, and hands it
+to the sidecar and the driver as `LYCAON_API_TOKEN`; it reads no credential the
+sidecar writes. What the record cannot state, such as a file the sidecar is
+expected to leave behind, is what the `preflight` stage's mock turn proves
+against the real image: it starts the sidecar, runs the probes, drives one turn
+with the model mocked and exports its rows, without a provider call.
+
 Campaign episode collection checks the pinned host's training contract before
-starting a runner: the runner image's `lycaon-debug eval training-contract` must
-name the pinned commit, unmodified, and the bundle schema this factory reads.
+starting a runner: the checkout must be clean at the pinned commit and declare
+the recorded host contract, and the runner image's
+`lycaon-debug eval training-contract` must name that commit, unmodified, and the
+bundle schema this factory reads.
 Grading and export read each episode from the host's bundle, whose operations
 the host has already normalized, so no host tool or storage layout is named
 here. This source check does not qualify live execution, capture, or the runner
@@ -124,14 +146,25 @@ Graders run outside the agent's workspace against the delivered source and the
 episode's host bundle; mutation tests hold every grader to refusing unchanged
 code, manufactured passes, tampered tests and missing verification.
 
-Before any episode is reviewed, every reviewer slot answers the versioned controls
-in `config/campaign/reviewer-controls.yaml`: verified successes it must pass, and
-false successes it must fail (an unverified artifact, a read cited as a run, an
-ignored failed check, a repeated append, unfinished workers, a closeout the host
-wrote). A slot that passes any false success never reviews; with none left the
-campaign stops as `reviewers_unqualified`. Slots are independent, with no
-model-family pairing. Each provider call is recorded before it is sent, so a call
-interrupted by a restart is recorded as unknown before it is retried.
+Reviewing has two roles, and a reviewer slot fills a role only after passing that
+role's versioned controls in `config/campaign/reviewer-controls.yaml`: verified
+successes it must pass and false successes it must fail, each shaped as the
+role's own input. The episode role reviews a whole session against its receipt
+(an unverified artifact, a read cited as a run, an ignored failed check, a
+repeated append, unfinished workers, a closeout the host wrote). The action role
+judges one response for training (a claim of success nothing visible supports,
+a visible failure reported as success, an effect nobody asked for, a failed call
+repeated unchanged, arguments nothing in the request grounds). A slot that
+accepts any false success of a role never fills it, and a role with no slot left
+stops the campaign as `reviewers_unqualified`. Every qualified episode slot
+reviews each episode; the first qualified action slot judges each eligible
+training row, and its verdict carries the slot, the model revision and the
+digest of the controls it passed. The action judge is given the request the
+response's model saw, the response, and the host's record of that response's own
+calls: nothing a later turn produced. Assembly admits a row only with such a
+verdict. Slots are independent, with no model-family pairing. Each provider call
+is recorded before it is sent, so a call interrupted by a restart is recorded as
+unknown before it is retried.
 
 Teacher qualification then runs every generator on the development tasks of each
 focus and writes `teacher-policy.json`: per focus, the teachers with a verified
@@ -524,14 +557,15 @@ real ambiguity between tools that do the same job.
   right kinds, not heavier ones, is the worker fix.
 - Retention rows capture later use as positive observational evidence. Missing use
   is not a negative label; unverified hindsight cannot qualify a head. The host
-  records all candidates when `LYCAON_RETENTION_RECORD=all`.
+  reconstructs every retention row at export from the session's messages
+  (`reconstructed: true`, engine `abstained`/`observations_only`): it records no
+  retention decision while a session runs, and no setting changes that.
 
 ## Retention observations
 
 The factory collects compaction observations and trains no retention head. The
 host names a `retention` head but asks it nothing, so a trained one could change
-no session and no pass could measure it; the recipe returns when the host has a
-caller for it.
+no session and no pass could measure it.
 
 ```bash
 bialy run --run retention-observations --recipes "" --no-judge --no-engine-on --until collect \
@@ -553,9 +587,8 @@ rows are split and released with the dataset (`retention/`).
   overdue deadline.
 - Rows from stores the earlier pilots kept export the same way:
   `lycaon-debug decide export --db <store.db> --retention rows.jsonl --requests requests.jsonl`
-  reconstructs candidates for receipts written before the host recorded
-  them (`reconstructed: true`), so label rates can be read before any paid
-  call.
+  reconstructs every receipt's candidates from its session's messages, so label
+  rates can be read before any paid call.
 
 ## Training hardware
 

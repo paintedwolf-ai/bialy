@@ -93,8 +93,8 @@ run:
   judge:
     enabled: true                  # false keeps observational rows unjudged
   retention:                       # how sessions are shaped for retention observations (src/bialy/retention.py)
-    follow_up_rate: null           # override every archetype's follow-up rate; 1.0 keeps every follow-up, and each is a retention decision
-    follow_ups: null               # override the follow-ups a task may carry (archetypes.yaml defaults.max_follow_ups); longer sessions reach the watermark
+    follow_up_rate: null           # override every archetype's follow-up rate; 1.0 keeps every follow-up, and each adds a retention row
+    follow_ups: null               # override the follow-ups a task may carry (archetypes.yaml defaults.max_follow_ups); longer sessions carry more earlier tool results
   train:
     recipes: [B5, E4, code-rank]   # the selector policy's three recipes: all of them, or none for a collection-only run
     device: auto                   # cuda (including ROCm builds of torch), mps, or cpu

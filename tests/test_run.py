@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from bialy import build, config, custom_model_run, heads, host_scripts
+from bialy import build, config, custom_model_run, heads
 from bialy import run as runmod
 from bialy.campaign import selector
 from bialy.campaign.journal import CampaignFault
@@ -127,27 +127,6 @@ def test_a_collection_only_run_needs_no_judge_or_writer(factory, tmp_path):
     assert {a.follow_up_rate for a in runmod.scaled_factory(run).archetypes} == {a.follow_up_rate for a in factory.archetypes}
 
 
-def test_compare_matches_requests_across_passes(factory, tmp_path):
-    run = make_run(factory, tmp_path)
-    off = run.path("fleet-off", "requests.jsonl")
-    on = run.path("fleet-on", "requests.jsonl")
-    off.parent.mkdir(parents=True)
-    on.parent.mkdir(parents=True)
-
-    def row(task, index, tokens, recalls, dropped):
-        return {"schema": "pw-request-row/1", "host": "coordinator", "surface": "implement_investigate", "partial": False, "request_index": index,
-                "calls": 4, "prompt_tokens": tokens, "recall_calls": recalls, "repeated_calls": 0, "meta": {"task_id": task},
-                "retention": {"recorded": True, "asked": dropped is not None, "watermark": False, "tokens": 1, "candidates": 3, "dropped": dropped or 0}}
-    off.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 10000, 0, None), row("t1", 1, 20000, 0, None), row("t2", 0, 5000, 0, None))))
-    on.write_text("".join(json.dumps(r) + "\n" for r in (row("t1", 0, 9000, 0, 1), row("t1", 1, 15000, 1, 2), row("t3", 0, 1, 0, 0))))
-    out = runmod.stage_compare(run)
-    c = out["comparison"]
-    assert c["requests"] == 2 and c["off_only"] == 1 and c["on_only"] == 1 and c["released_results"] == 3 and c["released_requests"] == 2
-    assert c["measures"]["prompt_tokens"] == {"off": 15000.0, "on": 12000.0, "delta": -3000.0, "delta_median": -3000, "wants": "down"}
-    assert c["measures"]["recall_calls"]["delta"] == 0.5
-    assert runmod.stage_compare(make_run(factory, tmp_path / "other", engine_on={"enabled": False, "deadline_ms": 1}))["skipped"]
-
-
 def test_engine_on_stages_skip_when_the_second_pass_is_off(factory, tmp_path):
     run = make_run(factory, tmp_path, engine_on={"enabled": False, "deadline_ms": 1})
     for name in runmod.ENGINE_ON_STAGES:
@@ -262,13 +241,13 @@ def test_the_engine_on_pass_mounts_the_pilot_policy(factory, tmp_path, monkeypat
 
 def test_check_refuses_part_of_a_policy_and_a_checkout_that_dropped_a_flag(factory, tmp_path, monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "k")
-    shutil.copytree(Path(__file__).parent / "fixtures" / "host-checkout" / "scripts", tmp_path / "co" / "scripts")
-    replay = tmp_path / "co" / host_scripts.SCRIPTS / "replay_eval.py"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "host-checkout", tmp_path / "co")
+    replay = tmp_path / "co" / "scripts/bialy/replay_eval.py"
     replay.write_text(replay.read_text().replace('"--tool-truth"', '"--truth"'))
     run = make_run(factory, tmp_path, train={"recipes": ["B5", "E4"]}, lycaon_checkout=str(tmp_path / "co"))
     with pytest.raises(runmod.RunError) as exc:
         runmod.stage_check(run)
-    assert "a selector policy is whole or absent" in str(exc.value) and "replay_eval.py no longer accepts --tool-truth" in str(exc.value)
+    assert "a selector policy is whole or absent" in str(exc.value) and "flag replay_eval.py --tool-truth" in str(exc.value)
 
 
 def test_report_lists_publish_commands_without_pushing(factory, tmp_path):

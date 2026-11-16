@@ -1,0 +1,59 @@
+{
+  "schema": "bialy-host-contract/1",
+  "environment": [
+    "LYCAON_ADDR",
+    "LYCAON_API_TOKEN",
+    "LYCAON_CONFIG_DIR",
+    "LYCAON_CONFIG_ROOT",
+    "LYCAON_DECIDE_BINARY",
+    "LYCAON_DECIDE_DEVICE",
+    "LYCAON_DECIDE_DISABLED",
+    "LYCAON_DECIDE_HEADS",
+    "LYCAON_DECIDE_MODEL_DIR",
+    "LYCAON_DECIDE_MODEL_ID",
+    "LYCAON_ENGINE_ROOT",
+    "LYCAON_LLM_MOCK",
+    "LYCAON_OPENGREP_CANDIDATE",
+    "PW_TRAINING_CAPTURE_DIR",
+    "PW_TRAINING_EPOCH",
+    "PW_TRAINING_SOURCE_KEY",
+    "PW_TRAINING_STUDENTS"
+  ],
+  "commands": {
+    "lycaon serve": [],
+    "lycaon diagnostics document-core": [],
+    "lycaon-debug decide corpus": ["out"],
+    "lycaon-debug decide generate": ["addr", "tasks", "project", "project-name", "manifest", "unattended", "timeout"],
+    "lycaon-debug decide export": ["db", "out", "roots", "retention", "requests"],
+    "lycaon-debug eval training-contract": ["out"],
+    "lycaon-debug eval training-bundle": ["capture", "captures", "session", "project", "out"]
+  },
+  "scripts": {
+    "train.py": ["corpus", "train", "val", "families", "tool-truth", "tool-weight", "tool-negatives", "lr", "pos-weight", "seed", "batch-size", "epochs", "patience", "skill-scored", "skill-zeros", "rank-levels", "label", "out"],
+    "rerank/train_rerank.py": ["dump", "val-dump", "metrics", "out", "label", "seed", "epochs"],
+    "calibrate.py": ["corpus", "examples", "engine"],
+    "replay_eval.py": ["corpus", "examples", "engine", "tool-truth", "json"],
+    "parity_probe.py": ["model", "head", "examples", "engine", "corpus", "n", "tolerance"],
+    "preload.py": ["corpus", "model"]
+  },
+  "schemas": [
+    "pw-candidate-export/1",
+    "pw-custom-gguf/1",
+    "pw-decide-row/2",
+    "pw-request-row/1",
+    "pw-retention-row/1",
+    "pw-training-contract/1",
+    "pw-training-episode-bundle/1",
+    "pw-training-fact/1",
+    "pw-training-health/1",
+    "pw-training-row/1",
+    "pw-training-terminal/1",
+    "pw-training-turn/1"
+  ],
+  "workflows": {
+    "implement": "1.0.0",
+    "plan": "1.0.1",
+    "recon-pack": "1.0.0",
+    "security-survey": "2.0.1"
+  }
+}

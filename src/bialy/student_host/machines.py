@@ -135,7 +135,7 @@ def preflight(configuration, student):
 
 def startup(provision):
     """The command a rented machine runs at every boot: install the dead-man switch and arm it."""
-    text = ("#!/bin/bash\ncat >%s <<'PW_DEADMAN'\n%sPW_DEADMAN\nchmod 700 %s\n%s arm %s %d %d\n"
+    text = ("#!/bin/bash\ncat >%s <<'DEADMAN'\n%sDEADMAN\nchmod 700 %s\n%s arm %s %d %d\n"
             % (DEADMAN, DEADMAN_SCRIPT.read_text(), DEADMAN, DEADMAN, provision['provider'], STARTUP_SECONDS,
                provision['lifetime_hours'] * 3600))
     if provision['provider'] == 'vastai' and len(text.encode()) > vastai.STARTUP_LIMIT:

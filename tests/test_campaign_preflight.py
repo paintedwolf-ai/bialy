@@ -1,4 +1,6 @@
 import json
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,18 +20,36 @@ def git(revision='pinned', dirty=''):
     return process
 
 
+CHECKOUT = Path(__file__).parent / 'fixtures' / 'host-checkout'
+
+
 def test_inspection_requires_a_clean_pinned_source_and_its_images_contract(tmp_path):
-    evidence = inspect(tmp_path, 'pinned', 'runner:off', tmp_path / 'contract', git())
+    evidence = inspect(CHECKOUT, 'pinned', 'runner:off', tmp_path / 'contract', git())
     assert evidence['host_commit'] == 'pinned' and len(evidence['contract_sha256']) == 64 and evidence['sources']
     with pytest.raises(CampaignFault, match='host_source_revision_mismatch'):
-        inspect(tmp_path, 'other', 'runner:off', tmp_path / 'other', git())
+        inspect(CHECKOUT, 'other', 'runner:off', tmp_path / 'other', git())
     with pytest.raises(CampaignFault, match='host_source_not_clean'):
-        inspect(tmp_path, 'pinned', 'runner:off', tmp_path / 'dirty', git(dirty=' M file'))
+        inspect(CHECKOUT, 'pinned', 'runner:off', tmp_path / 'dirty', git(dirty=' M file'))
     stale = Image(commit='stale')
     with pytest.raises(CampaignFault, match='host_contract_revision_mismatch') as failure:
-        inspect(tmp_path, 'pinned', 'runner:off', tmp_path / 'stale',
+        inspect(CHECKOUT, 'pinned', 'runner:off', tmp_path / 'stale',
                 lambda args, **kwargs: SimpleNamespace(stdout='pinned\n' if 'rev-parse' in args else '') if args[0] == 'git' else stale(args, **kwargs))
     assert failure.value.details == {'expected': 'pinned', 'actual': 'stale'}
+
+
+def test_inspection_refuses_a_source_that_stopped_declaring_what_the_runner_asks(tmp_path):
+    checkout = tmp_path / 'host'
+    shutil.copytree(CHECKOUT, checkout)
+    workflow = checkout / 'lycaon/config/packs/painted-wolf/plan/workflows/plan/workflow.yaml'
+    workflow.write_text(workflow.read_text().replace('1.0.1', '1.0.2'))
+    exported = []
+    def process(args, **kwargs):
+        exported.append(args[0])
+        return git()(args, **kwargs)
+    with pytest.raises(CampaignFault, match='host_contract_drift') as failure:
+        inspect(checkout, 'pinned', 'runner:off', tmp_path / 'contract', process)
+    assert failure.value.details == {'missing': ['workflow plan@1.0.1 (the checkout serves 1.0.2 live)']}
+    assert set(exported) == {'git'}
 
 
 def test_preflight_retains_terminal_failure_and_never_overwrites_run(tmp_path, monkeypatch):

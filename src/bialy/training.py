@@ -14,7 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import host_scripts
+from . import host_contract
 
 BACKBONE = ("convaiinnovations/laya-multilingual", "e4e9ddf21a7b1903b7acffd8814ad4307bf63a67")
 TRAIN_HOST = Path(__file__).resolve().parents[2] / "train-host"
@@ -185,7 +185,7 @@ def train(recipe, inputs, checkout, root, settings, heads_dir, label, budget_sec
     log = heads_dir / (recipe + ".log")
     started = time.time()
     try:
-        run(host_scripts.command(python, script, with_epochs(args, settings.get("epochs"))), cwd=str(checkout), env=env,
+        run(host_contract.script(python, script, with_epochs(args, settings.get("epochs"))), cwd=str(checkout), env=env,
             timeout=budget_seconds, log=log)
     except subprocess.TimeoutExpired as exc:
         raise TrainingError("%s exceeded the training budget; see %s" % (recipe, log)) from exc

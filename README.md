@@ -14,8 +14,9 @@ and no private session contributes a row.
 Training, calibration, and replay live beside the engine in the Painted Wolf
 Code repository (`scripts/bialy/`), because a head must be encoded exactly
 as the engine encodes it. This repository hands them rows in their format,
-`pw-decide-row/1`. Existing row, head, and release-anchor format identifiers
-remain unchanged so archived data and checksum-pinned weights stay readable.
+`pw-decide-row/2`. A published release keeps the row version, head format and
+anchor it was written with, so archived data and checksum-pinned weights stay
+readable.
 
 ## Built on Laya
 
@@ -63,11 +64,13 @@ The native runtime in Painted Wolf Code derives from
    nothing else: private ranges and the cloud metadata service are dropped,
    and it holds no credential. Each runner exports its sessions' rows with
    `lycaon-debug decide export`, and beside them the context retention rows
-   (`pw-retention-row/1`: which earlier tool results each request offered to
-   drop and which the session read again) and the request rows
-   (`pw-request-row/1`: what each request cost in calls and tokens, so two
-   passes over the same tasks compare), and keeps its store for later
-   re-export.
+   (`pw-retention-row/1`: the earlier tool results each request still carried,
+   labelled by which of them the session went on to need) and the request rows
+   (`pw-request-row/1`: what each request cost in calls and provider-reported
+   tokens), and keeps its store for later re-export. The host reconstructs both
+   at export and records no retention decision while a session runs, so a
+   comparison of retention between two passes is refused, not reported
+   (`docs/running.md`, "Retention pilot").
 5. **Judge.** `bialy judge` scores every skill card against each turn and
    every offered tool card against each `request_tools` need, 0..4, with a
    configured reviewer model, greedy
@@ -110,8 +113,10 @@ with its reason (unknown effects, an authorization refusal, an unoffered or
 unrecorded call, a replay after unknown effects, an unwitnessed failure, an
 uncommitted or uncited reply, a closeout the host wrote, stale verification, or
 the host's own capture exclusion). A row never carries state from after its turn,
-and its semantic outcome is the host's. A qualified reviewer then reviews every
-eligible row; only reviewed rows reach a dataset.
+and its semantic outcome is the host's. A reviewer slot that passed the
+row-judging controls then judges every eligible row from the request its model
+saw, the response, and the host's record of that response's own calls; only rows
+it passes reach a dataset, each carrying that reviewer's qualification.
 
 A head run's `run.custom_model` turns on capture in its runners and qualifies
 the capture path in preflight. Declare a unique `epoch` and the full
@@ -159,18 +164,20 @@ bialy run --run pass3 --push               # the same pass, publishing at the en
 Stages, in order: `check`, `repos`, `build`, `image`, `corpus`, `tasks`,
 `ancestry`, `skillreq`, `warm`, `preflight`, `plan`, `drive`, `collect`,
 `judge`, `judge_skillreq`, `coderank`, `engine`, `split_pilot`, `train_pilot`,
-`pilot`, `preflight_on`, `plan_on`, `drive_on`, `collect_on`, `compare`,
-`judge_on`, `split`, `release`, `train`, `evaluate`, `release_heads`, `report`.
-Each writes under `<root>/runs/<name>/` and its status to `run.json` there; a failed stage stops the run with its error in
+`pilot`, `preflight_on`, `plan_on`, `drive_on`, `collect_on`, `judge_on`,
+`split`, `release`, `train`, `evaluate`, `release_heads`, `report`. Each writes
+under `<root>/runs/<name>/` and its status to `run.json` there; a failed stage
+stops the run with its error in
 `REPORT.md`, and the next invocation starts from it.
 
 - `build` cross-compiles `lycaon`, `lycaon-debug`, and `decide-rerank` for the
   runners, builds `pw-document-core` from the same checkout, and assembles the engine payload (schemas, the pinned git, the
   headless browser, Opengrep) from the checkout; `engine` builds the decision
   engine for this host with the checkout's own `scripts/build-decide.sh` (MLX
-  on Apple silicon, Vulkan on Linux) and a CPU engine for the runners. `check`
-  refuses a checkout whose `scripts/bialy/` argument parsers no longer declare
-  a flag the factory passes them. The checkout pins Opengrep releases per
+  on Apple silicon, Vulkan on Linux) and a CPU engine for the runners. The
+  host contract `check` holds to the checkout also records every flag the
+  factory passes the checkout's `scripts/bialy/` trainers, calibration, replay
+  and probes, read from their argument parsers. The checkout pins Opengrep releases per
   platform, including linux/amd64, and stages the pinned one at
   `bundled/opengrep-<version>/`, where the sidecar finds it under
   `LYCAON_ENGINE_ROOT`. `run.scanner: candidate` with `run.scanner_candidate`
@@ -178,6 +185,13 @@ Each writes under `<root>/runs/<name>/` and its status to `run.json` there; a fa
   repository's `engine/build.py` carries a development build instead, and
   `run.scanner: none` runs without a scanner, which the sidecar then reports
   unavailable.
+- `check` also holds `config/host-contract.json`, the record of every
+  environment variable, subcommand, flag, row schema and workflow version the
+  runner asks of the host, to the checkout: a name that checkout does not
+  declare stops the run there. `ancestry` allocates every task and skill-request
+  family to its partition before anything is driven. `preflight` and
+  `preflight_on` qualify each pass's runner image with a mock turn, and for a
+  custom-model collection a capture fixture, before its paid driving starts.
 - Heads come from the selector (`src/bialy/campaign/selector.py`), the same
   code a campaign's selector segment runs. The first pass drives with the
   engine off. `train_pilot` fits a pilot policy on its rows: the three heads,
@@ -244,12 +258,12 @@ bialy fleet plan --run pass1 --tasks tasks
 bialy fleet run --run pass1
 bialy collect --run pass1 --pass engine-off --tasks tasks
 bialy judge --corpus corpus.json --rows runs/pass1/rows.jsonl --out pass1.judged.jsonl
-bialy split --ancestry runs/pass1/ancestry.json --out split/ pass1.judged.jsonl
+bialy split --ancestry ancestry.json --out split/ pass1.judged.jsonl   # ancestry.json: a run's ancestry stage writes it
 bialy coderank harvest --decide-rerank bin/decide-rerank --out coderank/units
 bialy coderank pairs --units coderank/units --out coderank/pairs
 bialy coderank dumps --decide-rerank bin/decide-rerank --units coderank/units --pairs coderank/pairs --ancestry runs/pass1/ancestry.json --out coderank/dumps
 bialy release --split split/ --version v1 --code-ref v1 --out dist/v1 --schema <lycaon>/scripts/bialy/row.schema.json \
-  --corpus corpus.json --agreement pass1.judged.jsonl.agreement.jsonl --driven runs/pass1/tasks-driven.jsonl \
+  --ancestry ancestry.json --corpus corpus.json --agreement pass1.judged.jsonl.agreement.jsonl --driven runs/pass1/tasks-driven.jsonl \
   --coderank coderank/pairs --stage tasks/provenance.json --stage runs/pass1/provenance.json \
   --stage pass1.judged.jsonl.provenance.json --stage coderank/pairs/provenance.json --stage coderank/dumps/provenance.json
 ```
@@ -265,7 +279,7 @@ answer arrives, never what it is):
 
 ```bash
 bialy fleet image --lycaon-bin bin --engine engine --tag bialy-runner-pilot --decide-deadline-ms 60000 \
-  --decisions <lycaon>/lycaon/config/packs/painted-wolf/platform/host/decisions.yaml
+  --config-dir <lycaon>/lycaon/config
 # pilot/ is a selector's runner mount (runs/<name>/pilot-policy/pilot): bialy built for linux, model/,
 # heads/, and overlay/config with the policy's thresholds and option vocabulary
 bialy fleet plan --run pass2 --tasks tasks-pass2 --pilot pilot
@@ -317,7 +331,11 @@ uv sync --group dev
 uv run ruff check src tests
 uv run pytest -q tests
 uv run bialy check
+shellcheck runner/*.sh && shellcheck -x train-host/student/*.sh
 ```
+
+`bialy check --host-checkout DIR` also holds the recorded host contract
+(`config/host-contract.json`) to a Painted Wolf Code checkout.
 
 CI runs the same on every push and pull request. It never generates, judges,
 or trains: those need GPUs and hours, and run on a GPU host by hand.

@@ -124,7 +124,7 @@ def test_collect_joins_rows_to_their_task_and_lists_what_it_drove(tmp_path):
     shard = tmp_path / "run" / "shards" / "flask-000"
     shard.mkdir(parents=True)
     (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "flask0", "root_session": "s1", "status": "settled", "meta": {"workspace": "flask"}}) + "\n")
-    (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s1", "receipt": 1}) + "\n")
+    (shard / "rows.jsonl").write_text(json.dumps({"schema": "pw-decide-row/2", "root_session": "s1", "receipt": 1}) + "\n")
     preserved_store(shard)
     out, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
     row = json.loads(out.read_text())
@@ -142,18 +142,32 @@ def test_collect_gathers_retention_rows_beside_the_turn_rows(tmp_path):
     for shard, task, session in ((with_retention, "flask0", "s1"), (without, "flask1", "s2")):
         shard.mkdir(parents=True)
         (shard / "manifest.jsonl").write_text(json.dumps({"task_id": task, "root_session": session, "status": "settled"}) + "\n")
-        (shard / "rows.jsonl").write_text(json.dumps({"root_session": session, "receipt": 1}) + "\n")
+        (shard / "rows.jsonl").write_text(json.dumps({"schema": "pw-decide-row/2", "root_session": session, "receipt": 1}) + "\n")
         preserved_store(shard, (session,))
     (with_retention / "retention.jsonl").write_text(json.dumps({"schema": "pw-retention-row/1", "root_session": "s1", "receipt": 1}) + "\n")
-    (with_retention / "requests.jsonl").write_text(json.dumps({"schema": "pw-request-row/1", "root_session": "s1", "receipt": 1}) + "\n")
+    (with_retention / "requests.jsonl").write_text(json.dumps({"schema": "pw-request-row/1", "root_session": "s1", "receipt": 1, "model": "served-model"}) + "\n")
     out, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
     assert stats["rows"] == 2 and stats["retention_rows"] == 1 and stats["request_rows"] == 1 and stats["shards"] == 2
     retention = [json.loads(line) for line in (tmp_path / "run" / "retention.jsonl").read_text().splitlines()]
     assert len(retention) == 1 and retention[0]["meta"]["workspace"] == "flask" and retention[0]["model"] == "qwen3.6-35b-a3b"
     requests = [json.loads(line) for line in (tmp_path / "run" / "requests.jsonl").read_text().splitlines()]
     assert len(requests) == 1 and requests[0]["meta"]["workspace"] == "flask"
-    (with_retention / "retention.jsonl").write_text(json.dumps({"root_session": "s9", "receipt": 1}) + "\n")
+    assert requests[0]["model"] == "served-model" and requests[0]["generator_model"] == "qwen3.6-35b-a3b"
+    (with_retention / "retention.jsonl").write_text(json.dumps({"schema": "pw-retention-row/1", "root_session": "s9", "receipt": 1}) + "\n")
     with pytest.raises(ValueError, match="manifest does not list"):
+        fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
+
+
+@pytest.mark.parametrize("kind,schema", [("rows", "pw-decide-row/1"), ("retention", "pw-retention-row/2"), ("requests", "pw-decide-request/1")])
+def test_collect_refuses_a_row_of_another_schema_than_its_file(tmp_path, kind, schema):
+    write_tasks(tmp_path / "tasks", "flask", 1)
+    shard = tmp_path / "run" / "shards" / "flask-000"
+    shard.mkdir(parents=True)
+    (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "flask0", "root_session": "s1", "status": "settled"}) + "\n")
+    for name, expected in fleet.ROW_SCHEMAS.items():
+        (shard / (name + ".jsonl")).write_text(json.dumps({"schema": schema if name == kind else expected, "root_session": "s1"}) + "\n")
+    preserved_store(shard)
+    with pytest.raises(ValueError, match="%s.jsonl holds a %s row" % (kind, schema)):
         fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
 
 
@@ -412,10 +426,10 @@ def test_reexport_refuses_a_store_that_no_longer_matches_its_record(tmp_path):
 
 def test_an_overdue_shard_keeps_the_retention_rows_of_the_sessions_it_kept(tmp_path):
     shard, exported = overdue_shard(tmp_path, ["s1", "s2", "s9"])
-    fleet.retention_file(exported).write_text("".join(json.dumps({"root_session": r, "receipt": n}) + "\n" for n, r in enumerate(["s1", "s9"])))
+    fleet.side_file(exported, "retention").write_text("".join(json.dumps({"root_session": r, "receipt": n}) + "\n" for n, r in enumerate(["s1", "s9"])))
     assert fleet.keep_overdue(shard, exported)
     kept = [json.loads(line)["root_session"] for line in (shard / "retention.jsonl").read_text().splitlines()]
-    assert kept == ["s1"] and not fleet.retention_file(exported).exists()
+    assert kept == ["s1"] and not fleet.side_file(exported, "retention").exists()
 
 
 def test_sessions_no_task_can_claim_are_dropped(tmp_path):
@@ -485,7 +499,7 @@ def test_collect_lists_a_task_an_overdue_shard_never_reached(tmp_path):
     shard.mkdir(parents=True)
     (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "a", "root_session": "s1", "status": "overdue"}) + "\n" +
                                           json.dumps({"task_id": "b", "root_session": None, "status": "overdue"}) + "\n")
-    (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s1", "receipt": 1}) + "\n")
+    (shard / "rows.jsonl").write_text(json.dumps({"schema": "pw-decide-row/2", "root_session": "s1", "receipt": 1}) + "\n")
     preserved_store(shard)
     _, stats = fleet.collect(tmp_path / "run", "engine-off", tasks)
     driven = [json.loads(line) for line in (tmp_path / "run" / "tasks-driven.jsonl").read_text().splitlines()]
@@ -561,7 +575,7 @@ def container_export(docker):
         with sqlite3.connect("file:%s?mode=ro" % docker.host(db), uri=True) as store:
             rows = [{"root_session": r, "receipt": n} for r, n in store.execute("SELECT root_session, receipt FROM turns ORDER BY receipt")
                     if roots is None or r in roots]
-        targets = [(shard / out_name, None)] + [(fleet.side_file(shard / out_name, kind), kind) for kind, _ in fleet.SIDE_ROWS]
+        targets = [(shard / out_name, None)] + [(fleet.side_file(shard / out_name, kind), kind) for kind in fleet.SIDE_ROWS]
         for path, kind in targets:
             path.write_text("".join(json.dumps(dict(row, kind=kind) if kind else row) + "\n" for row in rows))
         return True
@@ -710,7 +724,7 @@ def test_collect_admits_only_shards_with_a_verified_store(tmp_path):
         shard = shards / ("flask-%03d" % n)
         shard.mkdir(parents=True)
         (shard / "manifest.jsonl").write_text(json.dumps({"task_id": "flask%d" % n, "root_session": "s%d" % n, "status": "settled"}) + "\n")
-        (shard / "rows.jsonl").write_text(json.dumps({"root_session": "s%d" % n, "receipt": 1}) + "\n")
+        (shard / "rows.jsonl").write_text(json.dumps({"schema": "pw-decide-row/2", "root_session": "s%d" % n, "receipt": 1}) + "\n")
         if preserved:
             preserved_store(shard, ("s0",))
     _, stats = fleet.collect(tmp_path / "run", "engine-off", tmp_path / "tasks")
