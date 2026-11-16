@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
-from . import exporting, jobs, materialize, reaper, remote_training, supervision
+from . import exporting, jobs, machines, materialize, reaper, remote_training, supervision
 from .specification import DEFAULT, load, students
 
 
@@ -32,6 +32,9 @@ def main(argv=None):
     reap = commands.add_parser('reap')
     reap.add_argument('--configuration', type=Path, required=True)
     reap.add_argument('--once', action='store_true')
+    preflight = commands.add_parser('preflight', help='check a machine configuration against a student offline')
+    preflight.add_argument('--configuration', type=Path, required=True)
+    preflight.add_argument('--student', required=True)
     remote = commands.add_parser('remote')
     remote.add_argument('--configuration', type=Path, required=True)
     remote.add_argument('--resume', type=Path)
@@ -56,6 +59,8 @@ def main(argv=None):
         result = reaper.install(args.configuration)
     elif args.action == 'reap':
         result = reaper.reap(args.configuration, args.once)
+    elif args.action == 'preflight':
+        result = machines.preflight(json.loads(args.configuration.read_text()), args.student)
     elif args.action == 'remote':
         result = remote_training.train(args.configuration, args.student, args.splits, args.source_key, args.out, resume=args.resume, pilot=args.pilot)
     else:

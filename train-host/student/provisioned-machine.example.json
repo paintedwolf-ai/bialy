@@ -8,15 +8,20 @@
   "host_checkout": "/scratch/paintedwolf-training/src/host",
   "models": "/scratch/paintedwolf-training/models",
   "provisioning": {
+    "provider": "scaleway",
     "profile": "training",
     "project": "",
     "zone": "fr-par-2",
     "registry": "/var/lib/paintedwolf-training/resources",
-    "provider": "scaleway",
+    "rental": "on-demand",
+    "lifetime_hours": 72,
     "specification": {
       "type": "H100-1-80G",
       "image": "",
-      "root_volume": "1TB"
+      "root_volume": "1TB",
+      "gpu_memory_gib": 79,
+      "memory_gib": 200,
+      "disk_gib": 1000
     }
   },
   "machine": {
