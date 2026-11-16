@@ -180,8 +180,8 @@ def writer_model(run):
 
 
 def roster(run):
-    """The models with the roles this run gives them: run.generators and run.judges keep
-    those roles on the models they name and take them off the rest; a model keeps its
+    """The models with the roles this run gives them: run.generators and run.judges give
+    those roles to the models they name and take them off the rest; a model keeps its
     other roles either way."""
     generators = {m.id for m in run_generators(run)}
     judges = set(run.setting("judges") or [])
@@ -367,7 +367,7 @@ def stage_image(run):
 
 
 def stage_corpus(run):
-    """corpus.json from the runners' own build, so option texts match the rows."""
+    """corpus.json from the pinned checkout's lycaon-debug, so option texts match the rows."""
     out = run.path("corpus.json")
     debug = run.host_bin_dir / "lycaon-debug"
     result = subprocess.run([str(debug), *host_contract.arguments("lycaon-debug", "decide corpus", out=out)], capture_output=True, text=True)
@@ -891,8 +891,8 @@ STAGE_FUNCS = {name: globals()["stage_" + name] for name in STAGES}
 
 
 def plan(run, start=None, until=None, redo=()):
-    """The stages this invocation will run, in order: those not done, those from `start`
-    on, and those named in `redo`."""
+    """Every stage up to `until`, in order, marked run or skip. A stage runs when it is
+    not done, is `start` or later, or is named in `redo`."""
     state = run.load_state()
     names = list(STAGES)
     if until:

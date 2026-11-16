@@ -37,7 +37,7 @@ class StageWaiting(RuntimeError):
 
 
 class Journal:
-    """A campaign's durable state. Pass manifest=None to open an existing campaign without restating its identity."""
+    """A campaign's durable state. manifest=None opens an existing campaign without restating its identity."""
     def __init__(self, directory, manifest):
         self.directory = Path(directory)
         if manifest is None and not (self.directory / "campaign.sqlite").is_file():

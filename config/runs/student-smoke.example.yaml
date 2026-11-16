@@ -1,6 +1,6 @@
 # The `run:` section of config/factory.yaml for a short smoke pass: six varied
 # kinds of request on one repository and the held-out stack, driven with the
-# released heads, rows rendered for the declared student. Set host_commit to the
+# released heads, rows rendered for the declared student. host_commit is the
 # clean host commit the runners are built from.
 run:
   lycaon_checkout: ../paintedwolf-code

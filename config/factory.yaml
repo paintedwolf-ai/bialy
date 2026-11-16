@@ -34,7 +34,7 @@ run:
     beam-1.0-501b: 0.12
     mistral-large-4: 0.05
   archetype_generators:
-    # Routine orientation, search, and chores weight local Gemma 26B with Gemma 31B
+    # Routine orientation, search, and chores.
     conceptual_question: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
     repository_question: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
     explain_code: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
@@ -43,7 +43,7 @@ run:
     data_files: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
     docs: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
     chores: {gemma-4-26b-a4b-it: 0.80, gemma-4-31b: 0.20}
-    # Mainstream coding, verification, web, and greenfield share local Gemma 26B, Muse, and Gemma 31B
+    # Mainstream coding, verification, web, and greenfield.
     bugfix: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
     small_change: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
     run_and_verify: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
@@ -59,7 +59,7 @@ run:
     prototype: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
     public_api_cli: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
     scaffold: {gemma-4-26b-a4b-it: 0.40, muse-glimmer-30b: 0.35, gemma-4-31b: 0.25}
-    # Hard multi-file, architecture, compliance, security, and auth weight Beam 1.0 501B, Muse, Gemma 31B, and Mistral Large 4
+    # Hard multi-file, architecture, compliance, security, and auth.
     refactor: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
     design_review: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}
     compliance_audit: {beam-1.0-501b: 0.30, muse-glimmer-30b: 0.30, gemma-4-31b: 0.20, mistral-large-4: 0.20}

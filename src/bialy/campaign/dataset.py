@@ -123,7 +123,7 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
              selector, strata, measure, groups_per_focus=1, selection=None, seal=seal_dataset):
     """Each student's splits from one collection. Every row is measured before any split is
     written; an oversize row is refused whole. A short focus is reported with its exact
-    deficit as data_incomplete, and nothing is written. A rehearsal's `selection` keeps only
+    deficit as data_incomplete, and no split is written. A rehearsal's `selection` keeps only
     the shortest whole rows of each partition."""
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)

@@ -6,7 +6,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-# One read transaction for a consistent status snapshot; never read error prose.
+# Read in one transaction for a consistent snapshot: statuses and codes, no error prose.
 QUERIES = {
     "failed_turns": "SELECT count(*) FROM turns WHERE status = 'failed'",
     "turns": "SELECT count(*) FROM turns WHERE status IN ('failed', 'complete')",

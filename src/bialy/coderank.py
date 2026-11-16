@@ -11,9 +11,9 @@ is a request whose answer is one unit, from two sources:
           language and register drawn from a panel, plus the one-to-three-word
           query a person would type into project search.
 
-A request that shares a word with its unit's identifier or file name is
-dropped from both sources: text matching already ranks that unit first, so the
-pair would teach the head nothing.
+A docs request that shares a word with its unit's identifier or file name is
+dropped, and a generated one is kept apart from training: text matching already
+ranks that unit first, so the pair would teach the head nothing.
 
 `decide-rerank eval --no-engine` then turns a repository's pairs into the
 candidate sets a site would rank (the dumps `train_rerank.py` reads). Dumps are

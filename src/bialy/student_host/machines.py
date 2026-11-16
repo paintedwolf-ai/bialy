@@ -25,7 +25,7 @@ CAPACITY = ('gpu_memory_gib', 'memory_gib', 'disk_gib')
 # silence because nothing on the machine can tell a slow controller from a dead one.
 LEASE_SECONDS = 300
 HEARTBEAT_SECONDS = 900
-# From first boot until the controller's first heartbeat: image start, SSH, and package setup.
+# The dead-man switch's first deadline, from boot until the controller's first heartbeat.
 STARTUP_SECONDS = 1800
 
 

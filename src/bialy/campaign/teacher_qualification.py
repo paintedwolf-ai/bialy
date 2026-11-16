@@ -2,8 +2,9 @@
 
 Every configured generator attempts each development task of each focus. An episode the
 driver could not finish is an infrastructure fault, never a semantic failure: it stops the
-stage typed instead of spending further paid episodes against a broken environment. A focus's route order ranks the teachers with a verified success by the lower
-bound of their success rate; a focus with none fails the campaign as `teachers_unqualified`.
+stage typed instead of spending further paid episodes against a broken environment. A
+focus's route order ranks the teachers with a verified success by the lower bound of
+their success rate; a focus with none fails the campaign as `teachers_unqualified`.
 The policy is written once, as `teacher-policy.json`, and never after a student result.
 """
 import json

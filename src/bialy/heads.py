@@ -182,7 +182,7 @@ def build(selector_dir, version, dataset_version, engine_commit, out_dir):
     policy, heads, record, comparison = qualified(selector_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = config.hub()
-    # The Bialy commit packaging the release; publishing tags it heads-<version> (docs/releases.md).
+    # The Bialy commit that packages the release.
     factory = factory_source()
     shipped = []
     for name, path in sorted(heads.items()):

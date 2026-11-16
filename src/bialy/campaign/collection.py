@@ -14,7 +14,8 @@ class Collection:
     """Drive each task until one attempt is admitted, recording every episode for assembly.
 
     With human review, episodes only the reviewers disagree on are exported too, so a
-    person's pass can admit them, and every exported episode is offered to the queue.
+    person's pass can admit them, and every exported episode with rows for each student
+    is offered to the queue.
     """
     def __init__(self, journal, lineage, driver, export, students, minimum, groups_per_focus, sleep=time.sleep, review=None):
         self.journal, self.lineage, self.students = journal, lineage, tuple(students)

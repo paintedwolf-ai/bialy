@@ -41,7 +41,7 @@ def copy(text, command):
             if shutil.which(tool[0]):
                 result = subprocess.run(tool, input=text, text=True)
                 return 'Copied to the clipboard.' if result.returncode == 0 else f'{tool[0]} exited {result.returncode}.'
-    # Terminals that support OSC 52 copy this into the clipboard of the machine you typed on.
+    # Terminals that support OSC 52 copy this into the clipboard of the machine the person types on.
     with open('/dev/tty', 'w') as terminal:
         terminal.write('\033]52;c;' + base64.b64encode(text.encode()).decode() + '\a')
     return 'Copied through the terminal. If nothing was copied, type a command such as: cat > item.txt'

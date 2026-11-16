@@ -3,17 +3,17 @@
 Every task runs in a workspace. For a repository, a generator model reads facts
 about it (its files, README, and recent history) and writes requests a
 developer could make there; requests that name files the repository does not
-have are dropped, unless the archetype asks for new files and each would sit in
-a directory the repository has. For a stack, the generator gets the toolchain
-and a drawn project idea and scale, and writes requests that start a project in
-an empty directory.
+have are dropped, unless the archetype asks for new files and each would sit at
+the top level or in a directory the repository has. For a stack, the generator
+gets the toolchain and a drawn project idea and scale, and writes requests that
+start a project in an empty directory.
 
 Scenarios (config/scenarios.yaml) add requests written ahead of the pass, used
 as written; each scenario's variants share a prompt group.
 
-Near-duplicates share a prompt group so a split never puts them on both sides,
-and each task is assigned the model that will drive its session, the workflow
-it starts, if any, and follow-ups.
+A generated request that near-duplicates an earlier one or a scenario variant is
+dropped, and each task is assigned the model that will drive its session, the
+workflow it starts, if any, and follow-ups.
 """
 
 import concurrent.futures
@@ -211,7 +211,7 @@ def group_prompts(prompts, threshold=0.6, bands=16, rows_per_band=4):
 
 def claim_groups(scenarios, prompts=()):
     """Group one workspace's scenario variants with `prompts`, refusing two scenarios in
-    one group. For each prompt: its group's first prompt, and the scenario claiming the
+    one group. For each prompt: its group's representative prompt, and the scenario claiming the
     group, if any."""
     written = [(s.id, v["prompt"]) for s in scenarios for v in s.variants]
     everything = [p for _, p in written] + list(prompts)
@@ -453,8 +453,8 @@ def finalize(factory, workspace, raw, files, out_path, seed, scenarios=()):
 
 
 def rebase(factory, src_dir, out_dir, skip_ids):
-    """Copy a task set for another run: drop tasks already settled, and move each task's
-    driving model to the generator at the same position in the configuration, so a
+    """Copy a task set for another run: drop tasks already settled, and map each file's
+    driving models, in sorted order, onto the configured generators in turn, so a
     change of generators keeps the balance across tasks."""
     src_dir, out_dir = Path(src_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -32,7 +32,7 @@ class Episodes:
                                     (epoch, root_session)).fetchone()
             if prior and prior[0] != digest(evidence):
                 raise CampaignFault('episode_evidence_changed')
-            # Validate every binding before publishing the episode.
+            # Every binding is checked before the episode is published.
             for session in sessions:
                 bound = self.lineage.session_task(epoch, session)
                 if bound['root'] != task['root'] or bound['partition'] != task['partition']:

@@ -10,7 +10,7 @@ encodings inherit the partition of the task they descend from.
 Allocation happens before generation and is deterministic: explicit holdouts first,
 then per-stratum minimums, then fractions, all ordered by a hash of the frozen seed and
 the component's members. The assignment is written once with the hashes of the graph
-and of itself, and every reader refuses one that does not match them.
+and of itself, and every reader refuses one that does not match its own hash.
 """
 
 import hashlib
@@ -95,8 +95,8 @@ def position(seed, cid):
 
 
 def check_sources(graph, members):
-    """A component is admissible only when it has a declared source and every declared
-    source in it is admissible; a forbidden ancestor taints every descendant."""
+    """A component is admissible only when a member declares a source; each declared
+    source was checked when its node was added."""
     classes = {graph.nodes[m]["source_class"] for m in members} - {None}
     if not classes:
         raise CampaignFault("ancestry_source_undeclared", details={"nodes": list(members[:5])})

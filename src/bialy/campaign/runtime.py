@@ -1,4 +1,4 @@
-"""`bialy campaign plan|run|resume|status|report`: one handler graph for every profile.
+"""`bialy campaign plan|run|resume|status|report|decide|record`: one handler graph for every profile.
 
 `plan` is offline: it freezes the configuration, the profile, the source commits, the
 rosters, the scenario bank and its split, the fallback rate and the evaluation policy into

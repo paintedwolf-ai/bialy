@@ -4,9 +4,9 @@ Each shard is one container: one workspace (a fresh checkout of a pinned
 repository, or an empty directory for a greenfield stack), one sidecar, and a
 handful of tasks driven one after another. Containers sit on a private
 bridge whose only routes are the factory's model servers on the bridge
-gateway and the public web on ports 80 and 443; private ranges and the cloud
-metadata service are dropped. Every container this factory starts is written
-to the run's ledger first, and cleanup touches only ledger entries.
+gateway, DNS, and the public web on ports 80 and 443; private ranges and the
+cloud metadata service are dropped. Every runner container is written to the
+run's ledger before it starts, and cleanup touches only ledger entries.
 """
 
 import json
@@ -45,7 +45,7 @@ def stage_config_overlay(config_dir, engine_dir, deadline_ms=None, context_windo
     """Stage `config_dir`, the lycaon/config tree of the commit the binaries were built
     from, with the run's runtime settings.
 
-    deadline_ms raises every turn decision's deadline: a runner's CPU answers a turn in
+    deadline_ms sets the deadline of every decision section: a runner's CPU answers a turn in
     seconds, and past the deadline the engine abstains. The deadline decides only whether
     an answer arrives, never what it is, so an engine-on pass raises it.
 
@@ -204,7 +204,7 @@ def ensure_network(factory):
     rules += [["-p", "tcp", "-m", "multiport", "--dports", "80,443", "-j", "RETURN"], ["-j", "DROP"]]
     for rule in rules:
         sh("iptables", "-A", EGRESS_CHAIN, *rule)
-    # The host itself answers only the model servers on the bridge.
+    # The host itself answers only the model servers and DNS on the bridge.
     for rule in (["-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
                  ["-p", "tcp", "-m", "multiport", "--dports", ports, "-j", "ACCEPT"],
                  ["-p", "udp", "--dport", "53", "-j", "ACCEPT"], ["-j", "DROP"]):
@@ -224,13 +224,14 @@ def student_surfaces(factory):
 
 
 def sidecar_files(factory, decide_env, lane):
-    """providers.local.yaml, model-policy.yaml, and sidecar.env for a shard. `lane` picks
+    """providers.local.yaml, model-policy.yaml, and sidecar.env for a shard, then each
+    generator's provider id and the model name its provider knows it by. `lane` picks
     which server of each model the shard's sessions use, so shards spread over replicas."""
     providers = ["providers:"]
     chosen, wire_model = {}, {}
     for m in factory.generators():
         if m.hosted:
-            # A hosted generator: the sidecar reads the key from the container's environment.
+            # A hosted generator: its provider entry names the key's environment variable.
             chosen[m.id] = factory.provider_id(m)
             wire_model[m.id] = m.hosted["model"]
             entry = "{id: %s, reasoning_effort: %s}" % (m.hosted["model"], m.reasoning_effort) if m.reasoning_effort else "{id: %s}" % m.hosted["model"]
@@ -625,7 +626,7 @@ def snapshot_and_export(name, shard, attempt, output, roots=None):
 
 
 def stop_shard(name, child, shard, work, output):
-    """Preserve this owned container's evidence before stopping it."""
+    """Stop this owned container after preserving its evidence, then release its work directory."""
     if child.poll() is None:
         snapshot_and_export(name, shard, "aborted", output)
         sh("docker", "stop", "--time", "10", name, check=False)
@@ -739,8 +740,8 @@ def run(factory, run_dir, runners=None, extra_mounts=(), image=None):
                         reason = "health_store_unavailable"
                         fault = dict(code=reason, shard=shard.name, report=report)
                     (run_dir / "fault.json").write_text(json.dumps(fault, indent=2) + "\n")
-                    # Only containers owned by this run's ledger are stopped. Preserve
-                    # their live stores and exports before releasing their workspaces.
+                    # Only this run's ledger containers are stopped, each after its live
+                    # store and exports are preserved.
                     for other, (child, current, current_work, _) in active.items():
                         stop_shard(other, child, current, current_work, "aborted-rows.part")
                         ledger.append(event="health_abort", container=other, shard=current.name, code=reason)

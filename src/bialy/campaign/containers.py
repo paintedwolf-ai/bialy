@@ -14,7 +14,7 @@ class Container:
     def inspect(self, name):
         result = self.run(['docker', 'container', 'inspect', name], capture_output=True, text=True)
         if result.returncode:
-            # A daemon outage must not be interpreted as a missing container.
+            # A daemon outage is not a missing container.
             self.run(['docker', 'info', '--format', '{{.ID}}'], check=True, capture_output=True, text=True)
             listed = self.run(['docker', 'container', 'ls', '-a', '--format', '{{.Names}}'], check=True, capture_output=True, text=True)
             if name in listed.stdout.splitlines():

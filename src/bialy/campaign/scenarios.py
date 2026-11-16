@@ -22,7 +22,7 @@ SUPPORT = Path(__file__).resolve().with_name('grader_support.py')
 GROUP_KEYS = {'id', 'workspace', 'prompt', 'fixtures', 'grader', 'verification', 'solution', 'superficial',
               'tampered', 'follow_ups', 'diagnostic', 'variants', 'source_class'}
 REQUIRED = {'id', 'workspace', 'prompt', 'grader', 'solution', 'variants'}
-# Expectations a group may register; BF06 admits the expected failing turn only with the witness check.
+# Expectations a group may register; an expected failing turn is admitted only with the witness check.
 DIAGNOSTICS = {'reproduced_failure'}
 DIAGNOSTIC_PROGRAM = '''import sys
 from pathlib import Path
