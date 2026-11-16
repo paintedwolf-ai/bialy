@@ -228,8 +228,7 @@ def scaled_factory(run):
 CHECKOUT_FILES = ("lycaon/cmd/lycaon", "lycaon/cmd/lycaon-debug", "lycaon/cmd/decide-rerank", "lycaon/cmd/opengrep-artifact",
                   "lycaon/internal/decide/native/Cargo.toml", "lycaon/config/gitengine/pin.yaml", "rust-toolchain.toml", "schemas",
                   "scripts/decide-features.sh", "scripts/build-decide.sh", "scripts/bialy/row.schema.json",
-                  "scripts/bialy/retention-row.schema.json", "lycaon/config/" + build.RELEASE,
-                  *("scripts/bialy/" + script for script in host_scripts.FLAGS))
+                  "scripts/bialy/retention-row.schema.json", "lycaon/config/" + build.RELEASE)
 
 
 def stage_check(run):

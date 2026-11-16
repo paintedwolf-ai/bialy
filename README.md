@@ -169,8 +169,8 @@ Each writes under `<root>/runs/<name>/` and its status to `run.json` there; a fa
   headless browser, Opengrep) from the checkout; `engine` builds the decision
   engine for this host with the checkout's own `scripts/build-decide.sh` (MLX
   on Apple silicon, Vulkan on Linux) and a CPU engine for the runners. `check`
-  refuses a checkout whose `scripts/bialy/factory-contract.json` no longer
-  accepts a flag the factory passes its scripts. The checkout pins Opengrep releases per
+  refuses a checkout whose `scripts/bialy/` argument parsers no longer declare
+  a flag the factory passes them. The checkout pins Opengrep releases per
   platform, including linux/amd64, and stages the pinned one at
   `bundled/opengrep-<version>/`, where the sidecar finds it under
   `LYCAON_ENGINE_ROOT`. `run.scanner: candidate` with `run.scanner_candidate`

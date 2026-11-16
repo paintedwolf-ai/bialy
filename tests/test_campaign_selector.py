@@ -277,7 +277,8 @@ def test_the_parity_probe_runs_the_hosts_script_in_the_trainers_environment(fact
 def test_every_host_script_is_called_with_flags_the_host_accepts(factory, tmp_path, monkeypatch):
     from bialy import training
     monkeypatch.setattr(training, 'venv_python', lambda root, settings: '/venv/python')
-    recorded = json.loads((Path(__file__).parent / 'fixtures' / 'factory-contract.json').read_text())['scripts']
+    checkout = Path(__file__).parent / 'fixtures' / 'host-checkout'
+    recorded = {script: host_scripts.declared(checkout, script) for script in host_scripts.FLAGS}
     answers = {'calibrate.py': 'turn:\n  tools:\n    load_at: 0.55\n', 'preload.py': json.dumps(PRELOAD), 'parity_probe.py': '', 'replay_eval.py': ''}
 
     def answer(args):
