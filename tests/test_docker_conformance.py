@@ -63,7 +63,7 @@ def test_docker_and_an_ordinary_host_produce_the_same_contract_and_prompt_surfac
 def test_the_ordinary_host_reads_each_mount_target_as_its_source():
     command = host_bundle.Local('lycaon-debug').command(
         [('/data/shard', '/capture', 'ro'), ('/data/out', '/out', 'rw')],
-        ['training-bundle', '--capture', '/capture', '--captures', '/capture/training-captures', '--out', '/out/bundle',
+        ['eval', 'training-bundle', '--capture', '/capture', '--captures', '/capture/training-captures', '--out', '/out/bundle',
          '--session', 'root'])
     assert command == ['lycaon-debug', 'eval', 'training-bundle', '--capture', str(Path('/data/shard').resolve()),
                        '--captures', str(Path('/data/shard').resolve()) + '/training-captures',

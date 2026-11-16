@@ -20,7 +20,7 @@ class ProbeFailure(RuntimeError):
 
 
 def api(path, body=None):
-    token = Path("/cfg/api.token").read_text().strip()
+    token = Path("/cfg/bialy.token").read_text().strip()
     request = Request("http://127.0.0.1:8850" + path, data=json.dumps(body).encode() if body is not None else None,
                       headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
     with urlopen(request, timeout=120) as response:

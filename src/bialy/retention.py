@@ -47,19 +47,40 @@ def select(reports):
     return (best[0], best[1][0]) if best else (None, None)
 
 
+class ComparisonRefused(Exception):
+    """The request rows of two passes cannot support a comparison; `code` says why."""
+
+    def __init__(self, code, **details):
+        super().__init__(code)
+        self.code, self.details = code, details
+
+    def record(self):
+        return {"refused": self.code, **self.details}
+
+
 def compare(off_rows, on_rows):
-    """Compare matched complete requests and report unmatched coverage."""
+    """Compare the complete requests both passes drove.
+
+    The comparison attributes a change in usage to the retention head's releases, so
+    every matched engine-on request must carry the host's record of that decision. A
+    pass without request rows, passes that share no request, or an engine-on request
+    whose retention decision the host did not record raises ComparisonRefused."""
     def key(r):
         return ((r.get("meta") or {}).get("task_id"), r["host"], r.get("surface"), r.get("request_index"))
+    if not off_rows or not on_rows:
+        raise ComparisonRefused("request_rows_missing", off=len(off_rows), on=len(on_rows))
     off = {key(r): r for r in off_rows if not r["partial"]}
     on = {key(r): r for r in on_rows if not r["partial"]}
     shared = sorted(set(off) & set(on), key=str)
+    if not shared:
+        raise ComparisonRefused("no_matched_requests", off=len(off), on=len(on))
+    unrecorded = sum(1 for k in shared if on[k]["retention"]["recorded"] is not True)
+    if unrecorded:
+        raise ComparisonRefused("retention_not_recorded", requests=len(shared), unrecorded=unrecorded)
     out = {"requests": len(shared), "off_only": len(set(off) - set(on)), "on_only": len(set(on) - set(off)), "measures": {}}
     out["partial_requests"] = sum(r["partial"] for r in off_rows + on_rows)
     out["verified_usage_requests"] = sum(off[k].get("usage_available") is True and on[k].get("usage_available") is True for k in shared)
     out["verified_outcome_requests"] = sum((off[k].get("meta") or {}).get("outcome_verified") is True and (on[k].get("meta") or {}).get("outcome_verified") is True for k in shared)
-    if not shared:
-        return out
     for measure, direction in BEHAVIOUR:
         a = [off[k][measure] for k in shared]
         b = [on[k][measure] for k in shared]

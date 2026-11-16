@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, faults, llm, preservation, runner_security
+from . import config, faults, host_contract, llm, preservation, runner_security
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -35,9 +35,8 @@ def sh(*args, check=True, **kw):
 
 
 DECISION_SECTIONS = ("turn", "request", "lookup", "tool_event")
-# The sidecar embeds its configuration; LYCAON_CONFIG_ROOT (set in the image to the
-# engine's overlay/) replaces the whole embedded tree with the config/ under it, so the
-# overlay carries the complete tree of the commit the binaries were built from.
+# The sidecar reads the config/ under LYCAON_CONFIG_ROOT (set in the image to the
+# engine's overlay/) file by file over the tree it embeds.
 DECISIONS = Path("overlay/config/packs/painted-wolf/platform/host/decisions.yaml")
 COMPACTION = Path("overlay/config/packs/painted-wolf/platform/host/compaction.yaml")
 
@@ -107,7 +106,8 @@ PILOT_MOUNT = "/opt/decide"
 def pilot_env(pilot):
     """The sidecar's decision engine for a pass: off, or the engine and heads in `pilot`
     (bialy, model/, heads/*.safetensors), mounted read-only at PILOT_MOUNT. A pilot that
-    carries overlay/config, a selector policy's thresholds among it, is the host's config.
+    carries overlay/config, a selector policy's thresholds among it, is the sidecar's
+    configuration overlay in place of the image's.
 
     Runners have only a CPU, so the engine is pinned to it. Picking a device itself, the
     engine refuses one slower than the product's reference speed, which a shared two-core
@@ -511,14 +511,19 @@ def shard_deadline(factory, shard, started):
     return started + 60 * (OVERDUE_FACTOR * prompts * shard_minutes(factory, shard) + OVERDUE_GRACE_MINUTES)
 
 
-# The rows a shard exports beside its training rows: the retention rows and the
-# request rows, each by its own flag and its own file.
-SIDE_ROWS = (("retention", "--retention"), ("requests", "--requests"))
+# The schema of every row in each file a shard exports: its decision rows, and beside them,
+# each named by its export flag, the retention rows (the observations each request could
+# have released, labelled by what the session then used) and the request rows (each
+# request's calls and provider-reported usage).
+ROW_SCHEMAS = {"rows": "pw-decide-row/2", "retention": "pw-retention-row/1", "requests": "pw-request-row/1"}
+SIDE_ROWS = ("retention", "requests")
 
 
-def retention_file(rows_path):
-    """The retention rows exported beside a rows file."""
-    return side_file(rows_path, "retention")
+def export_arguments(db, out, side, roots=None):
+    """`lycaon-debug decide export` from `db` into `out`, with each kind of side row in the
+    file `side` names for it."""
+    return host_contract.arguments("lycaon-debug", "decide export", db=db, out=out, roots=roots,
+                                   **{kind: side(kind) for kind in SIDE_ROWS})
 
 
 def side_file(rows_path, kind):
@@ -530,13 +535,11 @@ def export_live(container, shard, out_name, roots=None, db=preservation.CONTAINE
     request rows beside them (`<out_name>.retention`, `<out_name>.requests`): the
     sessions rooted at `roots`, or every session the store holds. `db` is the live store
     or a snapshot already in the shard. Returns whether it succeeded."""
-    args = ["docker", "exec", container, "/opt/bialy/bin/lycaon-debug", "decide", "export", "--db", db, "--out", "/shard/" + out_name]
-    for kind, flag in SIDE_ROWS:
-        args += [flag, "/shard/%s.%s" % (out_name, kind)]
     if roots is not None:
         (shard / (out_name + ".roots")).write_text("".join(r + "\n" for r in roots), encoding="utf-8")
-        args += ["--roots", "/shard/%s.roots" % out_name]
-    result = sh(*args, check=False)
+    exported = export_arguments(db, "/shard/" + out_name, lambda kind: "/shard/%s.%s" % (out_name, kind),
+                                "/shard/%s.roots" % out_name if roots is not None else None)
+    result = sh("docker", "exec", container, host_contract.BINARIES + "lycaon-debug", *exported, check=False)
     if result.returncode != 0:
         print("%s: export failed: %s" % (shard.name, result.stderr.strip()[:200]), flush=True)
     return result.returncode == 0
@@ -552,7 +555,7 @@ def keep_overdue(shard, exported):
     manifest = shard / "manifest.jsonl"
     entries = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()] if manifest.exists() else []
     rows = [line for line in exported.read_text(encoding="utf-8").splitlines() if line.strip()] if exported.exists() else []
-    side = {kind: side_file(exported, kind) for kind, _ in SIDE_ROWS}
+    side = {kind: side_file(exported, kind) for kind in SIDE_ROWS}
     side_rows = {kind: [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] if path.exists() else []
                  for kind, path in side.items()}
     listed = {e["root_session"] for e in entries}
@@ -637,7 +640,7 @@ def keep_completed(shard):
     try:
         preservation.adopt(shard, "completed")
     except preservation.PreservationFault as fault:
-        for name in ("rows", *(kind for kind, _ in SIDE_ROWS)):
+        for name in ("rows", *SIDE_ROWS):
             path = shard / ("%s.jsonl" % name)
             if path.exists():
                 os.replace(path, shard / ("unpreserved-%s.jsonl" % name))
@@ -828,7 +831,7 @@ def salvage(run_dir, into):
         dest.mkdir(parents=True, exist_ok=True)
         preservation.copy_verified(shard, dest)
         shutil.copy2(manifest, dest / "manifest.jsonl")
-        for kind, _ in SIDE_ROWS:
+        for kind in SIDE_ROWS:
             if side_file(shard / "salvage-rows.jsonl", kind).exists():
                 shutil.copy2(side_file(shard / "salvage-rows.jsonl", kind), dest / ("%s.jsonl" % kind))
         shutil.copy2(shard / "salvage-rows.jsonl", dest / "rows.part")
@@ -861,13 +864,11 @@ def reexport(run_dir, lycaon_debug):
         preservation.check(shard)
         roots = [json.loads(line)["root_session"] for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
         (shard / "roots.txt").write_text("".join(r + "\n" for r in roots if r), encoding="utf-8")
-        args = [str(lycaon_debug), "decide", "export", "--db", str(store), "--roots", str(shard / "roots.txt"), "--out", str(shard / "rows.part")]
-        for kind, flag in SIDE_ROWS:
-            args += [flag, str(shard / ("%s.part" % kind))]
-        result = subprocess.run(args, capture_output=True, text=True)
+        exported = export_arguments(store, shard / "rows.part", lambda kind, shard=shard: shard / ("%s.part" % kind), shard / "roots.txt")
+        result = subprocess.run([str(lycaon_debug), *exported], capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError("%s: export failed: %s" % (shard.name, result.stderr.strip()[-400:]))
-        for name in ("rows", *(kind for kind, _ in SIDE_ROWS)):
+        for name in ("rows", *SIDE_ROWS):
             os.replace(shard / ("%s.part" % name), shard / ("%s.jsonl" % name))
         done.append(shard.name)
     return done
@@ -876,10 +877,8 @@ def reexport(run_dir, lycaon_debug):
 def collect(run_dir, pass_name, tasks_dir):
     """Every shard's rows, each carrying its task's metadata, and tasks-driven.jsonl: the
     full specification of every task the run drove, with its outcome, so a release can
-    say exactly which tasks it contains however the run ended. A shard's side rows, the
-    retention rows (retention.jsonl, pw-retention-row/1) and the request rows
-    (requests.jsonl, pw-request-row/1), are collected the same way into
-    run_dir/<kind>.jsonl; a shard driven before the host wrote them contributes none."""
+    say exactly which tasks it contains however the run ended. A shard's side rows
+    (SIDE_ROWS) are collected the same way into run_dir/<kind>.jsonl."""
     run_dir = Path(run_dir)
     specs = {}
     for path in Path(tasks_dir).glob("*.jsonl"):
@@ -890,7 +889,7 @@ def collect(run_dir, pass_name, tasks_dir):
     out = run_dir / "rows.jsonl"
     stats = {"rows": 0, "retention_rows": 0, "request_rows": 0, "shards": 0, "unpreserved": 0, "tasks": 0, "settled": 0}
     driven = []
-    side_out = {kind: open(run_dir / ("%s.jsonl" % kind), "w", encoding="utf-8") for kind, _ in SIDE_ROWS}
+    side_out = {kind: open(run_dir / ("%s.jsonl" % kind), "w", encoding="utf-8") for kind in SIDE_ROWS}
     with open(out, "w", encoding="utf-8") as fh:
         for shard in sorted((run_dir / "shards").iterdir()):
             rows = shard / "rows.jsonl"
@@ -916,11 +915,10 @@ def collect(run_dir, pass_name, tasks_dir):
                     model_of[entry["root_session"]] = specs[entry["task_id"]]["model"]
                 driven.append(dict(specs[entry["task_id"]], outcome={"status": entry["status"], "run": run_dir.name, "shard": shard.name,
                                                                     "pass_name": pass_name, "root_session": entry["root_session"]}))
-            stats["rows"] += join_rows(shard, rows, meta, model_of, fh)
-            for kind, _ in SIDE_ROWS:
-                path = shard / ("%s.jsonl" % kind)
-                if path.exists():
-                    stats[{"retention": "retention_rows", "requests": "request_rows"}[kind]] += join_rows(shard, path, meta, model_of, side_out[kind])
+            stats["rows"] += join_rows(shard, "rows", meta, model_of, fh)
+            for kind in SIDE_ROWS:
+                if (shard / ("%s.jsonl" % kind)).exists():
+                    stats[{"retention": "retention_rows", "requests": "request_rows"}[kind]] += join_rows(shard, kind, meta, model_of, side_out[kind])
     for handle in side_out.values():
         handle.close()
     with open(run_dir / "tasks-driven.jsonl", "w", encoding="utf-8") as fh:
@@ -929,21 +927,22 @@ def collect(run_dir, pass_name, tasks_dir):
     return out, stats
 
 
-def join_rows(shard, path, meta, model_of, out):
-    """Write one shard's rows with their task's metadata and factory model id; returns how many."""
+def join_rows(shard, kind, meta, model_of, out):
+    """Write one shard's rows of one kind with their task's metadata; returns how many. A
+    row of another schema than its file's stops the collection. A decision or retention
+    row takes its task's factory model id as `model`; a request row keeps the model the
+    host served the request with and carries the factory id as `generator_model`."""
     count = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in (shard / ("%s.jsonl" % kind)).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
+        if row.get("schema") != ROW_SCHEMAS[kind]:
+            raise ValueError("%s: %s.jsonl holds a %s row, not %s" % (shard.name, kind, row.get("schema"), ROW_SCHEMAS[kind]))
         if row["root_session"] not in meta:
             raise ValueError("%s: rows from session %s, which the manifest does not list" % (shard.name, row["root_session"]))
         row["meta"] = meta[row["root_session"]]
-        if row.get("schema") == "pw-decide-request/1":
-            row["generator_model"] = model_of[row["root_session"]]
-        else:
-            row["model"] = model_of[row["root_session"]]
+        row["generator_model" if kind == "requests" else "model"] = model_of[row["root_session"]]
         out.write(json.dumps(row, ensure_ascii=False) + "\n")
         count += 1
     return count
-
