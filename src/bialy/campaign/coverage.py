@@ -57,13 +57,19 @@ def ledger(entries, exclusions, faults):
     return out
 
 
-def deficits(entries, minimum, focuses):
-    """Per partition, how many independent episodes and which focuses a student is short of."""
+def group(entry):
+    return json.loads(entry['task']['spec']).get('group', entry['task']['root'])
+
+
+def deficits(entries, minimum, focuses, groups_per_focus):
+    """Per partition, how many independent episodes a student is short of, and the focuses
+    with fewer than `groups_per_focus` scenario groups."""
     out = {}
     for partition in PARTITIONS:
         rows = [entry for entry in entries if entry['partition'] == partition]
         short = minimum[partition] - len({entry['task']['root'] for entry in rows})
-        missing = sorted(set(focuses) - {entry['task']['focus'] for entry in rows})
+        missing = sorted(focus for focus in focuses
+                         if len({group(entry) for entry in rows if entry['task']['focus'] == focus}) < groups_per_focus)
         if short > 0 or missing:
             out[partition] = {'episodes_short': max(0, short), 'focuses_missing': missing}
     return out

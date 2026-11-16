@@ -30,6 +30,10 @@
             [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
   bialy run-status --run NAME
   bialy review [--run DIR] [open|status|show ITEM|skip ITEM|finish QUEUE|wait]
+  bialy campaign plan --config FILE --out NEW_DIR
+  bialy campaign run --plan DIR
+  bialy campaign resume --run DIR [--host-commit SHA --host-image TAG]
+  bialy campaign status|report --run DIR
 
 Runs live under <root>/runs/<name>; the root and everything else come from config/.
 """
@@ -45,6 +49,20 @@ from . import audit, coderank, config, fleet, heads, hub, judge, provenance, rel
 from . import run as runmod
 from .campaign import ancestry
 from .review import cli as review_cli
+
+
+def campaign_command(ap, args):
+    from .campaign import runtime
+    from .campaign.journal import CampaignFault
+    needed = {"plan": ("config", "out"), "run": ("plan",), "resume": ("run",), "status": ("run",), "report": ("run",)}[args.action]
+    missing = [name for name in needed if getattr(args, name) is None]
+    if missing:
+        ap.error("campaign %s needs %s" % (args.action, ", ".join("--" + name for name in missing)))
+    try:
+        return runtime.main(args)
+    except CampaignFault as exc:
+        print(json.dumps(exc.record(), indent=2), file=sys.stderr)
+        return 1
 
 
 def main(argv=None):
@@ -160,6 +178,14 @@ def main(argv=None):
     p.add_argument("--model", help="the pinned judge the endpoint serves, as rows name it")
     p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
     sub.add_parser("check", help="validate the configuration and pins, offline")
+    p = sub.add_parser("campaign", help="plan and drive a training campaign; plan is offline")
+    p.add_argument("action", choices=("plan", "run", "resume", "status", "report"))
+    p.add_argument("--config", type=Path, help="plan: the campaign configuration")
+    p.add_argument("--out", type=Path, help="plan: a new plan directory")
+    p.add_argument("--plan", type=Path, help="run: the plan directory")
+    p.add_argument("--run", type=Path, help="resume, status, report: the run directory under the plan")
+    p.add_argument("--host-commit", help="resume: the adopted host commit at the selector boundary")
+    p.add_argument("--host-image", help="resume: the runner image built from the adopted commit")
     p = sub.add_parser("run", help="drive a whole pass on this machine, resumable; uploads only with --push")
     p.add_argument("--run", required=True)
     p.add_argument("--until", choices=runmod.STAGES, help="stop after this stage")
@@ -188,6 +214,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd == "review":
         return review_cli.run(args)
+    if args.cmd == "campaign":
+        return campaign_command(ap, args)
     factory = config.load()
     runs = factory.root / "runs"
 

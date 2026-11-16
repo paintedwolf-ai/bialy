@@ -68,14 +68,48 @@ The directory must be new. It retains the pinned inputs, the exported contract
 and a terminal result. A failed check exits nonzero without starting
 collection or training. Use a new directory after changing the source.
 
-The mechanical pilot is `python -m bialy.campaign.pilot --configuration FILE`.
-Its JSON configuration pins the host checkout and commit, runner image, student
-models, llama.cpp revision, serving image, reviewer slots, and storage locations.
-The runner image must carry its source commit in the `pw.host_commit` label, and
-the training contract it exports must name the same commit; the contract's digest
-is part of the immutable run input.
+A campaign is planned, then driven:
 
-The pilot takes its tasks from the scenario bank in `config/campaign/scenarios.yaml`:
+```bash
+bialy campaign plan --config campaign.yaml --out /path/to/new-plan   # offline
+bialy campaign run --plan /path/to/new-plan
+bialy campaign status --run /path/to/new-plan/run
+bialy campaign report --run /path/to/new-plan/run
+```
+
+The configuration names a profile from `config/campaign.yaml` and pins the host
+checkout and commit, runner image, student list, teachers, reviewer slots,
+llama.cpp revision, serving image and storage locations. `plan` makes no network
+call. It writes a new, read-only plan directory that freezes the configuration,
+the profile, the source commits, the scenario bank and its split, the fallback
+rate and the evaluation policy. The runner image must carry its source commit in
+the `pw.host_commit` label, and the training contract it exports must name the
+same commit.
+
+Every profile runs the same stages; a profile sets which segments run and their
+workload:
+
+| Profile | Segments | Workload |
+|---|---|---|
+| `dry-run` | student | `e4b` by default; two training rows, one validation and one held-out, each at most 10,240 tokens; two updates with a pause and resume; one unjudged evaluation; stamped `dry_run` |
+| `pilot` | student | 32 training and 16 validation episodes, at least two groups per focus; a supplied `P0` (`selector_policy`) or the engine disabled, stamped as fallback |
+| `full` | selector, student | the head-row pass, `P0`, the adoption boundary, then student collection, training, export and paired evaluation on the adopted commit |
+
+The full profile stops after `P0` in the state `awaiting_host_adoption`. Once
+the host has adopted `P0`'s heads and thresholds, check out the adopted commit,
+build its runner image, and resume:
+
+```bash
+bialy campaign resume --run /path/to/plan/run --host-commit FULL_COMMIT --host-image RUNNER_IMAGE
+```
+
+A commit whose decision release or thresholds differ from `P0` is refused, and
+the run keeps waiting with the differences listed. A run that ended in
+`selector_unqualified` has no boundary to resume from. No training machine is
+requested before every student's rows are measured, and running out of memory
+ends that student's training as a terminal failure that is never retried.
+
+A campaign takes its tasks from the scenario bank in `config/campaign/scenarios.yaml`:
 eight behavior focuses, each a set of groups whose variants differ only in
 parameters. Ancestry allocation gives every focus one group in each of training,
 validation, development and held-out evaluation, and a group's variants never
@@ -168,9 +202,9 @@ a training machine is rented. When a queue is unfinished, the controller writes
 `waiting.json` with the review and resume commands and exits with status 3:
 
 ```bash
-python -m bialy.campaign.pilot --configuration pilot.json   # exits 3 at a review
-bialy review --run /path/to/campaign                        # label, skip, finish
-python -m bialy.campaign.pilot --configuration pilot.json   # continues from the journal
+bialy campaign run --plan /path/to/plan            # exits 3 at a review
+bialy review --run /path/to/plan/run               # label, skip, finish
+bialy campaign resume --run /path/to/plan/run      # continues from the journal
 ```
 
 On a terminal, `bialy review` opens the interactive reviewer; piped, it prints
@@ -191,24 +225,6 @@ labelling writes a `revealed/` marker that the decision records. A finished
 queue is final, and the stages that use it freeze its decisions into their
 inputs. `bialy review status` exits 3 while the campaign waits on a review;
 `bialy review wait` returns once it does not.
-
-The 3090 dry run reuses a qualified collection and baseline from an existing
-pilot. It selects two complete training rows, one validation row, and one held-out
-row, each at most 10,240 tokens. It preserves the declared context policy and
-records selection and exclusions. The job pauses after its first optimizer
-update, mirrors its checkpoint, resumes, exports the adapter, and drives one
-application task with thinking off. Its artifacts are marked as dry-run outputs;
-completion qualifies automation mechanics only.
-
-```bash
-python -m bialy.campaign.dry_run --source-run /path/to/completed-collection-run \
-  --directory /path/to/new-dry-run
-```
-
-The source collection, baseline export, and baseline evaluation must have passed.
-A later failed training stage does not invalidate those immutable receipts. The
-dry run has a separate journal and training permit, retains source lineage and
-review evidence, and leaves the source run's terminal result intact.
 
 Before driving, `preflight` checks the engine-off image and `preflight_on` checks
 its engine-on peer. Engine-on probes require the host's decision-engine readiness

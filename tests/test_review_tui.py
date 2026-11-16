@@ -14,7 +14,7 @@ def queued(campaign, name, kind='split', rows=7):
     exports = {'e4b': {'manifest': 'm', 'manifest_sha256': '', 'rows': rows}}
     episode = {'stage': name, 'episode_sha256': 'episode-' + name, 'repetition': 0, 'exports': exports}
     reviews = ('pass', 'fail') if kind == 'split' else ('pass', 'pass')
-    return CollectionGate(campaign.review, 'collection_pilot', 'command').offer_episode(episode, campaign.trial(name, reviews=reviews), task, 'train')
+    return CollectionGate(campaign.review, 'collection', 'command').offer_episode(episode, campaign.trial(name, reviews=reviews), task, 'train')
 
 
 def reviewer(campaign, copies=None):
@@ -51,14 +51,14 @@ def test_the_welcome_appears_once_per_campaign(review_campaign):
 def test_queues_and_items_are_listed_in_review_order(review_campaign):
     queued(review_campaign, 'spot', 'spot_check', rows=30)
     split = queued(review_campaign, 'split', rows=3)
-    (review_campaign.journal.directory / 'waiting.json').write_text(json.dumps({'queue': 'collection_pilot', 'resume': 'resume-command'}))
+    (review_campaign.journal.directory / 'waiting.json').write_text(json.dumps({'queue': 'collection', 'resume': 'resume-command'}))
     model = press(reviewer(review_campaign), 'enter')
     text = screen(model)
     assert 'Review' in text and 'Pick a queue.' in text
-    assert '▸ Collection (pilot)' in text and '2 left · 0 labelled · 0 skipped   The campaign is waiting on you' in text
+    assert '▸ Collection' in text and '2 left · 0 labelled · 0 skipped   The campaign is waiting on you' in text
     press(model, 'up', 'k', 'down', 'j', 'enter')
     text = screen(model)
-    assert 'Review › Collection (pilot)' in text and 'Should the students learn from these sessions?' in text
+    assert 'Review › Collection' in text and 'Should the students learn from these sessions?' in text
     rows = [line for line in text.splitlines() if 'build_test_repair' in line]
     assert rows[0].startswith(f'▸ {split}') and 'disagreement' in rows[0] and 'spot-check' in rows[1]
     press(model, '/', 'x', 'y', 'z', 'enter')
@@ -77,7 +77,7 @@ def test_an_item_shows_its_instruction_transcript_and_navigation(review_campaign
     copies = []
     model = press(reviewer(review_campaign, copies), 'enter', 'enter', 'enter')
     text = screen(model, height=60)
-    assert f'Review › Collection (pilot) › #{first} · disagreement · build_test_repair · 7 rows' in text
+    assert f'Review › Collection › #{first} · disagreement · build_test_repair · 7 rows' in text
     assert 'One reviewer failed this. Pass recovers 7 training rows' in text and '[r1] success' in text
     assert 'v verdict   x skip' in text and 'Tab other side' not in text
     screen(model, height=12)
@@ -116,7 +116,7 @@ def test_a_verdict_needs_every_check_and_a_citation_then_saves(review_campaign):
     assert 'Model reviewers' in screen(model, height=80) and 'judge-1: fail on' in screen(model, height=80)
     press(model, 'v')
     text = screen(model)
-    assert 'Review › Collection (pilot) › #%d · disagreement' % item in text and '› Verdict' in text
+    assert 'Review › Collection › #%d · disagreement' % item in text and '› Verdict' in text
     assert 'Set each check, cite a receipt, then press Enter.' in text and 'Result: set every check' in text
     press(model, 'enter')
     assert 'Set this check to pass or fail.' in screen(model)
@@ -150,7 +150,7 @@ def test_skip_and_finish_confirm_then_are_final(review_campaign):
     press(model, 'x', 'y')
     assert review_campaign.review.item(item)['state'] == 'skipped' and 'Skipped' in screen(model)
     press(model, 'esc', 'F')
-    assert 'Finish the Collection (pilot) queue? 0 items left will be decided automatically.' in screen(model)
+    assert 'Finish the Collection queue? 0 items left will be decided automatically.' in screen(model)
     press(model, 'y')
     assert 'The campaign was not waiting on this queue.' in screen(model)
     press(model, 'F')
@@ -163,7 +163,7 @@ def test_skip_and_finish_confirm_then_are_final(review_campaign):
 
 def test_finishing_a_waited_queue_shows_how_to_resume(review_campaign):
     queued(review_campaign, 'a')
-    (review_campaign.journal.directory / 'waiting.json').write_text(json.dumps({'queue': 'collection_pilot', 'resume': 'resume-command'}))
+    (review_campaign.journal.directory / 'waiting.json').write_text(json.dumps({'queue': 'collection', 'resume': 'resume-command'}))
     model = press(reviewer(review_campaign), 'enter', 'enter', 'F', 'y')
     assert 'Finished. Resume the campaign with: resume-command' in screen(model)
     assert 'Finished' in screen(press(model, 'esc'))
@@ -196,7 +196,7 @@ def test_pairs_switch_sides_with_tab(review_campaign):
 def test_plain_words_for_outcomes():
     item = {'queue': 'evaluation', 'kind': 'split', 'summary': {}}
     assert outcome(item, False) == 'counts as a failure' and automatic(item) == "keeps the reviewers' grade"
-    spot = {'queue': 'collection_pilot', 'kind': 'spot_check', 'summary': {'rows': 4}}
+    spot = {'queue': 'collection', 'kind': 'spot_check', 'summary': {'rows': 4}}
     assert outcome(spot, False) == 'removes 4 training rows' and outcome(spot, True) == 'stays in training'
     assert automatic({**spot, 'kind': 'split'}) == 'stays out of training'
     assert sorted(['r10', 'tests', 'r2'], key=order) == ['tests', 'r2', 'r10']
@@ -248,7 +248,7 @@ def test_the_terminal_draws_until_the_person_quits(review_campaign, monkeypatch)
     fake = Screen(['\n', None, terminal.curses.KEY_DOWN, 'q'])
     model = reviewer(review_campaign)
     terminal.loop(fake, model)
-    assert model.done and fake.milliseconds == terminal.REFRESH_MS and any('Collection (pilot)' in line for line in fake.drawn)
+    assert model.done and fake.milliseconds == terminal.REFRESH_MS and any('Collection' in line for line in fake.drawn)
     monkeypatch.setattr(terminal.curses, 'wrapper', lambda function, model: (_ for _ in ()).throw(KeyboardInterrupt))
     terminal.run(review_campaign.review, review_campaign.journal.directory)
 
