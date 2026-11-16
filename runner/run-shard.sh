@@ -73,16 +73,18 @@ if [ -n "${PW_TRAINING_CAPTURE_DIR:-}" ]; then
   mkdir -p "$PW_TRAINING_CAPTURE_DIR"
   chmod 700 "$PW_TRAINING_CAPTURE_DIR"
 fi
-# Record context retention candidates on every decided request, not only past the
-# watermark, so every session labels retention rows (retention.jsonl below).
-export LYCAON_RETENTION_RECORD=all
 # A Linux Opengrep build, which only development binaries accept.
 if [ -x /opt/bialy/engine/opengrep/opengrep ]; then
   export LYCAON_OPENGREP_CANDIDATE=/opt/bialy/engine/opengrep
 fi
+# The sidecar's bearer token is made here for this shard and reaches the sidecar and the
+# driver through their environment, never through a process argument.
+(umask 077; python3 -c 'import secrets; print(secrets.token_hex(32))' > /cfg/bialy.token)
 (
   clear_provider_environment
-  exec env LYCAON_ADDR=127.0.0.1:8850 LYCAON_CONFIG_DIR=/cfg /opt/bialy/bin/lycaon serve
+  LYCAON_API_TOKEN=$(cat /cfg/bialy.token)
+  export LYCAON_API_TOKEN LYCAON_ADDR=127.0.0.1:8850 LYCAON_CONFIG_DIR=/cfg
+  exec /opt/bialy/bin/lycaon serve
 ) >"$out/sidecar.log" 2>&1 &
 sidecar=$!
 stop_sidecar() {
@@ -106,8 +108,7 @@ done
 # Providers can share one key, so the keys leave the environment only once every
 # provider has its own.
 IFS=, read -ra hosted <<<"${BIALY_HOSTED_PROVIDERS:-}"
-printf 'Authorization: Bearer %s\n' "$(cat /cfg/api.token)" > /cfg/credential.headers
-chmod 600 /cfg/credential.headers
+(umask 077; printf 'Authorization: Bearer %s\n' "$(cat /cfg/bialy.token)" > /cfg/credential.headers)
 for pair in "${hosted[@]}"; do
   [ -n "$pair" ] || continue
   provider=${pair%%:*}
@@ -133,14 +134,14 @@ fi
 while IFS= read -r task; do
   [ -n "$task" ] || continue
   printf '%s\n' "$task" > "$out/task.part"
-  command=(/opt/bialy/bin/lycaon-debug decide generate --addr http://127.0.0.1:8850 --token "$(cat /cfg/api.token)"
+  command=(/opt/bialy/bin/lycaon-debug decide generate --addr http://127.0.0.1:8850
     --tasks "$out/task.part" --project "$project" --project-name "$WORKSPACE" --manifest "$out/task-manifest.part"
     --unattended /opt/bialy/unattended.yaml --timeout "$PROMPT_TIMEOUT")
   if [ -n "${TASK_TIMEOUT:-}" ]; then
     command=(timeout --signal=TERM --kill-after=10s "$TASK_TIMEOUT" "${command[@]}")
   fi
   code=0
-  "${command[@]}" || code=$?
+  LYCAON_API_TOKEN=$(cat /cfg/bialy.token) "${command[@]}" || code=$?
   if [ -f "$out/task-manifest.part" ]; then
     cat "$out/task-manifest.part" >> "$out/manifest.jsonl"
     rm "$out/task-manifest.part"

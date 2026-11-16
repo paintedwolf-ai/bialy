@@ -141,5 +141,10 @@ def is_eligible(row):
 
 
 def training_ready(row):
-    """An eligible row whose review passed: what a dataset may hold."""
-    return is_eligible(row) and (row.get('quality') or {}).get('verdict') == 'pass'
+    """An eligible row passed by a reviewer that had passed the row-judging controls,
+    whose verdict names this row's request and response: what a dataset may hold."""
+    quality = row.get('quality') or {}
+    return (is_eligible(row) and quality.get('verdict') == 'pass' and quality.get('role') == 'action'
+            and quality.get('controls_passed') is True and bool(quality.get('controls_sha256')) and bool(quality.get('reviewer_slot'))
+            and quality.get('request_sha256') == row['request_capture']['sha256']
+            and quality.get('response_sha256') == row['response_sha256'])

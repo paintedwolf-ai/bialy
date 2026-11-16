@@ -29,7 +29,13 @@ uv sync --group dev
 uv run ruff check src tests
 uv run pytest -q tests
 uv run bialy check
+shellcheck runner/*.sh && shellcheck -x train-host/student/*.sh
 ```
+
+A change to what the runner or the fleet passes to the host's binaries (an
+environment variable, a subcommand or flag, a row schema, a workflow version)
+changes `config/host-contract.json` with it; check the record against the host
+checkout the change targets with `uv run bialy check --host-checkout DIR`.
 
 Pull requests must reference an `accepting-work` issue and pass CI. Nothing
 in CI generates, judges, or trains; a change to those stages is checked with

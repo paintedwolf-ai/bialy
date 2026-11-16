@@ -1,6 +1,6 @@
 id: plan-auto
 version: 1.0.0
-extends: plan@1.0.0
+extends: plan@1.0.1
 name: Plan and implement
 description: Research, write the plan, auto-approve, and implement.
 parameters:

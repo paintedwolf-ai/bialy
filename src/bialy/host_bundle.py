@@ -10,9 +10,11 @@ import os
 import subprocess
 from pathlib import Path
 
+from . import host_contract
+
 CONTRACT = 'pw-training-contract/1'
 BUNDLE = 'pw-training-episode-bundle/1'
-ENTRYPOINT = '/opt/bialy/bin/lycaon-debug'
+ENTRYPOINT = host_contract.BINARIES + 'lycaon-debug'
 LINES = ('sessions', 'captures', 'operations', 'observations', 'effects', 'decisions', 'completions')
 
 
@@ -37,7 +39,7 @@ class Docker:
                    '--user', '%d:%d' % (os.getuid(), os.getgid())]
         for source, target, mode in mounts:
             command += ['-v', '%s:%s:%s' % (Path(source).resolve(), target, mode)]
-        return [*command, '--entrypoint', ENTRYPOINT, self.image, 'eval', *arguments]
+        return [*command, '--entrypoint', ENTRYPOINT, self.image, *arguments]
 
 
 class Local:
@@ -54,7 +56,7 @@ class Local:
                     argument = str(Path(source).resolve()) + argument[len(target):]
                     break
             mapped.append(argument)
-        return [str(self.binary), 'eval', *mapped]
+        return [str(self.binary), *mapped]
 
 
 def _evaluate(image, mounts, arguments, process):
@@ -75,7 +77,7 @@ def contract(image, destination, commit, process=subprocess.run):
     path = destination / 'contract.json'
     if not path.exists():
         destination.parent.mkdir(parents=True, exist_ok=True)
-        result = _evaluate(image, [(destination.parent, '/out', 'rw')], ['training-contract', '--out', '/out/' + destination.name], process)
+        result = _evaluate(image, [(destination.parent, '/out', 'rw')], host_contract.arguments('lycaon-debug', 'eval training-contract', out='/out/' + destination.name), process)
         if result.returncode:
             _failed(destination, result, 'host_contract_export_failed')
     raw = path.read_bytes()
@@ -94,11 +96,11 @@ def export(image, shard, session, destination, project=None, process=subprocess.
         # Docker would create a missing mount source as root.
         destination.parent.mkdir(parents=True, exist_ok=True)
         mounts = [(shard, '/capture', 'ro'), (destination.parent, '/out', 'rw')]
-        arguments = ['training-bundle', '--capture', '/capture', '--captures', '/capture/training-captures',
-                     '--session', session, '--out', '/out/' + destination.name]
         if project is not None:
             mounts.append((project, '/project', 'ro'))
-            arguments += ['--project', '/project']
+        arguments = host_contract.arguments('lycaon-debug', 'eval training-bundle', capture='/capture',
+                                            captures='/capture/training-captures', session=session,
+                                            project=None if project is None else '/project', out='/out/' + destination.name)
         result = _evaluate(image, mounts, arguments, process)
         if result.returncode:
             _failed(destination, result, 'host_evidence_export_failed')

@@ -31,6 +31,7 @@ from . import (
     custom_model_run,
     fleet,
     heads,
+    host_contract,
     judge,
     preflight,
     provenance,
@@ -289,6 +290,10 @@ def stage_check(run):
     for rel in CHECKOUT_FILES:
         if not (run.checkout / rel).exists():
             faults.append("run.lycaon_checkout lacks %s" % rel)
+    try:
+        host_contract.verify(run.checkout)
+    except host_contract.HostContractError as exc:
+        faults.append("run.lycaon_checkout does not declare what the runner asks of it: %s" % "; ".join(exc.missing))
     if shutil.which("docker") is None:
         faults.append("docker is not on PATH")
     if run.runs("warm") and hasattr(os, "geteuid") and os.geteuid() != 0:
@@ -358,7 +363,7 @@ def stage_corpus(run):
     """corpus.json from the runners' own build, so option texts match the rows."""
     out = run.path("corpus.json")
     debug = run.host_bin_dir / "lycaon-debug"
-    result = subprocess.run([str(debug), "decide", "corpus", "--out", str(out)], capture_output=True, text=True)
+    result = subprocess.run([str(debug), *host_contract.arguments("lycaon-debug", "decide corpus", out=out)], capture_output=True, text=True)
     if result.returncode != 0:
         raise RunError("lycaon-debug decide corpus failed: %s" % result.stderr.strip()[-300:])
     revision = json.loads(out.read_text(encoding="utf-8")).get("catalog_revision")
@@ -670,14 +675,17 @@ def retention_files(run):
 def stage_compare(run):
     """The engine-on pass against the engine-off pass over the requests both drove:
     what the retention head's releases did to prompt tokens, recalls, and repeated
-    calls (retention.compare)."""
+    calls. A comparison the request rows cannot support is recorded as refused, with
+    its reason, and writes no report."""
     if not run.engine_on:
         return {"skipped": "run.engine_on is off"}
     off = retention.load_rows(run.path("fleet-off", "requests.jsonl"))
     on = retention.load_rows(run.path("fleet-on", "requests.jsonl"))
-    if not off or not on:
-        return {"skipped": "a pass wrote no request rows; the host that drove it predates them"}
-    comparison = retention.compare(off, on)
+    try:
+        comparison = retention.compare(off, on)
+    except retention.ComparisonRefused as refusal:
+        run.path("compare.json").unlink(missing_ok=True)
+        return refusal.record()
     run.path("compare.json").write_text(json.dumps(comparison, indent=2) + "\n", encoding="utf-8")
     return {"comparison": comparison, "report": str(run.path("compare.json"))}
 

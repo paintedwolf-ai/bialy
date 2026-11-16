@@ -95,8 +95,8 @@ run:
   judge:
     enabled: true                  # false keeps observational rows unjudged
   retention:                       # the retention head (src/bialy/retention.py)
-    follow_up_rate: null           # override every archetype's follow-up rate; 1.0 keeps every follow-up, and each is a retention decision
-    follow_ups: null               # override the follow-ups a task may carry (archetypes.yaml defaults.max_follow_ups); longer sessions reach the watermark
+    follow_up_rate: null           # override every archetype's follow-up rate; 1.0 keeps every follow-up, and each adds a retention row
+    follow_ups: null               # override the follow-ups a task may carry (archetypes.yaml defaults.max_follow_ups); longer sessions carry more earlier tool results
     search:                        # the trainer grid; every head is replayed and the best fitted objective on validation is kept
       lr: [0.0002, 0.0005, 0.001]
       pos_weight: [2.0, 6.0]

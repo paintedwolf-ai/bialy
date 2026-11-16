@@ -25,7 +25,7 @@
   bialy verify dataset|heads --release DIR [--unanchored]
   bialy audit dataset --release DIR [--unanchored] [--rejudge N --endpoint URL --model ID]
   bialy audit heads --release DIR --dataset DIR --lycaon CHECKOUT --engine LAUNCHER
-  bialy check
+  bialy check [--host-checkout DIR]
   bialy run --run NAME [--until STAGE] [--from STAGE] [--redo STAGE ...] [--dry-run] [--push] [--rebuild-image]
             [--task-cap N] [--workspace NAME ...] [--runners N] [--epochs N] [--no-engine-on]
   bialy run-status --run NAME
@@ -47,7 +47,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import audit, coderank, config, fleet, heads, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
+from . import audit, coderank, config, fleet, heads, host_contract, hub, judge, provenance, release, repos, serve, skillreq, split, tasks
 from . import run as runmod
 from .campaign import ancestry
 from .review import cli as review_cli
@@ -180,7 +180,8 @@ def main(argv=None):
     p.add_argument("--endpoint", help="OpenAI-compatible base URL serving --model")
     p.add_argument("--model", help="the pinned judge the endpoint serves, as rows name it")
     p.add_argument("--engine", help="heads: a bialy launcher that loads the released heads")
-    sub.add_parser("check", help="validate the configuration and pins, offline")
+    p = sub.add_parser("check", help="validate the configuration, the pins and the recorded host contract, offline")
+    p.add_argument("--host-checkout", type=Path, help="also hold the recorded host contract to this Painted Wolf Code checkout")
     p = sub.add_parser("campaign", help="plan and drive a training campaign; plan is offline")
     p.add_argument("action", choices=("plan", "run", "resume", "status", "report", "decide", "record"))
     p.add_argument("--config", type=Path, help="plan: the campaign configuration")
@@ -211,8 +212,8 @@ def main(argv=None):
     p.add_argument("--no-engine-on", action="store_true", help="skip the second pass that drives with the pilot heads")
     p.add_argument("--recipes", help="comma-separated training recipes for this run, such as R1 for a retention-only pilot")
     p.add_argument("--no-judge", action="store_true", help="pass rows through unjudged; unverified retention observations cannot qualify a head")
-    p.add_argument("--follow-up-rate", type=float, help="override every archetype's follow-up rate; 1.0 keeps every follow-up, each a retention decision")
-    p.add_argument("--follow-ups", type=int, help="override the follow-ups a task may carry; longer sessions reach the compaction watermark")
+    p.add_argument("--follow-up-rate", type=float, help="override every archetype's follow-up rate; 1.0 keeps every follow-up, each adding a retention row")
+    p.add_argument("--follow-ups", type=int, help="override the follow-ups a task may carry; longer sessions carry more earlier tool results")
     p.add_argument("--spend-ceiling", type=float, help="stop the run when metered spend passes this many dollars")
     p = sub.add_parser("run-faults")
     p.add_argument("--run", required=True)
@@ -270,6 +271,13 @@ def main(argv=None):
     if args.cmd == "check":
         for workspace in factory.workspaces():
             tasks.claim_groups([s for s in factory.scenarios if s.workspace == workspace.name])
+        try:
+            host_contract.check()
+            if args.host_checkout:
+                host_contract.verify(args.host_checkout)
+        except host_contract.HostContractError as exc:
+            print("%s:\n  %s" % (exc.code, "\n  ".join(exc.missing)), file=sys.stderr)
+            return 1
         print("%d models, %d repositories and %d stacks (%d held out), %d archetypes, %d scenarios (%d variants); hub %s, %s" % (
             len(factory.models), len(factory.repos), len(factory.stacks), len(factory.holdout()), len(factory.archetypes),
             len(factory.scenarios), sum(len(s.variants) for s in factory.scenarios), config.hub()["dataset_repo"], config.hub()["model_repo"]))

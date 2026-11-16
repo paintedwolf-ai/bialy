@@ -32,8 +32,10 @@ uv run bialy audit dataset --release dataset-v1
 
 `audit` recomputes, from the rows alone:
 
-- **Shape.** Every row matches `row.schema.json`, the schema the Painted Wolf
-  Code commit named in `PROVENANCE.json` exported the rows with.
+- **Shape.** Every row matches the release's own `row.schema.json`, the schema
+  the Painted Wolf Code commit named in `PROVENANCE.json` exported the rows
+  with (`pw-decide-row/2` for rows exported today; a release keeps the version
+  it was written with).
 - **Statistics.** Rows, hosts, languages, partial turns, prompt groups, and
   workspaces per split, compared with `PROVENANCE.json` and the card.
 - **No leakage.** No prompt group (a request and its near-duplicates) appears
@@ -47,8 +49,8 @@ uv run bialy audit dataset --release dataset-v1
   and are checked without it.
 - **Tasks.** Every row comes from a task `tasks.jsonl` lists, and the task
   outcomes match `PROVENANCE.json`; `tasks.jsonl` is what a rebuild drives.
-- **Judge agreement.** The quadratic-weighted kappa between the two judge
-  families, recomputed from `agreement.jsonl`, the second-judge sample the
+- **Judge agreement.** The quadratic-weighted kappa between the two reviewer
+  slots, recomputed from `agreement.jsonl`, the second-judge sample the
   release ships, and compared with what the card states.
 
 It exits non-zero and names the first claim it cannot reproduce.
