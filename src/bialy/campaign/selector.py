@@ -7,6 +7,7 @@ in config/campaign/selector.yaml. `system_test` is never read. P0 binds the head
 backbone, the catalog, the decision contract and every threshold, and is whole or absent.
 """
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from .journal import CampaignFault, digest
 CONFIG = Path(__file__).resolve().parents[3] / 'config/campaign/selector.yaml'
 SCHEMA = 'pw-selector-policy/1'
 HEADS = ('turn-load', 'unit-rank', 'code-rank')
+COMMIT = re.compile(r'[0-9a-f]{40}')
 
 
 def load(path=CONFIG):
@@ -203,14 +205,14 @@ def tree_digest(root):
 class SelectorTraining:
     """Train the three heads on the shared train split and freeze P0 from validation thresholds."""
 
-    def __init__(self, journal, assignment_sha256, run, workbench=None, config=None):
-        self.journal, self.assignment_sha256, self.run = journal, assignment_sha256, run
+    def __init__(self, journal, run, workbench=None, config=None):
+        self.journal, self.run = journal, run
         self.workbench, self.config = workbench or Workbench(run), config or load()
         self.directory = journal.directory / 'selector'
 
-    def split(self):
+    def split(self, rows):
         assignment = ancestry.load(self.run.path('ancestry.json'))
-        if assignment.sha256 != self.assignment_sha256:
+        if assignment.sha256 != rows['assignment_sha256']:
             raise CampaignFault('selector_split_not_shared')
         split = self.run.path('split')
         missing = [name for name in ('train.jsonl', 'val.jsonl', 'development.jsonl') if not (split / name).exists()]
@@ -219,7 +221,7 @@ class SelectorTraining:
         return assignment, split
 
     def execute(self, inputs, attempt):
-        assignment, split = self.split()
+        assignment, split = self.split(inputs['rows'])
         dumps = partitioned_dumps(self.run.path('coderank', 'dumps'), assignment)
         if not dumps.get('train') or not dumps.get('validation'):
             raise CampaignFault('selector_unqualified', details={'failures': [{'head': 'code-rank', 'metric': 'dumps', 'value': None}]})
@@ -238,7 +240,7 @@ class SelectorTraining:
                                               for head, path in sorted(heads.items())},
                   'backbone_sha256': tree_digest(self.workbench.backbone()), 'catalog_sha256': file_digest(self.workbench.catalog()),
                   'decision_contract': self.workbench.decisions(self.config)['version'], 'thresholds': values, 'calibrated': tuned,
-                  'fallback_rate': self.config['fallback_rate'], 'assignment_sha256': self.assignment_sha256}
+                  'fallback_rate': self.config['fallback_rate'], 'assignment_sha256': assignment.sha256}
         policy['identity'] = digest(policy)
         atomic_json(self.directory / 'p0.json', policy)
         corpus = calibrated_catalog(catalog, values, self.directory / 'corpus.json')

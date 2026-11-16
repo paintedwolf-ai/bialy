@@ -109,11 +109,22 @@ def collect(lineage, episodes, manifests, decisions, host_commit, model, strata)
     return binding, entries, exclusions, catalogs
 
 
+def select(entries, rows, max_tokens):
+    """The `rows[partition]` shortest whole rows within `max_tokens`, for a rehearsal."""
+    out = []
+    for partition, count in rows.items():
+        fitting = sorted((entry for entry in entries if entry['partition'] == partition and entry['tokens'] <= max_tokens),
+                         key=lambda entry: (entry['tokens'], digest(entry['row'])))
+        out += fitting[:count]
+    return out
+
+
 def assemble(journal, lineage, manifests, decisions, checkout, host_commit, specification, destination, minimum_episodes,
-             selector, strata, measure, seal=seal_dataset):
+             selector, strata, measure, groups_per_focus=1, selection=None, seal=seal_dataset):
     """Each student's splits from one collection. Every row is measured before any split is
     written; an oversize row is refused whole. A short focus is reported with its exact
-    deficit as data_incomplete, and nothing is written."""
+    deficit as data_incomplete, and nothing is written. A rehearsal's `selection` keeps only
+    the shortest whole rows of each partition."""
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
     if (set(minimum_episodes) != set(FILES)
@@ -138,6 +149,8 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
                 raise CampaignFault('dataset_measurement_invalid', details={'student': student})
             else:
                 kept.append({**entry, 'tokens': result['tokens']})
+        if selection:
+            kept = select(kept, selection['rows'], selection['max_example_tokens'])
         collected[student] = (kept, exclusions)
         catalogs |= used
         epochs.add(binding['epoch'])
@@ -146,14 +159,15 @@ def assemble(journal, lineage, manifests, decisions, checkout, host_commit, spec
     assembly_binding = {'manifests': {student: {str(path): file_sha256(path) for path in paths} for student, paths in manifests.items()},
                         'host_commit': host_commit, 'specification': identity(specification), 'minimum_episodes': minimum_episodes,
                         'lineage_sha256': lineage.freeze(), 'decisions_sha256': digest(decisions), 'selector': plan_record(selector),
-                        'catalog_sha256': next(iter(catalogs), None), 'strata_sha256': digest(strata)}
+                        'catalog_sha256': next(iter(catalogs), None), 'strata_sha256': digest(strata),
+                        'groups_per_focus': groups_per_focus, 'selection': selection}
     binding_path = destination / 'binding.json'
     if binding_path.exists() and json.loads(binding_path.read_text()) != assembly_binding:
         raise CampaignFault('dataset_assembly_inputs_changed')
     atomic_json(binding_path, assembly_binding)
     ledgers = {student: coverage.ledger(kept, exclusions, faults) for student, (kept, exclusions) in collected.items()}
     short = {student: found for student, (kept, _) in collected.items()
-             if (found := coverage.deficits(kept, minimum_episodes, lineage.focuses))}
+             if (found := coverage.deficits(kept, minimum_episodes, lineage.focuses, groups_per_focus))}
     if short:
         data_report.write(destination, data_report.build(assembly_binding, ledgers, 'data_incomplete', short))
         raise CampaignFault('data_incomplete', details={'deficits': short})

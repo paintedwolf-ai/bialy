@@ -42,13 +42,13 @@ def test_collection_records_every_episode_and_reuses_pilot_attempts(tmp_path):
     inputs = {'host': {}, 'selector': {}, 'teachers': {
         'teachers': [{'id': 'teacher'}], 'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}},
         'plan': {'collection_episodes': minimum}}
-    pilot = Collection(journal, lineage, driver, export, students(), True, minimum=minimum)
+    pilot = Collection(journal, lineage, driver, export, students(), minimum, 1)
     result = pilot.execute(inputs, 'pilot')
     pilot.validate(inputs, result)
     assert len(driver.calls) == 48 and len(exported) == 24
     assert [episode['admitted'] for episode in result['episodes']] == [False, True] * 24
     assert result['minimum'] == minimum
-    full = Collection(journal, lineage, driver, export, students(), False)
+    full = Collection(journal, lineage, driver, export, students(), minimum, 1)
     full_result = full.execute(inputs, 'full')
     full.validate(inputs, full_result)
     assert len(driver.calls) == 48
@@ -108,7 +108,7 @@ def test_infrastructure_failure_stops_paid_collection_episodes(tmp_path):
     inputs = {'host': {'conservative_reference': {}, 'teacher_capture_qualified': {'teacher': True}},
               'selector': {}, 'teachers': {'teachers': [{'id': 'teacher'}],
                                           'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}}}
-    stage = Collection(journal, lineage, driver, None, students(), True)
+    stage = Collection(journal, lineage, driver, None, students(), dict.fromkeys(('train', 'validation', 'system_test'), 8), 1)
     with pytest.raises(CampaignFault, match='episode_incomplete') as failure:
         stage.execute(inputs, 'run')
     assert failure.value.details['fault']['code'] == 'evidence_unavailable'
@@ -132,7 +132,7 @@ def test_planned_fallback_episodes_run_on_the_conservative_reference(tmp_path):
     inputs = {'host': {'conservative_reference': conservative}, 'selector': p0, 'teachers': {
         'teachers': [{'id': 'teacher'}], 'focuses': {family: [{'teacher_id': 'teacher'}] for family in FOCUSES}}}
     minimum = dict.fromkeys(('train', 'validation', 'system_test'), 8)
-    result = Collection(journal, lineage, driver, export, students(), True, minimum=minimum).execute(inputs, 'pilot')
+    result = Collection(journal, lineage, driver, export, students(), minimum, 1).execute(inputs, 'pilot')
     strata = [episode['stratum'] for episode in result['episodes']]
     assert set(strata) == {'p0', 'planned_fallback'}
     assert [call['selector'] for call in driver.calls] == [conservative if s == 'planned_fallback' else p0 for s in strata]

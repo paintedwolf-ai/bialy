@@ -13,6 +13,16 @@ from .journal import CampaignFault, digest
 from .sources import authority_key
 
 
+def training_fault(job, exit_status):
+    """The job's typed failure. Running out of memory is terminal for the recipe and never retried."""
+    plan = Path(job) / 'plan.json'
+    terminal = Path(json.loads(plan.read_text())['out']) / 'terminal.json' if plan.exists() else None
+    failure = json.loads(terminal.read_text()).get('failure', {}) if terminal and terminal.exists() else {}
+    if failure.get('code') == 'out_of_memory':
+        return CampaignFault('student_out_of_memory', details={'job': str(job)})
+    return CampaignFault('student_training_failed', details={'job': str(job), 'exit_status': exit_status})
+
+
 class Training:
     def __init__(self, journal, configuration, student, pilot=False, run=subprocess.run, *, dry_run=False):
         self.journal, self.configuration = journal, configuration
@@ -60,7 +70,7 @@ class Training:
             result = self.run([sys.executable, '-m', 'bialy.student_host', 'train', str(job)],
                               env=environment, stdout=log, stderr=subprocess.STDOUT)
         if result.returncode:
-            raise CampaignFault('student_training_failed', details={'job': str(job), 'exit_status': result.returncode})
+            raise training_fault(job, result.returncode)
 
     def reconcile(self, inputs, attempt):
         directory = self.directory(attempt)
