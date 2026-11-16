@@ -1,0 +1,428 @@
+# implementation_investigation: Read the code and its callers, find the cause, fix it with boundary tests.
+
+groups:
+  - id: pricing-threshold
+    workspace: python-cli
+    prompt: >-
+      Inspect pricing.py and its callers. Orders at or above the documented threshold should get the
+      discount but some don't. Fix it, add boundary tests, run them, and explain the cause.
+    fixtures:
+      pricing.py: |
+        # Orders of THRESHOLD units or more are charged the discounted rate of 2.
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * (2 if n > THRESHOLD else 3)
+      app.py: |
+        from pricing import charge
+        print(charge(4))
+    grader: |
+      from pricing import charge
+      assert charge($threshold - 1) == ($threshold - 1) * 3
+      assert charge($threshold) == $threshold * 2
+      assert charge($threshold + 1) == ($threshold + 1) * 2
+    solution:
+      pricing.py: |
+        # Orders of THRESHOLD units or more are charged the discounted rate of 2.
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * (2 if n >= THRESHOLD else 3)
+    superficial:
+      pricing.py: |
+        THRESHOLD = $threshold
+        def charge(n):
+            return n * 2
+    variants: [{threshold: 5}, {threshold: 8}]
+
+  - id: shipping-weight-rounding
+    workspace: python-cli
+    prompt: >-
+      Customers say a 2.1 kg parcel is being charged like a 2 kg one. Our policy is that any started
+      kilogram is charged in full. Find where shipping is priced, fix it and cover the edges with tests.
+    fixtures:
+      shipping.py: |
+        RATE = $rate
+        def cost(weight):
+            return int(weight) * RATE
+    grader: |
+      from shipping import cost
+      assert cost(0) == 0
+      assert cost(2.0) == 2 * $rate
+      assert cost(2.1) == 3 * $rate
+      assert cost(0.4) == $rate
+    solution:
+      shipping.py: |
+        import math
+        RATE = $rate
+        def cost(weight):
+            return math.ceil(weight) * RATE
+    superficial:
+      shipping.py: |
+        RATE = $rate
+        def cost(weight):
+            return (int(weight) + 1) * RATE
+    variants: [{rate: 4}, {rate: 7}]
+
+  - id: slug-separators
+    workspace: python-cli
+    prompt: >-
+      URLs generated for titles like "$word  draft__v2" come out with odd characters. Look at how slugs
+      are built, make every run of punctuation or whitespace a single dash with none at the ends, and
+      add tests.
+    fixtures:
+      slugs.py: |
+        def slugify(title):
+            return title.lower().replace(' ', '-')
+    grader: |
+      from slugs import slugify
+      assert slugify("$word  draft__v2") == "$word-draft-v2".lower()
+      assert slugify("--$word--") == "$word".lower()
+      assert slugify("a.b c") == "a-b-c"
+    solution:
+      slugs.py: |
+        import re
+        def slugify(title):
+            return re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    superficial:
+      slugs.py: |
+        def slugify(title):
+            return '-'.join(title.lower().split())
+    variants: [{word: Report}, {word: Ledger}]
+
+  - id: retry-backoff-cap
+    workspace: python-cli
+    prompt: >-
+      Our client sometimes waits minutes between retries. The retry delays are supposed to double
+      from the base but never exceed the configured cap of $cap seconds. Track down why and fix it with tests.
+    fixtures:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            return [base * 2 ** n for n in range(attempts)]
+    grader: |
+      from retry import delays
+      expected = [min(2 ** n, $cap) for n in range(8)]
+      assert delays(8) == expected
+      assert delays(3, base=2) == [min(2 * 2 ** n, $cap) for n in range(3)]
+      assert delays(0) == []
+    solution:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            return [min(base * 2 ** n, CAP) for n in range(attempts)]
+    superficial:
+      retry.py: |
+        CAP = $cap
+        def delays(attempts, base=1):
+            values = [base * 2 ** n for n in range(attempts)]
+            return values[:-1] + [CAP] if values else values
+    variants: [{cap: 10}, {cap: 30}]
+
+  - id: invoice-tax-rounding
+    workspace: python-cli
+    prompt: >-
+      Finance reports invoice totals a cent short on some orders. Tax is $rate percent and must round half
+      up to the cent. Find where the total is computed, fix the rounding, and add tests for the half-cent cases.
+    fixtures:
+      invoice.py: |
+        RATE = $rate
+        def total(cents):
+            return round(cents * (100 + RATE) / 100)
+    grader: |
+      from decimal import Decimal, ROUND_HALF_UP
+      from invoice import total
+      for cents in (0, 1, 5, 15, 35, 50, 125, 999, 12345):
+          expected = int((Decimal(cents) * (100 + $rate) / 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+          assert total(cents) == expected, cents
+    solution:
+      invoice.py: |
+        from decimal import Decimal, ROUND_HALF_UP
+        RATE = $rate
+        def total(cents):
+            return int((Decimal(cents) * (100 + RATE) / 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+    superficial:
+      invoice.py: |
+        import math
+        RATE = $rate
+        def total(cents):
+            return math.ceil(cents * (100 + RATE) / 100)
+    variants: [{rate: 10}, {rate: 30}]
+
+  - id: inclusive-date-range
+    workspace: python-cli
+    prompt: >-
+      A booking from $start to the same week's Friday shows one night too few in the summary. Bookings count
+      both the first and the last day. Look at how the length is computed, fix it, and test single-day bookings too.
+    fixtures:
+      booking.py: |
+        from datetime import date
+        def days(first, last):
+            return (last - first).days
+    grader: |
+      from datetime import date, timedelta
+      from booking import days
+      first = date.fromisoformat('$start')
+      assert days(first, first) == 1
+      assert days(first, first + timedelta(days=4)) == 5
+      assert days(date(2024, 2, 28), date(2024, 3, 1)) == 3
+    solution:
+      booking.py: |
+        from datetime import date
+        def days(first, last):
+            return (last - first).days + 1
+    superficial:
+      booking.py: |
+        from datetime import date
+        def days(first, last):
+            return 5 if first != last else 0
+    variants: [{start: '2026-03-02'}, {start: '2026-06-15'}]
+
+  - id: pagination-page-count
+    workspace: python-cli
+    prompt: >-
+      With $size results per page, a list whose length is an exact multiple of the page size shows an
+      empty last page. Find where pages are counted, fix it, and test empty and exact-multiple lists.
+    fixtures:
+      pages.py: |
+        SIZE = $size
+        def page_count(total):
+            return total // SIZE + 1
+    grader: |
+      from pages import page_count
+      assert page_count(0) == 0
+      assert page_count(1) == 1
+      assert page_count($size) == 1
+      assert page_count($size + 1) == 2
+      assert page_count(3 * $size) == 3
+    solution:
+      pages.py: |
+        SIZE = $size
+        def page_count(total):
+            return -(-total // SIZE)
+    superficial:
+      pages.py: |
+        SIZE = $size
+        def page_count(total):
+            return total // SIZE
+    variants: [{size: 10}, {size: 25}]
+
+  - id: coupon-before-tax
+    workspace: python-cli
+    prompt: >-
+      Coupons are meant to come off the price before $tax percent tax is added, but checkout applies them
+      after. Trace how the checkout total is built, correct the order, and add tests including a coupon larger than the price.
+    fixtures:
+      checkout.py: |
+        TAX = $tax
+        def total(price, coupon=0):
+            return round(price * (100 + TAX) / 100 - coupon, 2)
+    grader: |
+      from checkout import total
+      assert total(100) == round(100 * (100 + $tax) / 100, 2)
+      assert total(100, 20) == round(80 * (100 + $tax) / 100, 2)
+      assert total(10, 25) == 0
+    solution:
+      checkout.py: |
+        TAX = $tax
+        def total(price, coupon=0):
+            return round(max(price - coupon, 0) * (100 + TAX) / 100, 2)
+    superficial:
+      checkout.py: |
+        TAX = $tax
+        def total(price, coupon=0):
+            return round((price - coupon) * (100 + TAX) / 100, 2)
+    variants: [{tax: 20}, {tax: 8}]
+
+  - id: username-case-collisions
+    workspace: python-cli
+    prompt: >-
+      Two people registered as "$name" and "${upper}" and now share an account page. Usernames are meant to be
+      unique regardless of case and surrounding spaces. Find the check, fix it, and test the collisions.
+    fixtures:
+      accounts.py: |
+        def available(name, taken):
+            return name not in taken
+    grader: |
+      from accounts import available
+      assert not available('${upper}', {'$name'})
+      assert not available('  $name ', {'$name'})
+      assert available('other', {'$name'})
+      assert not available('$name', {' ${upper}'})
+    solution:
+      accounts.py: |
+        def available(name, taken):
+            key = name.strip().casefold()
+            return all(item.strip().casefold() != key for item in taken)
+    superficial:
+      accounts.py: |
+        def available(name, taken):
+            return name.lower() not in taken
+    variants: [{name: mira, upper: MIRA}, {name: tomas, upper: Tomas}]
+
+  - id: fahrenheit-conversion
+    workspace: python-cli
+    prompt: >-
+      The weather summary says $f°F is far too cold in Celsius. Find the conversion, fix it, and test the
+      freezing and boiling points as well as a negative reading.
+    fixtures:
+      units.py: |
+        def to_celsius(fahrenheit):
+            return fahrenheit - 32 * 5 / 9
+    grader: |
+      from units import to_celsius
+      assert abs(to_celsius(32)) < 1e-9
+      assert abs(to_celsius(212) - 100) < 1e-9
+      assert abs(to_celsius(-40) + 40) < 1e-9
+      assert abs(to_celsius($f) - ($f - 32) * 5 / 9) < 1e-9
+    solution:
+      units.py: |
+        def to_celsius(fahrenheit):
+            return (fahrenheit - 32) * 5 / 9
+    superficial:
+      units.py: |
+        def to_celsius(fahrenheit):
+            return fahrenheit * 5 / 9
+    variants: [{f: 68}, {f: 95}]
+
+  - id: leap-year-centuries
+    workspace: python-cli
+    prompt: >-
+      The calendar shows a 29 February in $year, which is not a leap year. Find the leap-year rule, fix it
+      for centuries, and test years divisible by 4, 100 and 400.
+    fixtures:
+      calendar_rules.py: |
+        def is_leap(year):
+            return year % 4 == 0
+    grader: |
+      from calendar_rules import is_leap
+      assert not is_leap($year)
+      assert is_leap(2000) and is_leap(2024)
+      assert not is_leap(2023) and not is_leap(1800)
+    solution:
+      calendar_rules.py: |
+        def is_leap(year):
+            return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    superficial:
+      calendar_rules.py: |
+        def is_leap(year):
+            return year % 4 == 0 and year != $year
+    variants: [{year: 1900}, {year: 2100}]
+
+  - id: hyphenated-word-count
+    workspace: python-cli
+    prompt: >-
+      Editors say "$compound" counts as two words in the article statistics. A hyphenated compound is one
+      word, but a dash with spaces around it is not a word at all. Fix the counter and test both.
+    fixtures:
+      wordcount.py: |
+        import re
+        def count(text):
+            return len(re.findall(r'[A-Za-z]+', text))
+    grader: |
+      from wordcount import count
+      assert count('$compound') == 1
+      assert count('a $compound idea') == 3
+      assert count('wait - what') == 2
+      assert count('') == 0
+    solution:
+      wordcount.py: |
+        import re
+        def count(text):
+            return len(re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", text))
+    superficial:
+      wordcount.py: |
+        def count(text):
+            return len(text.split())
+    variants: [{compound: well-known}, {compound: state-of-the-art}]
+
+  - id: cache-expiry-boundary
+    workspace: python-cli
+    prompt: >-
+      Cached entries stay usable for one extra check after their $ttl second lifetime ends. An entry is
+      expired at the moment its lifetime is reached. Find the expiry test, fix it and cover the boundary.
+    fixtures:
+      cache.py: |
+        TTL = $ttl
+        def expired(stored_at, now):
+            return now - stored_at > TTL
+    grader: |
+      from cache import expired
+      assert not expired(100, 100 + $ttl - 1)
+      assert expired(100, 100 + $ttl)
+      assert expired(100, 100 + $ttl + 5)
+      assert not expired(100, 100)
+    solution:
+      cache.py: |
+        TTL = $ttl
+        def expired(stored_at, now):
+            return now - stored_at >= TTL
+    superficial:
+      cache.py: |
+        TTL = $ttl
+        def expired(stored_at, now):
+            return now - stored_at > TTL - 1 and now - stored_at < TTL + 1
+    variants: [{ttl: 60}, {ttl: 300}]
+
+  - id: progress-percent-clamp
+    workspace: python-cli
+    prompt: >-
+      The upload bar sometimes shows more than 100% and once showed a negative number. Progress must stay
+      between 0 and 100 inclusive and round down. Find where it is computed, fix it, and test the edges.
+    fixtures:
+      progress.py: |
+        def percent(done, total):
+            return round(done * 100 / total)
+    grader: |
+      from progress import percent
+      assert percent(0, $total) == 0
+      assert percent($total, $total) == 100
+      assert percent($total * 2, $total) == 100
+      assert percent(-5, $total) == 0
+      assert percent(1, 3) == 33 and percent(2, 3) == 66
+    solution:
+      progress.py: |
+        def percent(done, total):
+            return max(0, min(100, done * 100 // total))
+    superficial:
+      progress.py: |
+        def percent(done, total):
+            return min(100, round(done * 100 / total))
+    variants: [{total: 40}, {total: 7}]
+
+  - id: touching-intervals
+    workspace: python-cli
+    prompt: >-
+      Meeting slots that end exactly when the next begins, like $a-$b and $b-$c, are shown as separate blocks.
+      Touching or overlapping slots should merge. Find the merge, fix it, and test unsorted input too.
+    fixtures:
+      slots.py: |
+        def merge(slots):
+            out = []
+            for start, end in sorted(slots):
+                if out and start < out[-1][1]:
+                    out[-1] = (out[-1][0], max(out[-1][1], end))
+                else:
+                    out.append((start, end))
+            return out
+    grader: |
+      from slots import merge
+      assert merge([($a, $b), ($b, $c)]) == [($a, $c)]
+      assert merge([($b, $c), ($a, $b)]) == [($a, $c)]
+      assert merge([(1, 2), (3, 4)]) == [(1, 2), (3, 4)]
+      assert merge([(1, 5), (2, 3)]) == [(1, 5)]
+    solution:
+      slots.py: |
+        def merge(slots):
+            out = []
+            for start, end in sorted(slots):
+                if out and start <= out[-1][1]:
+                    out[-1] = (out[-1][0], max(out[-1][1], end))
+                else:
+                    out.append((start, end))
+            return out
+    superficial:
+      slots.py: |
+        def merge(slots):
+            if len(slots) == 2:
+                return [(min(s for s, _ in slots), max(e for _, e in slots))]
+            return sorted(slots)
+    variants: [{a: 9, b: 10, c: 11}, {a: 13, b: 15, c: 16}]

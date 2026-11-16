@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -70,52 +71,66 @@ def test_every_grader_passes_only_the_verified_solution(tmp_path, group, index):
         assert not grade(tmp_path, group, index, group.solution, unreproduced, 'diagnostic.py')[0], 'an unreproduced failure is witnessed'
 
 
-def test_all_eight_focuses_load_with_groups_for_the_pilot():
+def test_all_eight_focuses_load_with_groups_for_both_quotas():
     assert set(CATALOG.focuses) == {'implementation_investigation', 'failure_diagnosis', 'interactive_work', 'build_test_repair',
                                     'partial_effect_recovery', 'capability_recovery', 'sustained_work', 'evidence_closeout'}
-    assert scenarios.deficits(CATALOG, 'pilot') == {}
+    assert scenarios.deficits(CATALOG, 'pilot') == {} and scenarios.deficits(CATALOG, 'full') == {}
 
 
-def test_a_short_focus_reports_its_exact_deficit():
+def test_a_short_focus_reports_its_exact_deficit(tmp_path):
+    groups = [group for group in yaml.safe_load((scenarios.group_files(scenarios.CATALOG) / 'build_test_repair.yaml').read_text())['groups']][:4]
+    catalog = scenarios.load(write(tmp_path, groups, focus='build_test_repair'))
     need = sum(CATALOG.quotas['full']['minimums'].values())
-    assert scenarios.deficits(CATALOG, 'full') == {focus: need - len(groups) for focus, groups in CATALOG.by_focus().items()}
+    deficits = scenarios.deficits(catalog, 'full')
+    assert deficits['build_test_repair'] == need - 4 and deficits['sustained_work'] == need
 
 
-def test_the_pilot_allocation_gives_each_focus_one_group_per_partition_and_keeps_variants_together(tmp_path):
+@pytest.mark.parametrize('plan', ['pilot', 'full'])
+def test_each_quota_meets_its_minimums_per_focus_and_keeps_variants_together(tmp_path, plan):
     task_list = scenarios.tasks(CATALOG, tmp_path / 'bank', lambda name: '/work/' + name)
-    assignment = scenarios.assignment(CATALOG, task_list, 'seed', 'pilot')
+    assignment = scenarios.assignment(CATALOG, task_list, 'seed', plan)
     by_group = {}
     for task in task_list:
         by_group.setdefault(task['group'], set()).add(assignment.partition(ancestry.task_node(task['id'])))
     assert all(len(partitions) == 1 for partitions in by_group.values())
+    minimums = CATALOG.quotas[plan]['minimums']
     for focus in CATALOG.focuses:
-        partitions = sorted(next(iter(by_group[group.id])) for group in CATALOG.groups if group.focus == focus)
-        assert partitions == sorted(ancestry.PARTITIONS)
-    with pytest.raises(CampaignFault, match='coverage_short') as short:
-        scenarios.assignment(CATALOG, task_list, 'seed', 'full')
-    assert short.value.details['deficits'] == scenarios.deficits(CATALOG, 'full')
+        partitions = [next(iter(by_group[group.id])) for group in CATALOG.groups if group.focus == focus]
+        assert all(partitions.count(partition) >= count for partition, count in minimums.items()), (focus, partitions)
 
 
-def write(tmp_path, groups, quotas=None):
+def write(tmp_path, groups, quotas=None, focus='implementation_investigation', extra=None):
+    """A catalog whose `focus` file holds `groups` and whose other focus files are empty."""
     value = yaml.safe_load(scenarios.CATALOG.read_text())
-    value['groups'] = groups
     if quotas:
         value['quotas'].update(quotas)
     path = tmp_path / 'catalog.yaml'
     path.write_text(yaml.safe_dump(value))
+    directory = scenarios.group_files(path)
+    shutil.rmtree(directory, ignore_errors=True)
+    directory.mkdir()
+    for item in value['focuses']:
+        (directory / (item['id'] + '.yaml')).write_text(yaml.safe_dump({'groups': groups if item['id'] == focus else []}))
+    for name in extra or ():
+        (directory / (name + '.yaml')).write_text('groups: []\n')
     return path
 
 
+def first_group():
+    path = scenarios.group_files(scenarios.CATALOG) / 'implementation_investigation.yaml'
+    return yaml.safe_load(path.read_text())['groups'][0]
+
+
 def test_the_catalog_refuses_malformed_groups(tmp_path):
-    raw = yaml.safe_load(scenarios.CATALOG.read_text())['groups'][0]
+    raw = first_group()
     with pytest.raises(CampaignFault, match='scenario_variant_quota'):
         scenarios.load(write(tmp_path, [dict(raw, variants=[{'threshold': n} for n in range(5)])]))
     with pytest.raises(CampaignFault, match='scenario_variant_quota'):
         scenarios.load(write(tmp_path, [dict(raw, variants=[{'threshold': 3}, {'threshold': 3}])]))
     with pytest.raises(CampaignFault, match='scenario_group_invalid'):
         scenarios.load(write(tmp_path, [dict(raw, tool='edit')]))
-    with pytest.raises(CampaignFault, match='scenario_group_invalid'):
-        scenarios.load(write(tmp_path, [dict(raw, focus='unknown')]))
+    with pytest.raises(CampaignFault, match='scenario_focus_files'):
+        scenarios.load(write(tmp_path, [raw], extra=['unknown']))
     with pytest.raises(CampaignFault, match='scenario_group_invalid'):
         scenarios.load(write(tmp_path, [raw, raw]))
     catalog = scenarios.load(write(tmp_path, [dict(raw, variants=[{'other': 1}])]))
@@ -124,7 +139,7 @@ def test_the_catalog_refuses_malformed_groups(tmp_path):
 
 
 def test_two_groups_with_one_prompt_cannot_cross_a_split(tmp_path):
-    raw = yaml.safe_load(scenarios.CATALOG.read_text())['groups'][0]
+    raw = first_group()
     catalog = scenarios.load(write(tmp_path, [raw, dict(raw, id='copy', solution={'other.py': 'x'})]))
     task_list = scenarios.tasks(catalog, tmp_path / 'bank', lambda name: '/work/' + name)
     with pytest.raises(CampaignFault, match='duplicate_across_components'):
@@ -144,6 +159,6 @@ def test_diagnostic_groups_register_a_required_witness(tmp_path):
     diagnostic = [task for task in task_list if 'diagnostic' in task]
     assert diagnostic and all(task['diagnostic'] == {'expectation': 'reproduced_failure', 'witness': 'diagnostic'}
                               and 'diagnostic' in task['required_checks'] for task in diagnostic)
-    raw = yaml.safe_load(scenarios.CATALOG.read_text())['groups'][0]
+    raw = first_group()
     with pytest.raises(CampaignFault, match='scenario_group_invalid'):
         scenarios.load(write(tmp_path, [dict(raw, diagnostic={'expectation': 'guessed'})]))
