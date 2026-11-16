@@ -59,7 +59,8 @@ def bootstrap(remote, configuration, workspace, student):
         remote.command(['git', '-C', destination, 'fetch', 'origin', configuration[name + '_commit']])
         remote.command(['git', '-C', destination, 'checkout', '--detach', configuration[name + '_commit']])
     remote.command([*uv, 'sync', '--project', workspace + '/bialy', '--locked'])
-    remote.command([*uv, 'sync', '--project', workspace + '/host/scripts/bialy/custom_model', '--locked'])
+    for project in ('scripts/bialy/custom_model', 'scripts/generation'):
+        remote.command([*uv, 'sync', '--project', workspace + '/host/' + project, '--locked'])
     llama = workspace + '/llama.cpp'
     remote.command(['git', 'clone', '--no-checkout', configuration['llama_repository'], llama])
     remote.command(['git', '-C', llama, 'fetch', 'origin', configuration['llama_commit']])
@@ -103,7 +104,7 @@ class Renewal:
 
 
 def export_remotely(remote, configuration, workspace, remote_directory, destination, check_connection, sleep):
-    """Export on the training machine, which has the memory for a float32 merge, and return only the served GGUF."""
+    """Export on the training machine, which has the memory for a float32 merge; return the three outputs, not the merge."""
     marker = destination / 'export.json'
     if not marker.exists():
         command = [*prefix(configuration, workspace), 'run', '--project', workspace + '/bialy', '--locked', 'python', '-m',
@@ -143,6 +144,9 @@ def export_remotely(remote, configuration, workspace, remote_directory, destinat
     job = destination / 'job'
     remote.receive(remote_directory + '/merged/manifest.json', job / 'merged')
     remote.receive(remote_directory + '/gguf/', job / 'gguf', exclude=(exporting.UNQUANTIZED,), timeout=7200)
+    remote.receive(remote_directory + '/mlx/', job / 'mlx', timeout=7200)
+    remote.receive(remote_directory + '/lora_adapter/', job / 'lora_adapter')
+    remote.receive(remote_directory + '/export_receipt.json', job)
     return exporting.publish(job, configuration['llama_commit'], unquantized=False)
 
 
