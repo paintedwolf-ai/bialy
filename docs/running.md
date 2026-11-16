@@ -200,9 +200,41 @@ Every engine the selector starts is the host's own build
 declares (`state.head_tokens`), the same field the trainer and the host read.
 The runner mount a policy is served from carries the checkout's config with the
 policy's thresholds and its option vocabulary in place of the ones the checkout
-pins, so runners ask the heads the option texts they were trained on. Under `P0`, one training variant in ten is
-collected with the engine off as a planned fallback, and the evaluation plan
-records the rate.
+pins, so runners ask the heads the option texts they were trained on.
+
+Every qualification bar is measured through that engine, and none in Python.
+The turn-load and unit-rank bars are read from the host's `replay_eval.py`
+report, and the code-rank bars from `decide-rerank eval` reports; both ask the
+engine for every answer they score, and the thresholds the replay applies were
+set by `calibrate.py` through the engine too. A head whose training-side
+encoding differs from what the engine encodes is therefore measured as it
+would be served, and can clear a bar only if it serves that well. The parity
+probe covers the turn-load head alone and adds no measure of quality: with both
+sides on the CPU it compares the trainer's forward with the engine's answer on
+the same development turns, so that a head short of its bars can be told apart
+as an encoding mismatch (the probe fails) or a weak head (the probe passes).
+Unit-rank and code-rank have no probe; a mismatch in either shows only as lower
+engine-measured numbers.
+
+The bars are floors, in `config/campaign/selector.yaml`:
+
+| Head | Measure | Floor | Meaning |
+|---|---|---|---|
+| turn-load | `overall.tools._all.recall` | 0.85 | share of the loadable tools a turn needed that the head loaded |
+| turn-load | `overall.tools._all.precision` | 0.5 | share of the tools it loaded that the turn needed |
+| unit-rank | `overall.requests.wanted.top1` | 0.5 | share of `request_tools` needs whose top-ranked tool was one the need was for |
+| code-rank | `pairs` | 100 | requests measured over the development repositories; fewer is too little support to read a gain from |
+| code-rank | `mrr_gain` | 0.01 | the blended order's mean reciprocal rank of the requested code unit, less the text-match order's |
+
+The two code-rank floors are not measured targets. No campaign has yet measured
+code-rank this way, so they state only the least that qualifies: enough pairs
+for the gain to mean something, and a blended order that ranks the requested
+unit higher than text matching alone, which is what the host does with the
+engine off. Raise them once a campaign's development numbers show what a good
+head reaches.
+
+Under `P0`, one training variant in ten is collected with the engine off as a
+planned fallback, and the evaluation plan records the rate.
 
 Every student's dataset comes from the one student collection. Before any split
 is written, each row is measured with that student's pinned tokenizer and the
