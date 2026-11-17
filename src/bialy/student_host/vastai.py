@@ -33,7 +33,8 @@ class VastAI:
         environment = None
         if self.api_key_file:
             environment = dict(os.environ, VAST_API_KEY=Path(self.api_key_file).read_text().strip())
-        result = self.run(['vastai', '--raw', *arguments], capture_output=True, text=True, timeout=120, env=environment)
+        result = self.run(['vastai', '--raw', *arguments], capture_output=True, text=True, timeout=120, env=environment,
+                          stdin=subprocess.DEVNULL)
         if result.returncode:
             raise ResourceError('Vast.ai operation did not confirm success')
         try:
@@ -75,7 +76,8 @@ class VastAI:
         """True when the provider acknowledged the destruction. The request is made by identity
         whatever the listing says, because a new instance can be missing from it."""
         try:
-            self.call('destroy', 'instance', instance['id'])
+            # Without --yes the CLI asks for confirmation and exits 0 having destroyed nothing.
+            self.call('destroy', 'instance', instance['id'], '--yes')
         except (ResourceError, subprocess.TimeoutExpired):
             if self.remaining(instance):
                 raise

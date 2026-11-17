@@ -51,7 +51,7 @@ class Account:
             raise subprocess.TimeoutExpired(command, kwargs.get('timeout'))
         if kind == 'lost' or answer is None:
             return SimpleNamespace(returncode=1, stdout='')
-        return SimpleNamespace(returncode=0, stdout=json.dumps(answer))
+        return SimpleNamespace(returncode=0, stdout=answer if isinstance(answer, str) else json.dumps(answer))
 
     def visible(self, items):
         shown = []
@@ -95,6 +95,8 @@ class VastAccount(Account):
                                           'startup': arguments[arguments.index('--onstart-cmd') + 1]}
             return {'success': True, 'new_contract': identifier}
         if action == ['destroy', 'instance']:
+            if '--yes' not in arguments:
+                return 'Aborted.\n'
             return {'success': True} if self.instances.pop(int(arguments[0]), None) else None
         raise AssertionError('unexpected command: %r' % (command,))
 

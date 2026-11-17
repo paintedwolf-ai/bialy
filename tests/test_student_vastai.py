@@ -107,3 +107,11 @@ def test_a_lost_answer_is_not_a_success():
         raise subprocess.TimeoutExpired(args, 120)
     with pytest.raises(subprocess.TimeoutExpired):
         VastAI(run=run).owned('token')
+
+
+def test_destroy_answers_the_confirmation_the_cli_would_otherwise_wait_for():
+    account = VastAccount()
+    provider = account.client()
+    instance = provider.create('token', SPECIFICATION, 'arm')
+    provider.destroy(instance)
+    assert account.calls[-1][2:] == ['destroy', 'instance', instance['id'], '--yes'] and account.owned() == []
