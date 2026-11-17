@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .resources import ResourceError
 
-REQUIRED_SPECIFICATION = {'gpu_name', 'image', 'max_price', 'gpu_memory_gib', 'memory_gib', 'disk_gib'}
+REQUIRED_SPECIFICATION = {'gpu_name', 'image', 'max_price', 'gpu_memory_gib', 'memory_gib', 'disk_gib', 'download_mbps'}
 ALLOWED_SPECIFICATION = REQUIRED_SPECIFICATION | {'num_gpus'}
 # The provider stores the startup command in a bounded field.
 STARTUP_LIMIT = 4000
@@ -56,7 +56,8 @@ class VastAI:
             raise ResourceError('startup command exceeds the provider limit')
         query = ['gpu_name=' + specification['gpu_name'], 'num_gpus=%d' % specification.get('num_gpus', 1),
                  'gpu_ram>=%d' % specification['gpu_memory_gib'], 'cpu_ram>=%d' % specification['memory_gib'],
-                 'disk_space>=%d' % specification['disk_gib'], 'dph_total<=%s' % specification['max_price'],
+                 'disk_space>=%d' % specification['disk_gib'], 'inet_down>=%d' % specification['download_mbps'],
+                 'dph_total<=%s' % specification['max_price'],
                  'rentable=true', 'verified=true']
         offers = self.call('search', 'offers', '--type', 'on-demand', '--order', 'dph_total', ' '.join(query))
         if not isinstance(offers, list) or not offers or not isinstance(offers[0], dict) or not offers[0].get('id'):

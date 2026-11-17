@@ -720,7 +720,9 @@ sends a bid. An interruptible instance costs less, but the
 provider can stop it at any moment, and a run does not move to another machine:
 its job directory, merge and export live on the instance, and only LoRA
 checkpoints are replicated. One preemption late in a 26B-A4B run costs more
-than the discount saves. `max_price` caps the hourly price of the offer taken.
+than the discount saves. `max_price` caps the hourly price of the offer taken, and `download_mbps` is the
+slowest download link an offer may have: the cheapest offer is otherwise often a
+host that cannot pull the image and a 50 GB checkpoint before the wait for it ends.
 An instance the provider reports as interruptible is refused and destroyed.
 
 **One requirement per tier.** `config/student-requirements.json` states the GPU

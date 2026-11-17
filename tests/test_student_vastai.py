@@ -8,7 +8,7 @@ from rental_accounts import VastAccount
 from bialy.student_host.resources import ResourceError
 from bialy.student_host.vastai import VastAI, label
 
-SPECIFICATION = {'gpu_name': 'H100_SXM', 'num_gpus': 2, 'image': 'example/image:1', 'max_price': 3.5,
+SPECIFICATION = {'gpu_name': 'H100_SXM', 'num_gpus': 2, 'image': 'example/image:1', 'max_price': 3.5, 'download_mbps': 500,
                  'gpu_memory_gib': 79, 'memory_gib': 128, 'disk_gib': 320}
 
 
@@ -52,7 +52,7 @@ def test_an_instance_is_rented_on_demand_within_the_declared_capacity_and_price(
     search, create = account.calls
     assert search[2:6] == ['search', 'offers', '--type', 'on-demand']
     assert search[-1].split() == ['gpu_name=H100_SXM', 'num_gpus=2', 'gpu_ram>=79', 'cpu_ram>=128', 'disk_space>=320',
-                                  'dph_total<=3.5', 'rentable=true', 'verified=true']
+                                  'inet_down>=500', 'dph_total<=3.5', 'rentable=true', 'verified=true']
     assert not any('bid' in argument for argument in create)
     assert create[create.index('--label') + 1] == label('token') and create[create.index('--disk') + 1] == '320'
     assert create[create.index('--onstart-cmd') + 1] == 'startup'
