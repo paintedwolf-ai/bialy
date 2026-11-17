@@ -88,7 +88,7 @@ def validate_provisioning(provision):
     allowed = vastai.ALLOWED_SPECIFICATION if name == 'vastai' else scaleway.SPECIFICATION
     if not isinstance(spec, dict) or not required <= set(spec) or set(spec) - allowed:
         raise JobError('instance specification fields are invalid')
-    integers = {*CAPACITY, 'num_gpus'} & set(spec)
+    integers = {*CAPACITY, 'num_gpus', 'download_mbps'} & set(spec)
     strings = set(spec) - integers - {'max_price'}
     if (any(type(spec[key]) is not int or spec[key] <= 0 for key in integers)
             or any(not isinstance(spec[key], str) or not spec[key] for key in strings)

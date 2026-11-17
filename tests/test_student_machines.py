@@ -95,6 +95,7 @@ def test_a_rental_must_be_on_demand_and_bounded(tmp_path, change):
 
 @pytest.mark.parametrize('change', [
     {'bid_price': 1.1}, {'max_price': '3.5'}, {'max_price': 0}, {'disk_gib': '320'}, {'num_gpus': '1'},
+    {'download_mbps': '500'}, {'download_mbps': 0},
     {'image': 'example/image'}, {'image': 'example/image:latest'}, {'image': ''}])
 def test_a_vastai_specification_cannot_bid_or_leave_capacity_price_or_image_open(tmp_path, change):
     config = configuration(tmp_path, 'vastai', **change)

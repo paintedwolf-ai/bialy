@@ -181,7 +181,7 @@ def configuration(tmp_path, provider, **specification):
     """A machine configuration that rents from `provider` and can hold every tier."""
     capacity = {'gpu_memory_gib': 79, 'memory_gib': 128, 'disk_gib': 320}
     if provider == 'vastai':
-        provision = {'provider': 'vastai', 'specification': {'gpu_name': 'H100_SXM', 'image': 'example/image:1', 'max_price': 3.5,
+        provision = {'provider': 'vastai', 'specification': {'gpu_name': 'H100_SXM', 'image': 'example/image:1', 'max_price': 3.5, 'download_mbps': 500,
                                                              **capacity, **specification}}
     else:
         provision = {'provider': 'scaleway', 'profile': 'profile', 'project': 'project', 'zone': 'zone',

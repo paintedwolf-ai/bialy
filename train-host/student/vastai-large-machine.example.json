@@ -18,6 +18,7 @@
       "gpu_memory_gib": 140,
       "memory_gib": 128,
       "disk_gib": 320,
+      "download_mbps": 500,
       "image": "nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04",
       "max_price": 6.0
     }
