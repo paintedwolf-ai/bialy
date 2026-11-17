@@ -120,7 +120,7 @@ def test_no_ledger_write_can_be_the_controllers_last_and_strand_an_instance(tmp_
 def test_an_instance_that_never_reports_an_endpoint_is_still_destroyed(tmp_path, monkeypatch, provider):
     account = ACCOUNTS[provider](boot=10 ** 9)
     outcome, error = rent(tmp_path, account, monkeypatch)
-    assert outcome == 'JobError' and 'did not become ready' in str(error)
+    assert outcome == 'Unreachable' and 'did not become ready' in str(error)
     assert account.created == 1 and account.owned() == []
     assert json.loads((tmp_path / 'job' / 'cleanup.json').read_text())['status'] == 'confirmed'
 
