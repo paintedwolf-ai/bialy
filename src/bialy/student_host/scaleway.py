@@ -4,11 +4,12 @@ import subprocess
 
 from .resources import ResourceError
 
+PREFIX = 'pw-training-'
 SPECIFICATION = {'type', 'image', 'root_volume', 'gpu_memory_gib', 'memory_gib', 'disk_gib'}
 
 
 def name(token):
-    return 'pw-training-' + token
+    return PREFIX + token
 
 
 def normalize(server):
@@ -17,6 +18,7 @@ def normalize(server):
     address = next((item['address'] for item in addresses.values() if item.get('address')), None)
     children = [['volume', item['id']] for item in (server.get('volumes') or {}).values()] + [['ip', key] for key in addresses]
     return {'id': server['id'], 'state': str(server.get('state') or 'pending'), 'interruptible': False, 'children': sorted(children),
+            'host': None, 'price_per_hour': None,
             'endpoint': {'address': address, 'port': 22} if server.get('state') == 'running' and address else None}
 
 
@@ -44,8 +46,23 @@ class Scaleway:
         return [normalize(server) for server in self.listing('instance', 'server', 'tags=' + token)
                 if token in (server.get('tags') or []) and server.get('project') == self.project and server.get('name') == name(token)]
 
-    def create(self, token, specification, startup, avoid=()):
-        """`avoid` is unused: a server type does not name the machine it lands on."""
+    def check(self):
+        """The CLI is not held to a release: its JSON output is a stable interface."""
+
+    def labelled(self):
+        """Every server of the project that carries a lease name, by its token."""
+        found = {}
+        for server in self.listing('instance', 'server'):
+            token = str(server.get('name') or '')[len(PREFIX):]
+            if str(server.get('name') or '').startswith(PREFIX) and server.get('project') == self.project:
+                found.setdefault(token, []).append(normalize(server))
+        return found
+
+    def offer(self, specification, avoid=()):
+        """A server type is not searched for, names no machine and states no price here."""
+        return {'id': specification['type'], 'host': None, 'price_per_hour': None}
+
+    def create(self, token, specification, startup, offer):
         server = self.call('instance', 'server', 'create', 'project-id=' + self.project, 'name=' + name(token),
                            'tags.0=' + token, 'ip=new', 'type=' + specification['type'], 'image=' + specification['image'],
                            'root-volume=' + specification['root_volume'], 'cloud-init=' + startup)

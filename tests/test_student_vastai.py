@@ -5,8 +5,14 @@ from types import SimpleNamespace
 import pytest
 from rental_accounts import VastAccount
 
-from bialy.student_host.resources import ResourceError
-from bialy.student_host.vastai import VastAI, label
+from bialy.student_host.resources import NoOffer, ResourceError
+from bialy.student_host.vastai import PINS, VastAI, cli_version, label
+
+
+def rent(provider, token, startup, avoid=()):
+    """Take the cheapest offer, as the ledger does."""
+    return provider.create(token, SPECIFICATION, startup, provider.offer(SPECIFICATION, avoid))
+
 
 SPECIFICATION = {'gpu_name': 'H100_SXM', 'num_gpus': 2, 'image': 'example/image:1', 'max_price': 3.5, 'download_mbps': 500,
                  'gpu_memory_gib': 79, 'memory_gib': 128, 'disk_gib': 320}
@@ -53,7 +59,7 @@ def test_an_unstructured_listing_is_an_error_and_never_an_empty_account(stdout):
 
 def test_an_instance_is_rented_on_demand_within_the_declared_capacity_and_price():
     account = VastAccount()
-    created = account.client().create('token', SPECIFICATION, 'startup')
+    created = rent(account.client(), 'token', 'startup')
     search, create = account.calls
     assert search[2:6] == ['search', 'offers', '--type', 'on-demand']
     assert search[-1].split() == ['gpu_name=H100_SXM', 'num_gpus=2', 'gpu_ram>=79', 'cpu_ram>=128', 'disk_space>=320',
@@ -61,21 +67,22 @@ def test_an_instance_is_rented_on_demand_within_the_declared_capacity_and_price(
     assert not any('bid' in argument for argument in create)
     assert create[create.index('--label') + 1] == label('token') and create[create.index('--disk') + 1] == '320'
     assert create[create.index('--onstart-cmd') + 1] == 'startup'
-    assert created == {'id': '9001', 'state': 'pending', 'interruptible': False, 'children': [], 'host': '70', 'endpoint': None}
+    assert created == {'id': '9001', 'state': 'pending', 'interruptible': False, 'children': [], 'host': '70', 'price_per_hour': 3.0,
+                       'endpoint': None}
 
 
 def test_creation_needs_no_listing_and_a_startup_the_provider_would_truncate_is_refused():
     account = VastAccount(lag=10 ** 9)
-    assert account.client().create('token', SPECIFICATION, 'startup')['id'] == '9001'
+    assert rent(account.client(), 'token', 'startup')['id'] == '9001'
     with pytest.raises(ResourceError, match='limit'):
-        account.client().create('token', SPECIFICATION, 'x' * 4001)
+        rent(account.client(), 'token', 'x' * 4001)
     assert account.created == 1
 
 
 def test_destroy_is_requested_by_identity_even_when_the_listing_omits_the_instance():
     account = VastAccount(lag=10 ** 9)
     provider = account.client()
-    instance = provider.create('token', SPECIFICATION, 'startup')
+    instance = rent(provider, 'token', 'startup')
     assert provider.remaining(instance) == [] and len(account.owned()) == 1
     assert provider.destroy(instance) is True and account.owned() == []
     assert provider.destroy(instance) is False
@@ -84,7 +91,7 @@ def test_destroy_is_requested_by_identity_even_when_the_listing_omits_the_instan
 def test_a_refused_destroy_of_a_listed_instance_is_an_error_and_a_lost_answer_is_not_an_acknowledgement():
     account = VastAccount()
     provider = account.client()
-    instance = provider.create('token', SPECIFICATION, 'startup')
+    instance = rent(provider, 'token', 'startup')
     account.fail(len(account.calls), 'refused')
     with pytest.raises(ResourceError):
         provider.destroy(instance)
@@ -117,14 +124,51 @@ def test_a_lost_answer_is_not_a_success():
 def test_destroy_answers_the_confirmation_the_cli_would_otherwise_wait_for():
     account = VastAccount()
     provider = account.client()
-    instance = provider.create('token', SPECIFICATION, 'arm')
+    instance = rent(provider, 'token', 'arm')
     provider.destroy(instance)
     assert account.calls[-1][2:] == ['destroy', 'instance', instance['id'], '--yes'] and account.owned() == []
 
 
 def test_an_offer_on_an_avoided_machine_is_passed_over_for_the_next_cheapest():
     account = VastAccount()
-    created = account.client().create('token', SPECIFICATION, 'startup', avoid={'70'})
+    created = rent(account.client(), 'token', 'startup', {'70'})
     assert account.calls[-1][4] == '778' and created['host'] == '71'
-    with pytest.raises(ResourceError, match='no matching on-demand offer'):
-        account.client().create('other', SPECIFICATION, 'startup', avoid={'70', '71'})
+    with pytest.raises(NoOffer, match='no matching on-demand offer'):
+        rent(account.client(), 'other', 'startup', {str(offer['machine_id']) for offer in account.offers})
+
+
+def test_the_offer_states_the_hourly_price_the_instance_is_then_listed_at():
+    account = VastAccount()
+    provider = account.client()
+    offer = provider.offer(SPECIFICATION)
+    assert offer == {'id': '777', 'host': '70', 'price_per_hour': 3.0} and len(account.calls) == 1
+    assert provider.create('token', SPECIFICATION, 'startup', offer)['price_per_hour'] == 3.0
+    account.instances[9001]['dph_total'] = 3.07
+    assert provider.owned('token')[0]['price_per_hour'] == 3.07
+
+
+def test_every_labelled_instance_of_the_account_is_found_by_its_token():
+    provider = listing({'id': 1, 'label': label('one')}, {'id': 2, 'label': None}, {'id': 3, 'label': 'someone-else'},
+                       {'id': 4, 'label': label('two'), 'actual_status': 'exited'}, {'id': 5, 'label': label('one')})
+    found = provider.labelled()
+    assert {token: [item['id'] for item in items] for token, items in found.items()} == {'one': ['1', '5'], 'two': ['4']}
+    assert found['two'][0]['state'] == 'exited'
+
+
+def test_the_cli_release_is_pinned_where_setup_installs_it_from():
+    setup = (PINS.parent / 'setup.sh').read_text()
+    assert 'uv tool install "vastai==$VASTAI_CLI_VERSION"' in setup and cli_version().count('.') == 2
+
+
+@pytest.mark.parametrize('answer', [SimpleNamespace(returncode=0, stdout='1.0.13\n'), SimpleNamespace(returncode=0, stdout=''),
+                                    SimpleNamespace(returncode=2, stdout=cli_version()), FileNotFoundError('vastai'),
+                                    subprocess.TimeoutExpired('vastai', 30)])
+def test_any_cli_but_the_pinned_release_is_refused_with_the_release_to_install(answer):
+    def run(args, **kwargs):
+        assert args == ['vastai', '--version']
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    with pytest.raises(ResourceError, match='vastai==' + cli_version().replace('.', r'\.')):
+        VastAI(run=run).check()
+    assert VastAI(run=lambda args, **kwargs: SimpleNamespace(returncode=0, stdout=cli_version() + '\n')).check() == cli_version()

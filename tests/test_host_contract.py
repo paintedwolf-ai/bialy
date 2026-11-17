@@ -82,9 +82,9 @@ def test_a_host_script_is_run_only_with_its_recorded_flags(tmp_path):
 def test_every_student_trainer_flag_is_recorded():
     from bialy.student_host.specification import arguments, load, students
     for student in students():
-        for options in ({}, {"pilot": True}, {"resume": True}, {"dry_run": True}):
+        for options in ({}, {"max_updates": 10}, {"resume": True}, {"max_updates": 1, "resume": True}):
             host_contract.script("/host", "scripts/bialy/custom_model/train.py",
-                                 arguments(load(), student, "/models", "/splits", "/run", "cuda:0", "/mirror", **options))
+                                 arguments(load(), student, "/models", "/splits", "/run", "cuda:0", "/mirror", checkpoint_every=5, **options))
 
 
 def test_a_missing_host_script_fails_verification(tmp_path):

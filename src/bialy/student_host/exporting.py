@@ -177,7 +177,7 @@ def publish(directory, revision, unquantized):
         raise JobError('an export does not carry the training chat template')
     result = {'schema': 'pw-student-artifact/3', 'student': plan['student'],
               'specification_sha256': plan['specification_sha256'], 'host_commit': plan['host_commit'],
-              'dry_run': plan.get('dry_run', False), 'unquantized_retained': unquantized,
+              'schedule': plan['schedule'], 'unquantized_retained': unquantized,
               'context': plan['specification']['context'], 'files': tree(gguf), 'directory': str(gguf),
               'template_sha256': template,
               'export_receipt_sha256': file_sha256(directory / 'export_receipt.json')}

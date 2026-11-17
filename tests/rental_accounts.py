@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from bialy.student_host import machines
 from bialy.student_host.scaleway import Scaleway
-from bialy.student_host.vastai import VastAI
+from bialy.student_host.vastai import VastAI, cli_version
 
 # How one provider call can fail. `refused` has no effect on the account; `lost` and
 # `timeout` take effect and then lose the answer; `outage` refuses this and every later
@@ -26,6 +26,8 @@ class Account:
         # A new instance is missing from the first `lag` listings and reports an endpoint after `boot` more.
         self.lag, self.boot = lag, boot
         self.calls, self.created, self.fault, self.dead = [], 0, None, False
+        # The most owned instances that ever existed at once.
+        self.peak = 0
         self.foreign()
 
     def fail(self, index, kind):
@@ -44,6 +46,7 @@ class Account:
         if kind in ('refused', 'outage'):
             return SimpleNamespace(returncode=1, stdout='')
         answer = self.answer(command)
+        self.peak = max(self.peak, len([item for item in self.owned() if isinstance(item, dict)]))
         if kind == 'death':
             self.dead = True
             raise Died()
@@ -64,11 +67,13 @@ class Account:
 
 class VastAccount(Account):
     name = 'vastai'
+    # The release the installed CLI reports.
+    version = cli_version()
 
     def foreign(self):
-        self.instances = {1: {'id': 1, 'label': 'someone-else', 'listed': 99, 'is_bid': False, 'machine_id': 1}}
-        # Cheapest first, as the search is ordered.
-        self.offers = [{'id': 777, 'machine_id': 70}, {'id': 778, 'machine_id': 71}]
+        self.instances = {1: {'id': 1, 'label': 'someone-else', 'listed': 99, 'is_bid': False, 'machine_id': 1, 'dph_total': 9.0}}
+        # Cheapest first, as the search is ordered. An emptied list is a market with nothing to rent.
+        self.offers = [{'id': 777 + index, 'machine_id': 70 + index, 'dph_total': 3.0 + index / 5} for index in range(5)]
 
     def client(self):
         return VastAI(run=self)
@@ -77,6 +82,8 @@ class VastAccount(Account):
         return [item for item in self.instances.values() if item['label'] != 'someone-else']
 
     def answer(self, command):
+        if command == ['vastai', '--version']:
+            return self.version + '\n'
         assert command[:2] == ['vastai', '--raw']
         action, arguments = command[2:4], command[4:]
         if action == ['show', 'instances']:
@@ -85,7 +92,7 @@ class VastAccount(Account):
                 ready = item['label'] != 'someone-else' and item['listed'] > self.lag + self.boot
                 rows.append({'id': item['id'], 'label': item['label'], 'is_bid': item['is_bid'],
                              'actual_status': 'running' if ready else 'loading',
-                             'machine_id': item['machine_id'], 'ssh_host': 'ssh.example.org', 'ssh_port': 41234,
+                             'machine_id': item['machine_id'], 'dph_total': item['dph_total'], 'ssh_host': 'ssh.example.org', 'ssh_port': 41234,
                              'public_ipaddr': '203.0.113.7' if ready else None,
                              'ports': {'22/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '41235'}]} if ready else {}})
             return rows
@@ -94,8 +101,8 @@ class VastAccount(Account):
         if action == ['create', 'instance']:
             self.created += 1
             identifier = 9000 + self.created
-            machine = next(offer['machine_id'] for offer in self.offers if str(offer['id']) == arguments[0])
-            self.instances[identifier] = {'id': identifier, 'machine_id': machine, 'label': arguments[arguments.index('--label') + 1], 'listed': 0,
+            offer = next(offer for offer in self.offers if str(offer['id']) == arguments[0])
+            self.instances[identifier] = {'id': identifier, 'machine_id': offer['machine_id'], 'dph_total': offer['dph_total'], 'label': arguments[arguments.index('--label') + 1], 'listed': 0,
                                           'is_bid': '--bid_price' in arguments,
                                           'startup': arguments[arguments.index('--onstart-cmd') + 1]}
             return {'success': True, 'new_contract': identifier}
@@ -169,8 +176,10 @@ ACCOUNTS = {'vastai': VastAccount, 'scaleway': ScalewayAccount}
 
 
 class Machine:
-    """The rented machine as the controller reaches it: reachable, with a dead-man switch that answers heartbeats."""
+    """The rented machine as the controller reaches it: reachable, with a dead-man switch
+    that answers heartbeats and a preflight that reports its capacity."""
     host = 'fixture'
+    capacity = {'disk_gib': 400, 'memory_gib': 200, 'gpu_memory_gib': 140, 'problems': []}
 
     def __init__(self, address, settings, switch=None):
         self.address, self.settings, self.commands = address, settings, []
@@ -180,6 +189,10 @@ class Machine:
     def command(self, args, **kwargs):
         self.commands.append(args)
         return json.dumps(self.switch) if args[0] == machines.DEADMAN else ''
+
+    def script(self, path, args, **kwargs):
+        self.commands.append(['script', *args])
+        return 0, json.dumps(self.capacity) + '\n'
 
 
 def configuration(tmp_path, provider, **specification):
@@ -191,7 +204,7 @@ def configuration(tmp_path, provider, **specification):
     else:
         provision = {'provider': 'scaleway', 'profile': 'profile', 'project': 'project', 'zone': 'zone',
                      'specification': {'type': 'H100-1-80G', 'image': 'image', 'root_volume': '1TB', **capacity, **specification}}
-    provision.update(registry=str(tmp_path / 'registry'), rental='on-demand', lifetime_hours=24)
+    provision.update(registry=str(tmp_path / 'registry'), rental='on-demand', lifetime_hours=24, start_minutes=15)
     return {'host_repository': 'https://example.invalid/host.git', 'host_commit': 'a' * 40,
             'bialy_repository': 'https://example.invalid/bialy.git', 'bialy_commit': 'b' * 40,
             'llama_repository': 'https://example.invalid/llama.cpp.git', 'llama_commit': 'c' * 40,

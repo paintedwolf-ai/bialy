@@ -12,6 +12,7 @@
     "registry": "/var/lib/paintedwolf-training/resources",
     "rental": "on-demand",
     "lifetime_hours": 72,
+    "start_minutes": 15,
     "specification": {
       "gpu_name": "H200",
       "num_gpus": 1,

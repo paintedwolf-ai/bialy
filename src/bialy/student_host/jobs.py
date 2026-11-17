@@ -13,6 +13,16 @@ from .specification import arguments, identity, training_config
 
 # The host's student pipeline, relative to its checkout.
 PIPE = 'scripts/bialy/custom_model'
+# How a job's trainer invocations are bounded. A checkpoint is written every
+# `checkpoint_every` updates; `updates` ends the first invocation, which pauses, and the
+# job's next attempt resumes it to the end. `rehearsal` is the shortest schedule that
+# still writes a checkpoint, pauses and resumes: with one update an epoch, three updates.
+SCHEDULES = {'full': {'checkpoint_every': 50, 'updates': None},
+             'pilot': {'checkpoint_every': 5, 'updates': 10},
+             'rehearsal': {'checkpoint_every': 1, 'updates': 1}}
+# What a trainer invocation reports about itself, kept for every attempt of a job.
+REPORT = ('step', 'total_steps', 'elapsed_seconds', 'median_update_seconds', 'observed_update_range_seconds',
+          'peak_cuda_bytes', 'peak_process_rss_bytes')
 
 
 class JobError(RuntimeError):
@@ -53,20 +63,28 @@ def rendering(spec, checkout):
     return {'profile': declared['profile'], 'template_sha256': declared['template_sha256']}
 
 
-def create(root, spec, student, checkout, models, splits, mirror, device, pilot, *, dry_run=False):
+def create(root, spec, student, checkout, models, splits, mirror, device, schedule, *, name=None):
+    """A new job directory holding its plan. A named job is created once: asking again
+    for the same plan returns it, so a caller that lost the answer can ask again."""
+    if schedule not in SCHEDULES:
+        raise JobError('unknown training schedule ' + str(schedule))
     checkout, models, splits, mirror = map(lambda path: Path(path).resolve(), (checkout, models, splits, mirror))
     revision = subprocess.run(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(checkout), 'status', '--porcelain'], capture_output=True, text=True, check=True).stdout
     if dirty:
         raise JobError('trainer checkout must be clean')
-    directory = Path(root).resolve() / (student + '-' + uuid.uuid4().hex)
-    directory.mkdir(parents=True, exist_ok=False)
+    directory = Path(root).resolve() / (name or student + '-' + uuid.uuid4().hex)
     plan = {'schema': 'pw-student-job/1', 'student': student, 'specification': spec, 'specification_sha256': identity(spec),
             'host_commit': revision, 'checkout': str(checkout), 'models': str(models), 'splits': str(splits),
             'rendering': rendering(spec, checkout),
             'dataset': {name: file_sha256(splits / name) for name in ('train.jsonl', 'val.jsonl', 'holdout.jsonl', 'source.json')},
-            'model': checkpoint(spec, student, models), 'device': device, 'pilot': pilot, 'dry_run': dry_run,
+            'model': checkpoint(spec, student, models), 'device': device, 'schedule': schedule,
             'mirror': str(mirror / directory.name), 'out': str(directory / 'training')}
+    if name and (directory / 'plan.json').exists():
+        if json.loads((directory / 'plan.json').read_text()) != plan:
+            raise JobError('a job of this name exists with another plan')
+        return directory
+    directory.mkdir(parents=True, exist_ok=bool(name))
     write(directory / 'plan.json', plan)
     return directory
 
@@ -125,6 +143,23 @@ def train(directory, run=subprocess.run, sleep=time.sleep):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+def settled(state, plan, terminal, exit_status):
+    """The execution state with one more attempt's own report, and the job's totals over
+    every attempt. A paused attempt reports in its terminal receipt, a complete one in the
+    result; the peak of an earlier attempt is not in a later one's report."""
+    report = terminal.get('progress') or {}
+    if terminal.get('status') == 'complete':
+        report = json.loads((Path(plan['out']) / 'result.json').read_text()).get('resources', {})
+    history = [*state.get('history', []), {'attempt': state['attempts'], 'status': terminal.get('status'), 'exit_status': exit_status,
+                                          **{name: report.get(name) for name in REPORT}}]
+
+    def greatest(name):
+        return max((item[name] for item in history if item[name] is not None), default=None)
+    resources = {'peak_cuda_bytes': greatest('peak_cuda_bytes'), 'peak_process_rss_bytes': greatest('peak_process_rss_bytes'),
+                 'elapsed_seconds': sum(item['elapsed_seconds'] or 0 for item in history)}
+    return dict(state, history=history, resources=resources)
+
+
 def train_owned(directory, run, sleep):
     plan = json.loads((directory / 'plan.json').read_text())
     validate_inputs(plan)
@@ -140,7 +175,7 @@ def train_owned(directory, run, sleep):
         terminal = json.loads(terminal_path.read_text())
         if terminal.get('status') == 'complete':
             result = validate_result(plan)
-            write(state_path, dict(state, status='complete'))
+            write(state_path, dict(settled(state, plan, terminal, None), status='complete'))
             return result
         if terminal.get('status') == 'running':
             raise JobError('training process has not settled')
@@ -151,8 +186,9 @@ def train_owned(directory, run, sleep):
             if terminal.get('status') != 'paused' and not terminal.get('failure', {}).get('retryable', False):
                 raise JobError('training recipe failed permanently')
             sleep(2 ** state['attempts'])
-        args = arguments(plan['specification'], plan['student'], plan['models'], plan['splits'],
-                         plan['out'], plan['device'], plan['mirror'], pilot=plan['pilot'], resume=resume, dry_run=plan.get('dry_run', False))
+        schedule = SCHEDULES[plan['schedule']]
+        args = arguments(plan['specification'], plan['student'], plan['models'], plan['splits'], plan['out'], plan['device'],
+                         plan['mirror'], checkpoint_every=schedule['checkpoint_every'], max_updates=schedule['updates'], resume=resume)
         state.update(status='running', attempts=state['attempts'] + 1)
         write(state_path, state)
         previous_terminal = file_sha256(terminal_path) if terminal_path.exists() else None
@@ -165,12 +201,14 @@ def train_owned(directory, run, sleep):
         if file_sha256(terminal_path) == previous_terminal:
             raise JobError('trainer did not publish a new terminal receipt')
         terminal = json.loads(terminal_path.read_text())
-        if terminal.get('status') == 'complete' and result.returncode == 0:
-            verified = validate_result(plan)
-            write(state_path, dict(state, status='complete'))
-            return verified
         if terminal.get('status') == 'running':
             raise JobError('trainer exit left an unsettled execution')
+        if terminal.get('status') == 'complete' and result.returncode == 0:
+            verified = validate_result(plan)
+            write(state_path, dict(settled(state, plan, terminal, 0), status='complete'))
+            return verified
+        state = settled(state, plan, {} if terminal.get('status') == 'complete' else terminal, result.returncode)
         retryable = terminal.get('status') == 'paused' or terminal.get('failure', {}).get('retryable', False)
-        write(state_path, dict(state, status='retrying' if retryable and state['attempts'] < 3 else 'failed', terminal=terminal))
+        state.update(status='retrying' if retryable and state['attempts'] < 3 else 'failed', terminal=terminal)
+        write(state_path, state)
     raise JobError('typed transient retry allowance exhausted')

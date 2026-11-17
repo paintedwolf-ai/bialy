@@ -15,6 +15,7 @@
     "registry": "/var/lib/paintedwolf-training/resources",
     "rental": "on-demand",
     "lifetime_hours": 72,
+    "start_minutes": 15,
     "specification": {
       "type": "H100-1-80G",
       "image": "",

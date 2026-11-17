@@ -3,11 +3,11 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
-from rental_accounts import Machine, configuration
+from rental_accounts import Machine, VastAccount, configuration
 
 from bialy.student_host import machines, reaper
 from bialy.student_host.jobs import JobError
-from bialy.student_host.remote_training import Remote, bootstrap
+from bialy.student_host.remote_training import Remote, prepare, setup_steps
 from bialy.student_host.resources import ResourceError
 from bialy.student_host.specification import students
 
@@ -31,6 +31,22 @@ def example(name):
         value['provisioning'].update({key: 'filled' for key in ('project',) if key in value['provisioning']})
         value['provisioning']['specification'] = {key: field or 'filled' for key, field in value['provisioning']['specification'].items()}
     return value
+
+
+@pytest.fixture(autouse=True)
+def installed_cli(monkeypatch):
+    """The pinned provider CLI, answered by a fake account instead of an installed one."""
+    monkeypatch.setattr(machines, 'provider', lambda provision: VastAccount().client())
+
+
+def bootstrap(remote, config, workspace, student, directory):
+    """Every setup step up to the upload, as a job runs them on a machine it just reached."""
+    job = directory / workspace.rsplit('/', 1)[1]
+    job.mkdir(exist_ok=True)
+    steps = [step for step in setup_steps(remote, config, workspace, student, directory / 'splits', directory / 'key', job, 'full')
+             if step[0] in ('preflight', 'bootstrap')]
+    prepare(steps, job, lambda: None, lambda name: None)
+    return job
 
 
 def test_every_declared_student_has_a_machine_requirement():
@@ -72,21 +88,33 @@ def test_a_specification_that_cannot_hold_the_tier_is_refused_before_renting(tmp
     largest = max(students(), key=lambda student: machines.requirement(student)['disk_gib'])
     short = machines.requirement(largest)[field] - 1
     config = configuration(tmp_path, provider, **{'gpu_memory_gib': ROOMY, field: short})
-    monkeypatch.setattr(machines, 'provider', lambda provision: pytest.fail('a provider was contacted'))
-    with pytest.raises(JobError, match='%s is %d, the tier needs %d' % (field, short, short + 1)):
-        machines.preflight(config, largest)
+    with monkeypatch.context() as untouched:
+        untouched.setattr(machines, 'provider', lambda provision: pytest.fail('a provider was contacted'))
+        with pytest.raises(JobError, match='%s is %d, the tier needs %d' % (field, short, short + 1)):
+            machines.preflight(config, largest)
     machines.preflight(configuration(tmp_path, provider, gpu_memory_gib=ROOMY), largest)
+
+
+@pytest.mark.parametrize('version', ['1.0.13', '', '2.0.0'])
+def test_a_provider_cli_other_than_the_pinned_release_is_refused_before_renting(tmp_path, monkeypatch, version):
+    account = VastAccount()
+    account.version = version
+    monkeypatch.setattr(machines, 'provider', lambda provision: account.client())
+    with pytest.raises(JobError, match=r'this controller drives vastai==\d'):
+        machines.preflight(configuration(tmp_path, 'vastai', gpu_memory_gib=ROOMY), 'e4b')
+    assert account.calls == [['vastai', '--version']]
 
 
 @pytest.mark.parametrize('change', [
     {'rental': 'interruptible'}, {'rental': None}, {'lifetime_hours': 0}, {'lifetime_hours': 1000}, {'lifetime_hours': '24'},
+    {'start_minutes': 0}, {'start_minutes': 61}, {'start_minutes': '15'},
     {'registry': 'relative'}, {'unknown': 1}])
 def test_a_rental_must_be_on_demand_and_bounded(tmp_path, change):
     config = configuration(tmp_path, 'vastai')
     config['provisioning'].update(change)
     with pytest.raises(JobError):
         machines.validate(config)
-    for missing in ('rental', 'lifetime_hours'):
+    for missing in ('rental', 'lifetime_hours', 'start_minutes'):
         config = configuration(tmp_path, 'scaleway')
         del config['provisioning'][missing]
         with pytest.raises(JobError):
@@ -137,7 +165,7 @@ def test_existing_machine_never_enters_instance_provisioning_or_cleanup(tmp_path
     def remote(host, settings):
         connections.append((host, settings))
         return Machine(host, settings)
-    with machines.connect(config, tmp_path, False, remote, sleep=lambda _: None) as (connection, supervisor):
+    with machines.connect(config, tmp_path, remote, sleep=lambda _: None) as (connection, supervisor):
         assert connection.commands == [['true']] and supervisor.check() is None and supervisor.lost() is None
     assert connections == [('training.example.org', config['machine'])]
     assert not (tmp_path / 'resource.json').exists()
@@ -192,6 +220,7 @@ def test_a_machine_is_measured_against_the_tier_before_bootstrap_touches_it(tmp_
         bootstrap(remote, configuration(tmp_path, 'vastai'), '/workspace/training/job', '26b-a4b', tmp_path)
     assert remote.commands == []
     path, args = remote.scripts[0]
+    tmp_path = tmp_path / 'job'
     assert path == machines.PREFLIGHT_SCRIPT
     assert args == ['install', '/workspace/training', '/root/.local/bin/uv', 'cuda:0',
                     str(needed['disk_gib']), str(needed['memory_gib']), str(needed['gpu_memory_gib'])]
@@ -205,6 +234,9 @@ def test_an_existing_machine_is_only_checked_and_a_silent_preflight_is_a_failure
     remote.script = lambda path, args, timeout: (255, '')
     with pytest.raises(JobError, match='did not report'):
         machines.measure(remote, existing(tmp_path), 'e4b', tmp_path)
+    remote.script = lambda path, args, timeout: (1, json.dumps({'problems': []}))
+    with pytest.raises(JobError, match='preflight failed'):
+        machines.measure(remote, existing(tmp_path), 'e4b', tmp_path)
 
 
 def test_bootstrap_scopes_sources_tools_and_models_to_the_job_workspace(tmp_path):
@@ -212,28 +244,104 @@ def test_bootstrap_scopes_sources_tools_and_models_to_the_job_workspace(tmp_path
     remote = Measured({'disk_gib': 900, 'memory_gib': 500, 'gpu_memory_gib': 79, 'problems': []})
     bootstrap(remote, config, '/srv/training/job', '26b-a4b', tmp_path)
     calls = remote.commands
-    clones = [args for args in calls if args[:2] == ['git', 'clone']]
-    assert [args[-1] for args in clones] == ['/srv/training/job/host', '/srv/training/job/bialy', '/srv/training/job/llama.cpp']
+    lock = ['flock', '/srv/training/job/.setup.lock']
+    fetched = [args for args in calls if 'fetch' in args]
+    assert [args[4] for args in fetched] == ['/srv/training/job/host', '/srv/training/job/bialy', '/srv/training/job/llama.cpp']
+    assert all(args[:2] == lock for args in fetched)
     assert all('/root/' not in ' '.join(args) and '/scratch/' not in ' '.join(args) for args in calls)
     assert any('UV_TOOL_DIR=/srv/training/job/tools' in args for args in calls)
-    models = next(args for args in calls if 'models' in args)
-    assert models[-3:] == ['/srv/training/job/models', '--student', '26b-a4b']
+    models = next(args for args in calls if 'bialy.student_host' in args)
+    assert models[-5:] == ['models', '--root', '/srv/training/job/models', '--student', '26b-a4b']
     llama = '/srv/training/job/llama.cpp'
-    assert ['git', '-C', llama, 'checkout', '--detach', 'c' * 40] in calls
-    configure, build = [args for args in calls if args[0] == 'cmake']
+    assert [*lock, 'git', '-C', llama, 'checkout', '-q', '--detach', 'c' * 40] in calls
+    configure, build = [args for args in calls if 'cmake' in args]
     assert '-DGGML_CUDA=OFF' in configure
-    assert build[:3] == ['cmake', '--build', llama + '/build'] and {'llama-quantize', 'llama-server'} <= set(build)
+    assert build[2:5] == ['cmake', '--build', llama + '/build'] and {'llama-quantize', 'llama-server'} <= set(build)
     synced = [args[args.index('--project') + 1] for args in calls if 'sync' in args]
     assert synced == [prefix + suffix for prefix in ['/srv/training/job/'] for suffix in ('bialy', 'host/scripts/bialy/custom_model', 'host/scripts/generation')]
+
+
+def test_setup_interrupted_at_any_command_resumes_without_repeating_a_finished_step(tmp_path):
+    config = existing(tmp_path)
+    report = {'disk_gib': 900, 'memory_gib': 500, 'gpu_memory_gib': 79, 'problems': []}
+    clean = Measured(report)
+    bootstrap(clean, config, '/srv/training/job', 'e4b', tmp_path)
+    total = len(clean.commands)
+    assert total > 10
+    for index in range(total):
+        root = tmp_path / str(index)
+        root.mkdir()
+        first = Measured(report)
+
+        def dying(args, index=index, first=first, **kwargs):
+            if len(first.commands) == index:
+                raise JobError('connection lost')
+            first.commands.append(args)
+            return ''
+        first.command = dying
+        with pytest.raises(JobError, match='connection lost'):
+            bootstrap(first, config, '/srv/training/job', 'e4b', root)
+        done = json.loads((root / 'job' / 'setup.json').read_text())['done'] if (root / 'job' / 'setup.json').exists() else []
+        second = Measured(report)
+        job = bootstrap(second, config, '/srv/training/job', 'e4b', root)
+        assert json.loads((job / 'setup.json').read_text())['done'] == ['preflight', 'sources', 'environments', 'llama', 'checkpoint']
+        # The interrupted step runs whole again; the steps recorded before it do not.
+        assert (len(second.scripts) == 0) is ('preflight' in done)
+        assert clean.commands[-1] == second.commands[-1] and len(second.commands) <= total
+        assert set(map(tuple, clean.commands)) == set(map(tuple, first.commands + second.commands))
+
+
+def test_setup_starts_over_on_a_machine_that_replaced_the_one_it_began_on(tmp_path):
+    from bialy.student_host.resources import write
+    config = existing(tmp_path)
+    remote = Measured({'disk_gib': 900, 'memory_gib': 500, 'gpu_memory_gib': 79, 'problems': []})
+    job = bootstrap(remote, config, '/srv/training/job', 'e4b', tmp_path)
+    again = Measured(remote.report)
+    bootstrap(again, config, '/srv/training/job', 'e4b', tmp_path)
+    assert again.commands == [] and again.scripts == []
+    write(job / 'resource.json', {'token': 'another-lease'})
+    bootstrap(again, config, '/srv/training/job', 'e4b', tmp_path)
+    assert again.commands == remote.commands and len(again.scripts) == 1
+
+
+def test_a_refused_key_is_told_apart_from_a_connection_not_yet_accepted(tmp_path):
+    def remote(returncode, stderr):
+        return Remote('192.0.2.1', existing(tmp_path)['machine'],
+                      run=lambda args, **kwargs: SimpleNamespace(returncode=returncode, stdout='', stderr=stderr))
+    with pytest.raises(machines.Refused):
+        remote(255, 'root@192.0.2.1: Permission denied (publickey).').command(['true'])
+    for returncode, stderr in ((255, 'ssh: connect to host 192.0.2.1 port 22: Connection refused'), (1, 'Permission denied')):
+        with pytest.raises(JobError) as caught:
+            remote(returncode, stderr).command(['true'])
+        assert not isinstance(caught.value, machines.Refused)
+
+
+def test_a_machine_that_refuses_the_key_is_given_up_on_long_before_one_still_starting(tmp_path):
+    slept = []
+
+    class Answering(Machine):
+        error = machines.Refused('refused')
+
+        def command(self, args, **kwargs):
+            raise self.error
+    tries = 15 * 60 // machines.POLL_SECONDS
+    with pytest.raises(machines.Unreachable, match='refuses the registered SSH key'):
+        machines.reachable(Answering('192.0.2.1', {}), machines.Unsupervised(), slept.append, tries)
+    assert machines.REFUSED_SECONDS <= sum(slept) <= machines.REFUSED_SECONDS + machines.POLL_SECONDS
+    slept.clear()
+    Answering.error = JobError('connection refused')
+    with pytest.raises(machines.Unreachable, match='did not become reachable'):
+        machines.reachable(Answering('192.0.2.1', {}), machines.Unsupervised(), slept.append, tries)
+    assert sum(slept) == 15 * 60
 
 
 def test_receive_never_pulls_excluded_artifacts(tmp_path):
     calls = []
     remote = Remote('192.0.2.1', existing(tmp_path)['machine'], run=lambda args, **kwargs: calls.append((args, kwargs)))
-    remote.receive('/w/job/', tmp_path / 'job', exclude=('/merged/', '/gguf/'), timeout=7200)
+    remote.receive('/w/job/', tmp_path / 'job', exclude=('/merged/', '/gguf/'), timeout=7200, limit='1g')
     args, kwargs = calls[0]
     assert args[args.index('/merged/') - 1] == '--exclude' and args[args.index('/gguf/') - 1] == '--exclude'
-    assert '.pending-*' in args and kwargs['timeout'] == 7200
+    assert '.pending-*' in args and '--max-size=1g' in args and kwargs['timeout'] == 7200
 
 
 class Ledger:

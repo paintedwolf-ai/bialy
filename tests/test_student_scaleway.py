@@ -7,6 +7,12 @@ from rental_accounts import ScalewayAccount
 from bialy.student_host.resources import ResourceError
 from bialy.student_host.scaleway import Scaleway, name, normalize
 
+
+def rent(provider, token, startup, avoid=()):
+    """Take the cheapest offer, as the ledger does."""
+    return provider.create(token, SPECIFICATION, startup, provider.offer(SPECIFICATION, avoid))
+
+
 SPECIFICATION = {'type': 'H100-1-80G', 'image': 'image', 'root_volume': '1TB', 'gpu_memory_gib': 79, 'memory_gib': 200, 'disk_gib': 1000}
 
 
@@ -39,7 +45,7 @@ def test_an_unstructured_listing_is_an_error_and_never_an_empty_project(stdout):
 
 def test_a_server_is_created_with_its_token_and_startup_and_returned_with_its_children():
     account = ScalewayAccount()
-    created = account.client().create('token', SPECIFICATION, '#!/bin/bash\narm\n')
+    created = rent(account.client(), 'token', '#!/bin/bash\narm\n')
     arguments = account.calls[0]
     assert {'name=' + name('token'), 'tags.0=token', 'type=H100-1-80G', 'root-volume=1TB', 'cloud-init=#!/bin/bash\narm\n'} <= set(arguments)
     assert created['children'] == [['ip', 'server-1-ip'], ['volume', 'server-1-volume']] and created['endpoint'] is None
@@ -49,7 +55,7 @@ def test_destroy_deletes_children_the_server_left_behind_and_nothing_foreign():
     account = ScalewayAccount()
     account.orphans = True
     provider = account.client()
-    instance = provider.create('token', SPECIFICATION, 'startup')
+    instance = rent(provider, 'token', 'startup')
     assert provider.destroy(instance) is True
     assert provider.remaining(instance) == [] and account.owned() == []
     assert account.children[('block', 'volume')] == {'foreign-volume'} and account.children[('instance', 'ip')] == {'foreign-ip'}
@@ -59,7 +65,7 @@ def test_destroy_deletes_children_the_server_left_behind_and_nothing_foreign():
 def test_a_refused_delete_of_a_listed_server_is_an_error_and_a_failed_listing_never_means_absent():
     account = ScalewayAccount()
     provider = account.client()
-    instance = provider.create('token', SPECIFICATION, 'startup')
+    instance = rent(provider, 'token', 'startup')
     account.fail(len(account.calls), 'refused')
     with pytest.raises(ResourceError):
         provider.destroy(instance)

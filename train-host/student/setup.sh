@@ -26,6 +26,7 @@ cmake -S "$LLAMA" -B "$LLAMA/build" -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DCMAKE_BUI
 cmake --build "$LLAMA/build" --target llama-quantize llama-server -j"$(nproc)"
 docker pull "$SERVER_IMAGE"
 uv tool install huggingface_hub==2.2.0
+uv tool install "vastai==$VASTAI_CLI_VERSION"
 uv run --project "$BIALY_CODE" --locked python -m bialy.student_host models --root "$MODELS"
 uv sync --project "$HOST_CHECKOUT/$PIPE" --locked
 uv run --project "$BIALY_CODE" --locked python -m bialy.student_host install-reaper --configuration "$STUDENT_REMOTE_CONFIG"

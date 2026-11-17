@@ -6,11 +6,11 @@ from bialy.student_host import __main__ as cli
 from bialy.student_host.specification import GIB, HEADROOM, REQUIREMENTS, arguments, load, students, training_config, training_memory
 
 
-def test_every_student_uses_identical_context_in_pilot_and_full_training():
+def test_every_student_uses_identical_context_whatever_bounds_the_run():
     spec = load()
     for student in students(spec):
-        for pilot in (False, True):
-            args = arguments(spec, student, '/models', '/splits', '/run', 'cpu', '/mirror', pilot=pilot)
+        for bounds in ({'checkpoint_every': 50}, {'checkpoint_every': 5, 'max_updates': 10}):
+            args = arguments(spec, student, '/models', '/splits', '/run', 'cpu', '/mirror', **bounds)
             assert args[args.index('--max-length')+1] == str(spec['context']['max_sequence_tokens'])
             assert '--checkpoint-mirror' in args
     assert spec['context']['thinking'] is False
@@ -52,7 +52,7 @@ def test_student_names_and_directories_must_be_usable_identities(tmp_path, model
 def test_one_recipe_reaches_the_trainer_whole_and_is_what_a_run_must_record():
     spec = load()
     for student in students(spec):
-        args = arguments(spec, student, '/models', '/splits', '/run', 'cuda:0', '/mirror')
+        args = arguments(spec, student, '/models', '/splits', '/run', 'cuda:0', '/mirror', checkpoint_every=50)
         passed = dict(zip(args[::2], args[1::2], strict=True))
         expected = training_config(spec, student, 'cuda:0')
         assert {'--' + name.replace('_', '-'): str(value) for name, value in expected.items()}.items() <= passed.items()

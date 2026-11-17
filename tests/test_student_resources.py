@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from bialy.student_host.resources import SETTLE_SECONDS, ResourceError, Resources
+from bialy.student_host.resources import SETTLE_SECONDS, NoOffer, ResourceError, Resources
 
 
 class Provider:
@@ -10,18 +10,31 @@ class Provider:
 
     def __init__(self):
         self.instances, self.created, self.acknowledges, self.fail_create = {}, 0, True, None
+        self.avoided, self.offers = [], 1
 
     def owned(self, token):
         return [dict(item) for item in self.instances.values() if item['token'] == token]
 
-    def create(self, token, specification, startup, avoid=()):
+    def offer(self, specification, avoid=()):
+        self.avoided.append(set(avoid))
+        if self.offers == 0:
+            raise NoOffer('nothing to rent')
+        return {'id': 'offer', 'host': 'machine-%d' % (self.created + 1), 'price_per_hour': 2.5}
+
+    def create(self, token, specification, startup, offer):
         self.created += 1
         instance = {'id': 'instance-%d' % self.created, 'token': token, 'state': 'pending', 'endpoint': None,
-                    'interruptible': False, 'children': [], 'host': 'machine-%d' % self.created}
+                    'interruptible': False, 'children': [], 'host': offer['host'], 'price_per_hour': offer['price_per_hour']}
         self.instances[instance['id']] = instance
         if self.fail_create:
             raise self.fail_create
         return dict(instance)
+
+    def labelled(self):
+        found = {}
+        for item in self.instances.values():
+            found.setdefault(item['token'], []).append(dict(item))
+        return found
 
     def remaining(self, instance):
         return [instance['id']] if instance['id'] in self.instances else []
@@ -34,6 +47,10 @@ def ledger(tmp_path, provider, now=100):
     resources = Resources(tmp_path, provider, clock=lambda: now)
     resources.reap()
     return resources
+
+
+def record(tmp_path, token):
+    return json.loads((tmp_path / (token + '.json')).read_text())
 
 
 def at(tmp_path, provider, now):
@@ -224,9 +241,7 @@ def test_two_instances_under_one_token_are_refused_and_both_destroyed(tmp_path):
 
 def test_an_avoided_machine_is_passed_to_the_provider_until_the_avoidance_lapses(tmp_path):
     from bialy.student_host.resources import AVOID_SECONDS
-    provider, seen = Provider(), []
-    create = provider.create
-    provider.create = lambda token, specification, startup, avoid=(): (seen.append(set(avoid)), create(token, specification, startup))[1]
+    provider = Provider()
     resources = ledger(tmp_path, provider)
     first = resources.intent({}, 120, 3600)['token']
     resources.allocate(first, 'startup')
@@ -236,4 +251,44 @@ def test_an_avoided_machine_is_passed_to_the_provider_until_the_avoidance_lapses
     later = at(tmp_path, provider, 100 + AVOID_SECONDS)
     later.reap()
     later.allocate(later.intent({}, 120, 3600)['token'], 'startup')
-    assert seen == [set(), {'machine-1'}, set()]
+    assert provider.avoided == [set(), {'machine-1'}, set()]
+
+
+def test_a_search_that_finds_no_offer_leaves_a_lease_that_is_released_at_once(tmp_path):
+    provider = Provider()
+    provider.offers = 0
+    resources = ledger(tmp_path, provider)
+    token = resources.intent({}, 120, 3600)['token']
+    with pytest.raises(NoOffer):
+        resources.allocate(token, 'startup')
+    assert record(tmp_path, token)['create_started_at'] is None and provider.created == 0
+    assert resources.release(token)['state'] == 'released'
+    assert resources.unsettled() == {'leases': [], 'instances': []}
+
+
+def test_the_lease_records_the_offer_price_and_a_listing_without_one_does_not_erase_it(tmp_path):
+    provider = Provider()
+    resources = ledger(tmp_path, provider)
+    token = resources.intent({}, 120, 3600)['token']
+    resources.allocate(token, 'startup')
+    provider.instances['instance-1']['price_per_hour'] = None
+    resources.observe(token)
+    assert record(tmp_path, token)['instances'][0]['price_per_hour'] == 2.5
+    provider.instances['instance-1']['price_per_hour'] = 2.75
+    resources.observe(token)
+    assert record(tmp_path, token)['instances'][0]['price_per_hour'] == 2.75
+
+
+def test_what_is_unsettled_is_every_unreleased_dead_lease_and_every_labelled_instance_without_a_live_one(tmp_path):
+    provider = Provider()
+    resources = ledger(tmp_path, provider)
+    live = resources.intent({}, 120, 3600)['token']
+    resources.allocate(live, 'startup')
+    assert resources.unsettled() == {'leases': [], 'instances': []}
+    provider.instances['stray'] = {'id': 'stray', 'token': 'f' * 32, 'state': 'running', 'price_per_hour': 1.0}
+    provider.acknowledges = False
+    later = at(tmp_path, provider, 100 + 121)
+    found = later.unsettled()
+    assert found['leases'] == [{'token': live, 'state': 'cleanup_unconfirmed'}]
+    assert found['instances'] == [{'token': 'f' * 32, 'id': 'stray', 'state': 'running'}]
+    assert not (tmp_path / 'reaper.json').exists() or json.loads((tmp_path / 'reaper.json').read_text())['at'] == 100

@@ -91,16 +91,17 @@ def training_config(spec, student, device):
             **{name: spec['recipe'][name] for name in RECIPE}}
 
 
-def arguments(spec, student, model_root, splits, out, device, mirror, *, pilot=False, resume=False, dry_run=False):
+def arguments(spec, student, model_root, splits, out, device, mirror, *, checkpoint_every, max_updates=None, resume=False):
+    """The trainer's arguments. `max_updates` bounds one invocation; a resumed one runs to the end."""
     model = spec['models'][student]
     args = ['--model', str(Path(model_root) / model['directory']),
             '--train', str(Path(splits) / 'train.jsonl'), '--validation', str(Path(splits) / 'val.jsonl'),
             '--holdout', str(Path(splits) / 'holdout.jsonl'), '--out', str(out),
-            '--checkpoint-every', '1' if dry_run else '5' if pilot else '50', '--checkpoint-mirror', str(mirror)]
+            '--checkpoint-every', str(checkpoint_every), '--checkpoint-mirror', str(mirror)]
     for name, value in training_config(spec, student, device).items():
         args += ['--' + name.replace('_', '-'), str(value)]
-    if (pilot or dry_run) and not resume:
-        args += ['--max-updates', '1' if dry_run else '10']
+    if max_updates and not resume:
+        args += ['--max-updates', str(max_updates)]
     if resume:
         args += ['--resume']
     return args

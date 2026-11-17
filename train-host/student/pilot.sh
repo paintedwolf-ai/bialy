@@ -13,7 +13,7 @@ mapfile -t models <<<"$declared"
 status=0
 for model in "${models[@]}"; do
   if ! result=$(student create --student "$model" --root "$RUNS" --checkout "$SRC/paintedwolf-code-$HOST_COMMIT" \
-    --models "$MODELS" --splits "$SPLITS/$model" --mirror "$STUDENT_CHECKPOINT_ROOT" --pilot); then
+    --models "$MODELS" --splits "$SPLITS/$model" --mirror "$STUDENT_CHECKPOINT_ROOT" --schedule pilot); then
     status=1
     continue
   fi
