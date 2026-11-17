@@ -723,6 +723,10 @@ checkpoints are replicated. One preemption late in a 26B-A4B run costs more
 than the discount saves. `max_price` caps the hourly price of the offer taken, and `download_mbps` is the
 slowest download link an offer may have: the cheapest offer is otherwise often a
 host that cannot pull the image and a 50 GB checkpoint before the wait for it ends.
+A machine whose instance never became reachable is passed over for a week
+(`unreachable.hosts` in the registry), because the same cheapest offer would
+otherwise be taken again. An instance is reached at its own address and mapped
+port, never through the provider's SSH proxy, which every artifact would cross.
 An instance the provider reports as interruptible is refused and destroyed.
 
 **One requirement per tier.** `config/student-requirements.json` states the GPU

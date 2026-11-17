@@ -67,7 +67,7 @@ def test_a_clean_rental_is_one_instance_released_and_confirmed(tmp_path, monkeyp
     outcome, remote = rent(tmp_path, account, monkeypatch)
     assert outcome == 'connected' and account.created == 1 and account.owned() == []
     assert json.loads((tmp_path / 'job' / 'cleanup.json').read_text())['status'] == 'confirmed'
-    assert remote.settings['port'] == (41234 if provider == 'vastai' else 22)
+    assert remote.settings['port'] == (41235 if provider == 'vastai' else 22)
     assert_nothing_stranded(tmp_path, account, 'clean')
 
 
@@ -120,7 +120,7 @@ def test_no_ledger_write_can_be_the_controllers_last_and_strand_an_instance(tmp_
 def test_an_instance_that_never_reports_an_endpoint_is_still_destroyed(tmp_path, monkeypatch, provider):
     account = ACCOUNTS[provider](boot=10 ** 9)
     outcome, error = rent(tmp_path, account, monkeypatch)
-    assert outcome == 'JobError' and 'did not become ready' in str(error)
+    assert outcome == 'Unreachable' and 'did not become ready' in str(error)
     assert account.created == 1 and account.owned() == []
     assert json.loads((tmp_path / 'job' / 'cleanup.json').read_text())['status'] == 'confirmed'
 
@@ -196,5 +196,24 @@ def test_a_resumed_controller_recovers_the_same_machine_and_never_rents_another(
             raise Died()
     assert len(account.owned()) == 1
     with machines.connect(config, job, True, Machine, sleep=lambda _: None) as (remote, supervisor):
-        assert remote.address == 'ssh.example.org'
+        assert remote.address == '203.0.113.7'
     assert account.created == 1 and account.owned() == []
+
+
+def test_a_machine_that_never_answers_is_released_and_the_next_rental_lands_elsewhere(tmp_path, monkeypatch):
+    class Silent(Machine):
+        def command(self, *args, **kwargs):
+            raise machines.JobError('connection refused')
+
+    account = ACCOUNTS['vastai']()
+    outcome, _ = rent(tmp_path / 'first', account, monkeypatch, Silent)
+    assert outcome == 'Unreachable' and account.owned() == []
+    registry = tmp_path / 'first' / 'registry'
+    assert set(json.loads((registry / 'unreachable.hosts').read_text())) == {'70'}
+    monkeypatch.setattr(machines, 'provider', lambda provision: account.client())
+    config = configuration(tmp_path / 'first', 'vastai')
+    job = tmp_path / 'first' / 'again'
+    job.mkdir()
+    with machines.connect(config, job, False, Machine, sleep=lambda _: None):
+        assert [item['machine_id'] for item in account.owned()] == [71]
+    assert account.owned() == []

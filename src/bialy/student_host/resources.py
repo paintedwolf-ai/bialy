@@ -48,6 +48,10 @@ def merged(known, observed, now):
     return list(instances.values())
 
 
+# How long a machine that never became reachable is passed over.
+AVOID_SECONDS = 7 * 86400
+
+
 class Resources:
     def __init__(self, root, provider, clock=time.time):
         self.root, self.provider, self.clock = Path(root), provider, clock
@@ -82,6 +86,22 @@ class Resources:
             write(self.path(token), record)
             return record
 
+    def avoided(self):
+        """Machines that recently hosted an instance nobody could reach."""
+        path = self.root / 'unreachable.hosts'
+        hosts = json.loads(path.read_text()) if path.exists() else {}
+        return {host: at for host, at in hosts.items() if self.clock() - at < AVOID_SECONDS}
+
+    def avoid(self, token):
+        """Pass over the machine behind this lease's instance. Offers are taken cheapest
+        first, so the next rental would otherwise land on the same machine."""
+        with self.locked():
+            hosts = self.avoided()
+            for instance in json.loads(self.path(token).read_text())['instances']:
+                if instance.get('host'):
+                    hosts[instance['host']] = self.clock()
+            write(self.root / 'unreachable.hosts', hosts)
+
     def allocate(self, token, startup):
         """Create the leased instance, or adopt the one an earlier attempt created."""
         with self.locked():
@@ -98,7 +118,7 @@ class Resources:
                     raise ResourceError('allocation outcome is unknown')
                 current['create_started_at'] = self.clock()
                 write(self.path(token), current)
-                created = self.provider.create(token, current['specification'], startup)
+                created = self.provider.create(token, current['specification'], startup, set(self.avoided()))
                 current['instances'] = merged([], [created], self.clock())
             current.update(state='active', instance=current['instances'][0]['id'])
             write(self.path(token), current)

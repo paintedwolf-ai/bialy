@@ -240,6 +240,10 @@ class Supervisor:
         self.thread.join()
 
 
+class Unreachable(JobError):
+    """A rented machine never reported an endpoint or never answered on it."""
+
+
 def endpoint(resources, token, supervisor, sleep):
     """Wait for the leased instance to report where it can be reached."""
     for _ in range(90):
@@ -253,7 +257,7 @@ def endpoint(resources, token, supervisor, sleep):
         if instance and instance['endpoint']:
             return instance['endpoint']
         sleep(10)
-    raise JobError('rented machine did not become ready')
+    raise Unreachable('rented machine did not become ready')
 
 
 def reachable(remote, supervisor, sleep):
@@ -264,7 +268,7 @@ def reachable(remote, supervisor, sleep):
             return
         except (JobError, subprocess.TimeoutExpired):
             sleep(10)
-    raise JobError('training machine did not become reachable')
+    raise Unreachable('training machine did not become reachable')
 
 
 def release(configuration, directory, sleep=time.sleep):
@@ -314,9 +318,13 @@ def connect(configuration, directory, resume, remote_type, sleep=time.sleep, sup
             except (ConnectionError, subprocess.TimeoutExpired):
                 allocation = lease()
             write(path, allocation)
-            address = endpoint(resources, token, supervisor, sleep)
-            remote = remote_type(address['address'], {**machine, 'port': address['port']})
-            reachable(remote, supervisor, sleep)
+            try:
+                address = endpoint(resources, token, supervisor, sleep)
+                remote = remote_type(address['address'], {**machine, 'port': address['port']})
+                reachable(remote, supervisor, sleep)
+            except Unreachable:
+                resources.avoid(token)
+                raise
             supervisor.attach(remote, sleep)
             yield remote, supervisor
     finally:

@@ -16,13 +16,21 @@ def label(token):
     return 'pw-training-' + token
 
 
+def direct(item):
+    """The instance's own address and the host port mapped to its SSH port, or None. The
+    provider's proxy address is never used: every artifact would cross it."""
+    mapped = ((item.get('ports') or {}).get('22/tcp') or [{}])[0].get('HostPort')
+    port = int(mapped) if str(mapped or '').isdigit() else 0
+    return {'address': item['public_ipaddr'], 'port': port} if item.get('public_ipaddr') and 0 < port < 65536 else None
+
+
 def normalize(item):
-    """An instance in any state. It has an endpoint only once it is running and reachable."""
-    host, port = item.get('ssh_host') or item.get('public_ipaddr'), item.get('ssh_port')
-    ready = item.get('actual_status') == 'running' and bool(host) and type(port) is int and 0 < port < 65536
+    """An instance in any state. It has an endpoint only once it is running and reachable.
+    `host` names the physical machine, which outlives the instance."""
     return {'id': str(item['id']), 'state': str(item.get('actual_status') or 'pending'),
             'interruptible': bool(item.get('is_bid')), 'children': [],
-            'endpoint': {'address': host, 'port': port} if ready else None}
+            'host': str(item['machine_id']) if item.get('machine_id') else None,
+            'endpoint': direct(item) if item.get('actual_status') == 'running' else None}
 
 
 class VastAI:
@@ -51,7 +59,8 @@ class VastAI:
     def owned(self, token):
         return [normalize(item) for item in self.instances() if item.get('label') == label(token)]
 
-    def create(self, token, specification, startup):
+    def create(self, token, specification, startup, avoid=()):
+        """Rent the cheapest matching offer that is not on a machine in `avoid`."""
         if len(startup.encode()) > STARTUP_LIMIT:
             raise ResourceError('startup command exceeds the provider limit')
         query = ['gpu_name=' + specification['gpu_name'], 'num_gpus=%d' % specification.get('num_gpus', 1),
@@ -60,7 +69,10 @@ class VastAI:
                  'dph_total<=%s' % specification['max_price'],
                  'rentable=true', 'verified=true']
         offers = self.call('search', 'offers', '--type', 'on-demand', '--order', 'dph_total', ' '.join(query))
-        if not isinstance(offers, list) or not offers or not isinstance(offers[0], dict) or not offers[0].get('id'):
+        if not isinstance(offers, list) or any(not isinstance(offer, dict) or not offer.get('id') for offer in offers):
+            raise ResourceError('Vast.ai offer search returned an unexpected shape')
+        offers = [offer for offer in offers if str(offer.get('machine_id')) not in avoid]
+        if not offers:
             raise ResourceError('Vast.ai found no matching on-demand offer')
         # No bid price is passed: a bid makes the instance interruptible.
         created = self.call('create', 'instance', str(offers[0]['id']), '--image', specification['image'],
@@ -68,7 +80,8 @@ class VastAI:
                             '--onstart-cmd', startup)
         if not isinstance(created, dict) or not created.get('new_contract'):
             raise ResourceError('Vast.ai creation returned an invalid contract identity')
-        return {'id': str(created['new_contract']), 'state': 'pending', 'interruptible': False, 'children': [], 'endpoint': None}
+        return {'id': str(created['new_contract']), 'state': 'pending', 'interruptible': False, 'children': [],
+                'host': str(offers[0]['machine_id']) if offers[0].get('machine_id') else None, 'endpoint': None}
 
     def remaining(self, instance):
         return [str(item['id']) for item in self.instances() if str(item['id']) == instance['id']]

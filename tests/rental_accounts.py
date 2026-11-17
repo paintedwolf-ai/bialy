@@ -66,7 +66,9 @@ class VastAccount(Account):
     name = 'vastai'
 
     def foreign(self):
-        self.instances = {1: {'id': 1, 'label': 'someone-else', 'listed': 99, 'is_bid': False}}
+        self.instances = {1: {'id': 1, 'label': 'someone-else', 'listed': 99, 'is_bid': False, 'machine_id': 1}}
+        # Cheapest first, as the search is ordered.
+        self.offers = [{'id': 777, 'machine_id': 70}, {'id': 778, 'machine_id': 71}]
 
     def client(self):
         return VastAI(run=self)
@@ -83,14 +85,17 @@ class VastAccount(Account):
                 ready = item['label'] != 'someone-else' and item['listed'] > self.lag + self.boot
                 rows.append({'id': item['id'], 'label': item['label'], 'is_bid': item['is_bid'],
                              'actual_status': 'running' if ready else 'loading',
-                             'ssh_host': 'ssh.example.org' if ready else None, 'ssh_port': 41234 if ready else None})
+                             'machine_id': item['machine_id'], 'ssh_host': 'ssh.example.org', 'ssh_port': 41234,
+                             'public_ipaddr': '203.0.113.7' if ready else None,
+                             'ports': {'22/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '41235'}]} if ready else {}})
             return rows
         if action == ['search', 'offers']:
-            return [{'id': 777}]
+            return [dict(offer) for offer in self.offers]
         if action == ['create', 'instance']:
             self.created += 1
             identifier = 9000 + self.created
-            self.instances[identifier] = {'id': identifier, 'label': arguments[arguments.index('--label') + 1], 'listed': 0,
+            machine = next(offer['machine_id'] for offer in self.offers if str(offer['id']) == arguments[0])
+            self.instances[identifier] = {'id': identifier, 'machine_id': machine, 'label': arguments[arguments.index('--label') + 1], 'listed': 0,
                                           'is_bid': '--bid_price' in arguments,
                                           'startup': arguments[arguments.index('--onstart-cmd') + 1]}
             return {'success': True, 'new_contract': identifier}
