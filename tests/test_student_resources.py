@@ -14,10 +14,10 @@ class Provider:
     def owned(self, token):
         return [dict(item) for item in self.instances.values() if item['token'] == token]
 
-    def create(self, token, specification, startup):
+    def create(self, token, specification, startup, avoid=()):
         self.created += 1
         instance = {'id': 'instance-%d' % self.created, 'token': token, 'state': 'pending', 'endpoint': None,
-                    'interruptible': False, 'children': []}
+                    'interruptible': False, 'children': [], 'host': 'machine-%d' % self.created}
         self.instances[instance['id']] = instance
         if self.fail_create:
             raise self.fail_create
@@ -220,3 +220,20 @@ def test_two_instances_under_one_token_are_refused_and_both_destroyed(tmp_path):
         resources.allocate(token, 'startup')
     assert provider.created == 0
     assert resources.release(token)['state'] == 'released' and not provider.instances
+
+
+def test_an_avoided_machine_is_passed_to_the_provider_until_the_avoidance_lapses(tmp_path):
+    from bialy.student_host.resources import AVOID_SECONDS
+    provider, seen = Provider(), []
+    create = provider.create
+    provider.create = lambda token, specification, startup, avoid=(): (seen.append(set(avoid)), create(token, specification, startup))[1]
+    resources = ledger(tmp_path, provider)
+    first = resources.intent({}, 120, 3600)['token']
+    resources.allocate(first, 'startup')
+    resources.avoid(first)
+    resources.release(first)
+    resources.allocate(resources.intent({}, 120, 3600)['token'], 'startup')
+    later = at(tmp_path, provider, 100 + AVOID_SECONDS)
+    later.reap()
+    later.allocate(later.intent({}, 120, 3600)['token'], 'startup')
+    assert seen == [set(), {'machine-1'}, set()]

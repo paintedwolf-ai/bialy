@@ -12,23 +12,28 @@ SPECIFICATION = {'gpu_name': 'H100_SXM', 'num_gpus': 2, 'image': 'example/image:
                  'gpu_memory_gib': 79, 'memory_gib': 128, 'disk_gib': 320}
 
 
+DIRECT = {'22/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '41235'}]}
+
+
 def listing(*instances):
     return VastAI(run=lambda args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(list(instances))))
 
 
 @pytest.mark.parametrize('state', [
-    {}, {'actual_status': 'loading'}, {'actual_status': 'running', 'ssh_host': '', 'ssh_port': 41234},
-    {'actual_status': 'running', 'ssh_host': 'ssh.example.org', 'ssh_port': None},
-    {'actual_status': 'exited', 'ssh_host': 'ssh.example.org', 'ssh_port': 41234}, {'actual_status': 'offline'}])
+    {}, {'actual_status': 'loading'}, {'actual_status': 'running', 'public_ipaddr': '', 'ports': DIRECT},
+    {'actual_status': 'running', 'public_ipaddr': '203.0.113.7', 'ports': {}},
+    {'actual_status': 'running', 'ssh_host': 'ssh.example.org', 'ssh_port': 41234},
+    {'actual_status': 'exited', 'public_ipaddr': '203.0.113.7', 'ports': DIRECT}, {'actual_status': 'offline'}])
 def test_an_owned_instance_is_found_in_any_state_and_has_no_endpoint_until_it_can_be_reached(state):
     found = listing({'id': 7, 'label': label('token'), **state}).owned('token')
     assert [(item['id'], item['endpoint']) for item in found] == [('7', None)]
 
 
-def test_only_a_running_instance_with_connection_details_has_an_endpoint():
+def test_a_running_instance_is_reached_at_its_own_address_never_through_the_proxy():
     found = listing({'id': 7, 'label': label('token'), 'actual_status': 'running', 'ssh_host': 'ssh.example.org', 'ssh_port': 41234,
-                     'is_bid': True}).owned('token')
-    assert found[0]['endpoint'] == {'address': 'ssh.example.org', 'port': 41234} and found[0]['interruptible'] is True
+                     'public_ipaddr': '203.0.113.7', 'ports': DIRECT, 'machine_id': 70, 'is_bid': True}).owned('token')
+    assert found[0]['endpoint'] == {'address': '203.0.113.7', 'port': 41235} and found[0]['interruptible'] is True
+    assert found[0]['host'] == '70'
 
 
 def test_ownership_is_the_exact_label_and_nothing_else():
@@ -56,7 +61,7 @@ def test_an_instance_is_rented_on_demand_within_the_declared_capacity_and_price(
     assert not any('bid' in argument for argument in create)
     assert create[create.index('--label') + 1] == label('token') and create[create.index('--disk') + 1] == '320'
     assert create[create.index('--onstart-cmd') + 1] == 'startup'
-    assert created == {'id': '9001', 'state': 'pending', 'interruptible': False, 'children': [], 'endpoint': None}
+    assert created == {'id': '9001', 'state': 'pending', 'interruptible': False, 'children': [], 'host': '70', 'endpoint': None}
 
 
 def test_creation_needs_no_listing_and_a_startup_the_provider_would_truncate_is_refused():
@@ -115,3 +120,11 @@ def test_destroy_answers_the_confirmation_the_cli_would_otherwise_wait_for():
     instance = provider.create('token', SPECIFICATION, 'arm')
     provider.destroy(instance)
     assert account.calls[-1][2:] == ['destroy', 'instance', instance['id'], '--yes'] and account.owned() == []
+
+
+def test_an_offer_on_an_avoided_machine_is_passed_over_for_the_next_cheapest():
+    account = VastAccount()
+    created = account.client().create('token', SPECIFICATION, 'startup', avoid={'70'})
+    assert account.calls[-1][4] == '778' and created['host'] == '71'
+    with pytest.raises(ResourceError, match='no matching on-demand offer'):
+        account.client().create('other', SPECIFICATION, 'startup', avoid={'70', '71'})

@@ -44,7 +44,8 @@ class Scaleway:
         return [normalize(server) for server in self.listing('instance', 'server', 'tags=' + token)
                 if token in (server.get('tags') or []) and server.get('project') == self.project and server.get('name') == name(token)]
 
-    def create(self, token, specification, startup):
+    def create(self, token, specification, startup, avoid=()):
+        """`avoid` is unused: a server type does not name the machine it lands on."""
         server = self.call('instance', 'server', 'create', 'project-id=' + self.project, 'name=' + name(token),
                            'tags.0=' + token, 'ip=new', 'type=' + specification['type'], 'image=' + specification['image'],
                            'root-volume=' + specification['root_volume'], 'cloud-init=' + startup)
