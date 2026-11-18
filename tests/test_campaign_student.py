@@ -27,9 +27,8 @@ def setup(tmp_path):
 def test_training_uses_authenticated_split_and_private_key_environment(tmp_path, monkeypatch):
     journal, configuration, inputs = setup(tmp_path)
     observed = []
-    def create(root, spec, student, checkout, models, splits, mirror, device, pilot, *, dry_run=False):
-        assert student == 'e4b' and pilot is True and spec['context']['thinking'] is False
-        assert dry_run is False
+    def create(root, spec, student, checkout, models, splits, mirror, device, schedule):
+        assert student == 'e4b' and schedule == 'pilot' and spec['context']['thinking'] is False
         job = root / 'unique'
         job.mkdir(parents=True)
         (job / 'plan.json').write_text('{}')
@@ -41,7 +40,7 @@ def test_training_uses_authenticated_split_and_private_key_environment(tmp_path,
         observed.append(arguments)
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr('bialy.campaign.student.jobs.create', create)
-    handler = Training(journal, configuration, 'e4b', pilot=True, run=run)
+    handler = Training(journal, configuration, 'e4b', 'pilot', run=run)
     monkeypatch.setattr(handler, 'result', lambda job: {'job': str(job)})
     result = handler.execute(inputs, 'attempt')
     assert handler.reconcile(inputs, 'attempt') == result
@@ -93,8 +92,8 @@ def test_running_out_of_memory_is_a_terminal_typed_failure(tmp_path):
     journal.close()
 
 
-@pytest.mark.parametrize('pilot', [False, True])
-def test_pilot_and_full_training_use_the_configured_machine(tmp_path, monkeypatch, pilot):
+@pytest.mark.parametrize('schedule', ['full', 'pilot', 'rehearsal'])
+def test_every_schedule_trains_on_the_configured_machine(tmp_path, monkeypatch, schedule):
     journal, configuration, inputs = setup(tmp_path)
     configuration.update(full_training='remote', remote='machine.json')
     calls = []
@@ -105,11 +104,12 @@ def test_pilot_and_full_training_use_the_configured_machine(tmp_path, monkeypatc
             directory.mkdir(parents=True)
         return {'directory': str(directory)}
     monkeypatch.setattr('bialy.campaign.student.remote_training.train', train)
-    handler = Training(journal, configuration, 'e4b', pilot=pilot)
+    handler = Training(journal, configuration, 'e4b', schedule)
     monkeypatch.setattr(handler, 'result', lambda job: {'job': str(job)})
     result = handler.execute(inputs, 'attempt')
     assert handler.reconcile(inputs, 'attempt') == result
-    assert len(calls) == 2 and all(call[2]['pilot'] is pilot for call in calls)
+    assert len(calls) == 2 and all(call[2]['schedule'] == schedule for call in calls)
+    assert handler.directory('attempt').parent.name == schedule
     assert calls[0][2].get('resume') is None
     assert calls[1][2]['resume'].name == 'instance'
     journal.close()
@@ -125,3 +125,26 @@ def test_export_stage_uses_the_artifact_a_remote_job_returned(monkeypatch, retur
     monkeypatch.setattr(exporting, 'export', lambda job, llama, revision: calls.append(('export', llama, revision)))
     Export({'llama': '/llama', 'llama_revision': 'r'}, '26b-a4b').execute({'training': {'job': '/job'}}, 'attempt')
     assert calls == ([('publish', 'r', False)] if returned else [('export', '/llama', 'r')])
+
+
+@pytest.mark.parametrize('outcome, code, reason', [
+    ({'failure': {'code': 'no_offer', 'diagnostic': 'no matching offer in 13 searches over 60 minutes'}}, 'training_machine_unavailable', 'no_offer'),
+    ({'failure': {'code': 'machine_unusable', 'diagnostic': 'refuses the registered SSH key'}}, 'training_machine_unavailable', 'machine_unusable'),
+    ({'failure': {'code': 'ledger_unsettled', 'diagnostic': 'leases awaiting'}}, 'training_machine_unavailable', 'ledger_unsettled'),
+    ({'failure': {'code': 'failed', 'diagnostic': 'remote export failed'}}, 'student_training_failed', None),
+    ({'execution': {'terminal': {'failure': {'code': 'out_of_memory'}}}}, 'student_out_of_memory', None)])
+def test_a_remote_job_that_did_not_complete_is_a_typed_fault_from_its_own_record(tmp_path, monkeypatch, outcome, code, reason):
+    from bialy.student_host.jobs import JobError
+    journal, configuration, inputs = setup(tmp_path)
+    configuration.update(full_training='remote', remote='machine.json')
+
+    def train(config, student, splits, key, out, **kwargs):
+        (out / 'instance').mkdir(parents=True)
+        (out / 'instance' / 'outcome.json').write_text(json.dumps({'status': 'failed', 'cleanup': 'confirmed', **outcome}))
+        raise JobError('remote training did not complete')
+    monkeypatch.setattr('bialy.campaign.student.remote_training.train', train)
+    with pytest.raises(CampaignFault, match=code) as caught:
+        Training(journal, configuration, 'e4b').execute(inputs, 'attempt')
+    assert caught.value.retryable is False and caught.value.details.get('reason') == reason
+    assert caught.value.details['cleanup'] == 'confirmed'
+    journal.close()

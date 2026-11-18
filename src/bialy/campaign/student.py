@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..provenance import file_sha256
 from ..student_host import exporting, jobs, remote_training
+from ..student_host.jobs import JobError
 from ..student_host.specification import identity, load
 from .execution import atomic_json
 from .journal import CampaignFault, digest
@@ -23,19 +24,45 @@ def training_fault(job, exit_status):
     return CampaignFault('student_training_failed', details={'job': str(job), 'exit_status': exit_status})
 
 
+# Why a remote job found no machine to start on. The job has already waited and tried other
+# machines within its own bounds, so the stage is not retried.
+UNAVAILABLE = {'no_offer', 'machine_unusable', 'ledger_unsettled'}
+
+
+def remote_fault(runs):
+    """The typed failure of the one remote job under `runs`, from the outcome it recorded."""
+    outcomes = [json.loads(path.read_text()) for path in Path(runs).glob('*/outcome.json')]
+    outcome = outcomes[0] if len(outcomes) == 1 else {}
+    failure, execution = outcome.get('failure') or {}, outcome.get('execution') or {}
+    details = {'run': str(runs), 'diagnostic': failure.get('diagnostic'), 'cleanup': outcome.get('cleanup')}
+    if failure.get('code') in UNAVAILABLE:
+        return CampaignFault('training_machine_unavailable', details={**details, 'reason': failure['code']})
+    if ((execution.get('terminal') or {}).get('failure') or {}).get('code') == 'out_of_memory':
+        return CampaignFault('student_out_of_memory', details=details)
+    return CampaignFault('student_training_failed', details=details)
+
+
 class Training:
-    def __init__(self, journal, configuration, student, pilot=False, run=subprocess.run, *, dry_run=False):
+    """One student's training on a schedule of `student_host.jobs.SCHEDULES`."""
+
+    def __init__(self, journal, configuration, student, schedule='full', run=subprocess.run):
         self.journal, self.configuration = journal, configuration
-        self.student, self.pilot, self.run, self.dry_run = student, pilot, run, dry_run
+        self.student, self.schedule, self.run = student, schedule, run
         self.specification = load(configuration['specification'])
-        self.destination = configuration.get('pilot_training', configuration['full_training']) if pilot else configuration['full_training']
-        if dry_run and self.destination != 'local':
-            raise CampaignFault('dry_run_requires_local_training')
-        if self.destination not in {'local', 'remote'}:
+        self.destination = configuration['full_training'] if schedule == 'full' else configuration.get('pilot_training', configuration['full_training'])
+        if self.destination not in {'local', 'remote'} or schedule not in jobs.SCHEDULES:
             raise CampaignFault('student_training_destination_invalid')
 
     def directory(self, attempt):
-        return self.journal.directory / 'students' / self.student / ('pilot' if self.pilot else 'full') / attempt
+        return self.journal.directory / 'students' / self.student / self.schedule / attempt
+
+    def remote(self, splits, runs, resume=None):
+        try:
+            result = remote_training.train(self.configuration['remote'], self.student, splits, authority_key(self.journal.directory),
+                                           runs, resume=resume, schedule=self.schedule)
+        except JobError as exc:
+            raise remote_fault(runs) from exc
+        return Path(result['directory']) / 'job'
 
     def dataset(self, inputs):
         data = inputs['dataset']['students'][self.student]
@@ -51,16 +78,14 @@ class Training:
         directory = self.directory(attempt)
         directory.mkdir(parents=True, exist_ok=False)
         atomic_json(directory / 'binding.json', {'inputs_sha256': digest(inputs), 'configuration': self.configuration,
-                                                'student': self.student, 'pilot': self.pilot, 'dry_run': self.dry_run})
+                                                'student': self.student, 'schedule': self.schedule})
         splits = self.dataset(inputs)
         if self.destination == 'remote':
-            result = remote_training.train(self.configuration['remote'], self.student, splits,
-                                  authority_key(self.journal.directory), directory / 'remote', pilot=self.pilot)
-            job = Path(result['directory']) / 'job'
+            job = self.remote(splits, directory / 'remote')
         else:
             job = jobs.create(directory / 'jobs', self.specification, self.student, self.configuration['checkout'],
                               self.configuration['models'], splits, self.configuration['mirror'],
-                              self.configuration['device'], self.pilot, dry_run=self.dry_run)
+                              self.configuration['device'], self.schedule)
             self.train_local(job)
         return self.result(job)
 
@@ -75,7 +100,7 @@ class Training:
     def reconcile(self, inputs, attempt):
         directory = self.directory(attempt)
         expected = {'inputs_sha256': digest(inputs), 'configuration': self.configuration,
-                    'student': self.student, 'pilot': self.pilot, 'dry_run': self.dry_run}
+                    'student': self.student, 'schedule': self.schedule}
         if not (directory / 'binding.json').is_file() or json.loads((directory / 'binding.json').read_text()) != expected:
             raise CampaignFault('student_job_binding_unknown')
         self.dataset(inputs)
@@ -83,9 +108,7 @@ class Training:
             instances = list((directory / 'remote').glob('*'))
             if len(instances) != 1:
                 raise CampaignFault('student_remote_job_identity_unknown')
-            result = remote_training.train(self.configuration['remote'], self.student, self.dataset(inputs),
-                                  authority_key(self.journal.directory), directory / 'remote', resume=instances[0], pilot=self.pilot)
-            return self.result(Path(result['directory']) / 'job')
+            return self.result(self.remote(self.dataset(inputs), directory / 'remote', resume=instances[0]))
         candidates = list((directory / 'jobs').glob('*/plan.json'))
         if len(candidates) != 1:
             raise CampaignFault('student_job_identity_unknown')
@@ -99,12 +122,12 @@ class Training:
         jobs.validate_inputs(plan)
         terminal = jobs.validate_result(plan)
         return {'job': str(job), 'plan_sha256': digest(plan), 'terminal_sha256': digest(terminal),
-                'student': self.student, 'pilot': self.pilot, 'dry_run': self.dry_run}
+                'student': self.student, 'schedule': self.schedule}
 
     def validate(self, inputs, output):
         splits = self.dataset(inputs)
         plan = json.loads((Path(output['job']) / 'plan.json').read_text())
-        if (plan['student'] != self.student or plan['pilot'] is not self.pilot or plan.get('dry_run', False) is not self.dry_run
+        if (plan['student'] != self.student or plan['schedule'] != self.schedule
                 or plan['host_commit'] != self.configuration['host_commit']
                 or plan['specification_sha256'] != identity(self.specification)
                 or plan['dataset'] != {name: file_sha256(splits / name) for name in plan['dataset']}

@@ -23,6 +23,10 @@ class ResourceError(RuntimeError):
     pass
 
 
+class NoOffer(ResourceError):
+    """The provider has nothing to rent that matches the specification. Nothing was created."""
+
+
 def write(path, value):
     temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex)
     with temporary.open('x') as stream:
@@ -45,6 +49,10 @@ def merged(known, observed, now):
         children = {tuple(child) for child in (*previous.get('children', ()), *instance.get('children', ()))}
         instances[instance['id']] = {**previous, **instance, 'children': sorted(map(list, children)),
                                      'recorded_at': previous.get('recorded_at', instance.get('recorded_at', now))}
+        # A listing may leave out what the offer stated.
+        for name in ('host', 'price_per_hour'):
+            if instance.get(name) is None and previous.get(name) is not None:
+                instances[instance['id']][name] = previous[name]
     return list(instances.values())
 
 
@@ -116,9 +124,11 @@ class Resources:
             if not current['instances']:
                 if current['create_started_at'] is not None:
                     raise ResourceError('allocation outcome is unknown')
-                current['create_started_at'] = self.clock()
+                # The search rents nothing, so a lease it ends on is released without doubt.
+                offer = self.provider.offer(current['specification'], set(self.avoided()))
+                current.update(create_started_at=self.clock(), offer=offer)
                 write(self.path(token), current)
-                created = self.provider.create(token, current['specification'], startup, set(self.avoided()))
+                created = self.provider.create(token, current['specification'], startup, offer)
                 current['instances'] = merged([], [created], self.clock())
             current.update(state='active', instance=current['instances'][0]['id'])
             write(self.path(token), current)
@@ -200,15 +210,46 @@ class Resources:
             return self.clock() < record['released_at'] + SETTLE_SECONDS
         return not self.live(record)
 
+    def leases(self):
+        return [path for path in sorted(self.root.glob('*.json')) if re.fullmatch('[0-9a-f]{32}', path.stem)]
+
     def reap(self):
+        """The reaper's pass: report its health, then settle."""
+        with self.locked():
+            write(self.root / 'reaper.json', {'at': self.clock(), 'pid': os.getpid()})
+        return self.settle()
+
+    def pending(self):
+        """Every lease not yet released, read from the ledger alone."""
+        with self.locked():
+            records = []
+            for path in self.leases():
+                try:
+                    record = json.loads(path.read_text())
+                except ValueError:
+                    record = {'token': path.stem, 'state': 'unreadable'}
+                if record['state'] != 'released':
+                    records.append({'token': record['token'], 'state': record['state'],
+                                    'live': record['state'] in {'allocating', 'active'} and self.live(record)})
+            return records
+
+    def unsettled(self):
+        """What a new rental would start on top of, after settling what can be settled: the
+        leases still awaiting a confirmed release, and the account's labelled instances that
+        no live lease of this ledger owns."""
+        self.settle()
+        pending = self.pending()
+        live = {record['token'] for record in pending if record['live']}
+        return {'leases': [{'token': record['token'], 'state': record['state']} for record in pending if not record['live']],
+                'instances': [{'token': token, 'id': instance['id'], 'state': instance['state']}
+                              for token, found in sorted(self.provider.labelled().items()) if token not in live for instance in found]}
+
+    def settle(self):
         """Release every lease that is expired, past its deadline, or not yet confirmed gone.
         One unreadable or failing lease never keeps the others from being released."""
         results = []
         with self.locked():
-            write(self.root / 'reaper.json', {'at': self.clock(), 'pid': os.getpid()})
-            for path in sorted(self.root.glob('*.json')):
-                if not re.fullmatch('[0-9a-f]{32}', path.stem):
-                    continue
+            for path in self.leases():
                 try:
                     try:
                         record = json.loads(path.read_text())

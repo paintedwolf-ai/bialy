@@ -12,6 +12,26 @@ missing() {
   local tool
   for tool in "${!package[@]}"; do command -v "$tool" >/dev/null || echo "$tool"; done | sort
 }
+# Bytes of memory this job may use: the machine's, or the smallest limit of the control
+# groups the job runs in. A rented container sees the whole machine in /proc/meminfo.
+usable_memory() {
+  local bytes group file value
+  bytes=$(($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) * 1024))
+  # Version 2 names one group; version 1 names the memory controller's.
+  for group in "/sys/fs/cgroup$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)" \
+               "/sys/fs/cgroup/memory$(awk -F: '$2 ~ /(^|,)memory(,|$)/ {print $3}' /proc/self/cgroup)" /sys/fs/cgroup/memory; do
+    # Inside a container the group's own path is not mounted; its limit is at the mount's root.
+    [ -d "$group" ] || group=/sys/fs/cgroup
+    while [ "${group#/sys/fs/cgroup}" != "$group" ]; do
+      for file in "$group/memory.max" "$group/memory.limit_in_bytes"; do
+        value=$(cat "$file" 2>/dev/null) || continue
+        [[ $value =~ ^[0-9]+$ ]] && [ "$value" -lt "$bytes" ] && bytes=$value
+      done
+      group=$(dirname "$group")
+    done
+  done
+  echo "$bytes"
+}
 if [ "$mode" = install ] && [ "$(id -u)" = 0 ] && command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   # The dead-man switch may be installing its own client at boot and holding the package lock.
@@ -32,7 +52,7 @@ for tool in "${absent[@]}"; do problems+=("missing tool: $tool"); done
 [ -x "$uv" ] || problems+=("uv is not executable at $uv")
 mkdir -p "$workspace"
 disk=$(($(df -Pk "$workspace" | awk 'NR==2 {print $4}') / 1048576))
-memory=$(($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1048576))
+memory=$(($(usable_memory) / 1073741824))
 gpu=0
 if [[ $device == cuda* ]]; then
   index=${device#cuda}

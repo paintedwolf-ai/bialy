@@ -4,13 +4,15 @@
 
 version: 1
 profiles:
-  # A mechanical rehearsal of the student segment on one host commit. Its two training rows
-  # make one update an epoch; training checkpoints each, pauses after the first and resumes.
+  # A mechanical rehearsal of the student segment on one host commit, from collection to
+  # evaluation. Its two training rows make one update an epoch; training checkpoints each,
+  # pauses after the first and resumes. The rows are the shortest collected, so this run is
+  # no evidence of memory at the declared length: `python -m bialy.student_host rehearse` is.
   dry-run:
     segments: [student]
     students: [e4b]
     quota: pilot
-    recipe: dry_run
+    schedule: rehearsal
     selector: engine_disabled
     collection: {train: 1, validation: 1, system_test: 1}
     coverage: none
@@ -22,7 +24,7 @@ profiles:
   pilot:
     segments: [student]
     quota: pilot
-    recipe: pilot
+    schedule: pilot
     selector: supplied_or_engine_disabled
     collection: {train: 32, validation: 16, system_test: 24}
     coverage: {groups_per_focus: 2}
@@ -31,7 +33,7 @@ profiles:
   full:
     segments: [selector, student]
     quota: full
-    recipe: full
+    schedule: full
     selector: p0
     collection: {train: 64, validation: 24, system_test: 24}
     coverage: {groups_per_focus: 2}

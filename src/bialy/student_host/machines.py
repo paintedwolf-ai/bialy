@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from . import scaleway, vastai
 from .jobs import JobError
 from .reaper import provider
-from .resources import ResourceError, Resources, write
+from .resources import NoOffer, ResourceError, Resources, write
 
 ROOT = Path(__file__).resolve().parents[3]
 REQUIREMENTS = ROOT / 'config/student-requirements.json'
@@ -27,6 +27,22 @@ LEASE_SECONDS = 300
 HEARTBEAT_SECONDS = 900
 # The dead-man switch's first deadline, from boot until the controller's first heartbeat.
 STARTUP_SECONDS = 1800
+POLL_SECONDS = 10
+# How long a machine that answers SSH may go on refusing the registered key. The provider
+# installs the key before the daemon starts, so a refusal does not heal the way a
+# connection that is not yet accepted does; two minutes covers a daemon restarted at boot.
+REFUSED_SECONDS = 120
+# How long an existing machine may take to answer.
+EXISTING_SECONDS = 600
+# Machines one job may rent before any work has started on one. Each unusable machine is
+# passed over afterwards, so a third failure in a row points at the image, the key or the
+# account, which another machine does not fix.
+RENT_ATTEMPTS = 3
+# An offer search that finds nothing is repeated every five minutes for an hour: offers
+# return within minutes when a rental ends, and an hour without one means the
+# specification or its price cap no longer matches the market.
+OFFER_WAIT_SECONDS = 300
+OFFER_WAITS = 12
 
 
 def requirement(student, path=REQUIREMENTS):
@@ -65,7 +81,7 @@ def validate_connection(machine, provisioned):
 
 def validate_provisioning(provision):
     names = {'scaleway': {'profile', 'project', 'zone'}, 'vastai': set()}
-    common = {'provider', 'registry', 'rental', 'lifetime_hours', 'specification'}
+    common = {'provider', 'registry', 'rental', 'lifetime_hours', 'start_minutes', 'specification'}
     if not isinstance(provision, dict) or provision.get('provider') not in names:
         raise JobError('unsupported instance provider')
     name = provision['provider']
@@ -79,6 +95,9 @@ def validate_provisioning(provision):
         raise JobError('machines are rented on demand; interruptible rentals are refused')
     if type(provision['lifetime_hours']) is not int or not 1 <= provision['lifetime_hours'] <= 336:
         raise JobError('lifetime_hours must bound the rental to between 1 and 336 hours')
+    # From creation until the instance answers SSH: the image pull on this class of host.
+    if type(provision['start_minutes']) is not int or not 1 <= provision['start_minutes'] <= 60:
+        raise JobError('start_minutes must bound the wait for a new instance to between 1 and 60 minutes')
     if any(not isinstance(provision[key], str) or not provision[key] for key in names[name]):
         raise JobError('instance provider configuration is incomplete')
     if provision.get('api_key_file') and not Path(provision['api_key_file']).is_file():
@@ -130,6 +149,10 @@ def preflight(configuration, student):
         if short:
             raise JobError('machine specification cannot hold student %s: %s' % (student, '; '.join(short)))
         startup(configuration['provisioning'])
+        try:
+            report['cli'] = provider(configuration['provisioning']).check()
+        except ResourceError as exc:
+            raise JobError(str(exc)) from exc
     return report
 
 
@@ -143,9 +166,9 @@ def startup(provision):
     return text
 
 
-def measure(remote, configuration, student, directory):
-    """Check the machine against the tier before any work starts on it; a rented one is completed first."""
-    needed, machine = requirement(student), configuration['machine']
+def inspect(remote, configuration, needed, directory):
+    """Measure the machine against `needed` and record it; a rented one is completed first."""
+    machine = configuration['machine']
     mode = 'install' if 'provisioning' in configuration else 'check'
     arguments = [mode, machine['workspace'], machine['uv'], machine.get('device', 'cuda:0'),
                  *[str(needed[name]) for name in ('disk_gib', 'memory_gib', 'gpu_memory_gib')]]
@@ -155,8 +178,16 @@ def measure(remote, configuration, student, directory):
     except (ValueError, IndexError):
         raise JobError('training machine preflight did not report') from None
     write(Path(directory) / 'machine.json', {'requirement': needed, **report})
-    if status or report['problems']:
-        raise JobError('training machine cannot run student %s: %s' % (student, '; '.join(report['problems']) or 'preflight failed'))
+    if status and not report['problems']:
+        report['problems'] = ['preflight failed']
+    return report
+
+
+def measure(remote, configuration, student, directory):
+    """Check the machine against the tier before any work starts on it."""
+    report = inspect(remote, configuration, requirement(student), directory)
+    if report['problems']:
+        raise JobError('training machine cannot run student %s: %s' % (student, '; '.join(report['problems'])))
     return report
 
 
@@ -198,8 +229,17 @@ class Supervisor:
                     return
             except (JobError, subprocess.TimeoutExpired, ValueError, KeyError):
                 pass
-            sleep(10)
-        raise JobError('dead-man switch is not armed on the rented machine')
+            sleep(POLL_SECONDS)
+        raise Unarmed('dead-man switch is not armed on the rented machine')
+
+    def quiet(self):
+        """Stop the heartbeats and leave the lease renewed: the machine's own deadline runs out."""
+        self.beaten = None
+
+    def abandon(self):
+        """Stop renewing the lease and keep the heartbeats: the reaper's deadline runs out."""
+        self.stop.set()
+        self.thread.join()
 
     def loop(self):
         while not self.stop.wait(20):
@@ -237,16 +277,34 @@ class Supervisor:
 
     def __exit__(self, *_):
         self.stop.set()
-        self.thread.join()
+        if self.thread.is_alive():
+            self.thread.join()
 
 
-class Unreachable(JobError):
-    """A rented machine never reported an endpoint or never answered on it."""
+class Unusable(JobError):
+    """A rented machine no work can start on. It is released and passed over."""
 
 
-def endpoint(resources, token, supervisor, sleep):
-    """Wait for the leased instance to report where it can be reached."""
-    for _ in range(90):
+class Unreachable(Unusable):
+    """The machine never reported an endpoint, never answered on it, or refused the registered key."""
+
+
+class Unarmed(Unusable):
+    """The machine's dead-man switch cannot end its rental."""
+
+
+class Refused(JobError):
+    """The machine's SSH daemon answered and refused the registered key."""
+
+
+class Unsettled(JobError):
+    """The ledger or the account holds rentals that are not accounted for."""
+
+
+def endpoint(resources, token, supervisor, sleep, tries):
+    """Wait for the leased instance to report where it can be reached. Returns the
+    endpoint and how many of `tries` are left."""
+    for used in range(tries):
         supervisor.check()
         try:
             instance = resources.observe(token)
@@ -255,23 +313,67 @@ def endpoint(resources, token, supervisor, sleep):
         if instance and instance['interruptible']:
             raise JobError('provider returned an interruptible instance')
         if instance and instance['endpoint']:
-            return instance['endpoint']
-        sleep(10)
-    raise Unreachable('rented machine did not become ready')
+            return instance['endpoint'], tries - used
+        sleep(POLL_SECONDS)
+    raise Unreachable('rented machine did not start within its start_minutes')
 
 
-def reachable(remote, supervisor, sleep):
-    for _ in range(60):
+def reachable(remote, supervisor, sleep, tries):
+    """Wait for the machine to run a command. A connection not yet accepted is tried until
+    `tries` run out; a refused key only for REFUSED_SECONDS."""
+    refused = 0
+    for _ in range(max(tries, 1)):
         supervisor.check()
         try:
             remote.command(['true'], timeout=30)
             return
+        except Refused:
+            refused += 1
+            if refused * POLL_SECONDS > REFUSED_SECONDS:
+                raise Unreachable('training machine refuses the registered SSH key') from None
         except (JobError, subprocess.TimeoutExpired):
-            sleep(10)
+            refused = 0
+        sleep(POLL_SECONDS)
     raise Unreachable('training machine did not become reachable')
 
 
-def release(configuration, directory, sleep=time.sleep):
+class Rental:
+    """The job's own record of every machine it leased: `rental.json`, one entry an attempt."""
+
+    def __init__(self, directory, clock=time.time):
+        self.path, self.clock = Path(directory) / 'rental.json', clock
+
+    def attempts(self):
+        return json.loads(self.path.read_text())['attempts'] if self.path.exists() else []
+
+    def open(self):
+        """The attempt whose lease is still held, or None."""
+        attempts = self.attempts()
+        return attempts[-1] if attempts and attempts[-1]['outcome'] is None else None
+
+    def count(self, *outcomes):
+        return sum(attempt['outcome'] in outcomes for attempt in self.attempts())
+
+    def begin(self, token):
+        write(self.path, {'attempts': [*self.attempts(), {
+            'token': token, 'started_at': self.clock(), 'ended_at': None, 'outcome': None, 'reason': None,
+            'instance': None, 'host': None, 'price_per_hour': None, 'cleanup': None}]})
+
+    def update(self, token, **facts):
+        attempts = self.attempts()
+        for attempt in attempts:
+            if attempt['token'] == token:
+                attempt.update(facts)
+        write(self.path, {'attempts': attempts})
+
+    def leased(self, lease):
+        """Record the instance behind a lease and the hourly price it is charged at."""
+        instance = next((item for item in lease['instances'] if item['id'] == lease['instance']), {})
+        self.update(lease['token'], instance=lease['instance'], host=instance.get('host'),
+                    price_per_hour=instance.get('price_per_hour') or (lease.get('offer') or {}).get('price_per_hour'))
+
+
+def release(configuration, directory, sleep=time.sleep, clock=time.time):
     """Release the job's rented machine and record whether the provider confirmed it gone.
     An unconfirmed release stays with the reaper; calling this again settles the record."""
     directory, provision = Path(directory), configuration.get('provisioning')
@@ -290,42 +392,105 @@ def release(configuration, directory, sleep=time.sleep):
             if attempt < 5:
                 sleep(20)
     write(directory / 'cleanup.json', {'status': status, 'token': token})
+    rental = Rental(directory, clock)
+    attempt = next((item for item in rental.attempts() if item['token'] == token), None)
+    if attempt:
+        rental.update(token, cleanup=status, ended_at=attempt['ended_at'] or clock(), outcome=attempt['outcome'] or 'used')
     return status
 
 
+def refuse_unsettled(resources):
+    """Settle what the ledger can, then refuse to rent on top of anything left over."""
+    try:
+        found = resources.unsettled()
+    except (ResourceError, ConnectionError, subprocess.TimeoutExpired) as exc:
+        raise Unsettled('the rental ledger could not be checked against the provider') from exc
+    if found['leases'] or found['instances']:
+        raise Unsettled('the rental ledger is not settled; leases awaiting a confirmed release: %s; labelled instances no live '
+                        'lease owns: %s' % (', '.join('%s (%s)' % (item['token'], item['state']) for item in found['leases']) or 'none',
+                                            ', '.join('%s (%s)' % (item['id'], item['state']) for item in found['instances']) or 'none'))
+
+
+def lease_machine(resources, provision, machine, token, held, supervisor, remote_type, sleep, stage):
+    """The leased instance, reachable and with its dead-man switch armed."""
+    def lease():
+        if held and json.loads(resources.path(token).read_text())['state'] == 'active':
+            return resources.recover(token, LEASE_SECONDS)
+        return resources.allocate(token, startup(provision))
+    try:
+        allocation = lease()
+    except (ConnectionError, subprocess.TimeoutExpired):
+        allocation = lease()
+    stage('boot')
+    address, left = endpoint(resources, token, supervisor, sleep, provision['start_minutes'] * 60 // POLL_SECONDS)
+    remote = remote_type(address['address'], {**machine, 'port': address['port']})
+    reachable(remote, supervisor, sleep, left)
+    supervisor.attach(remote, sleep)
+    return allocation, remote
+
+
 @contextlib.contextmanager
-def connect(configuration, directory, resume, remote_type, sleep=time.sleep, supervisor_type=Supervisor):
+def connect(configuration, directory, remote_type, sleep=time.sleep, supervisor_type=Supervisor, *, replaceable=True,
+            stage=lambda name: None, clock=time.time):
     """A reachable machine and its supervisor. A rented machine is released on the way out,
-    whatever happened; `cleanup.json` records whether the provider confirmed it."""
-    provision, machine = configuration.get('provisioning'), configuration['machine']
+    whatever happened; `cleanup.json` records whether the provider confirmed it.
+
+    A lease this job already holds is taken up again. A machine that proves unusable
+    before any work starts is released, passed over, and replaced by the next offer, up
+    to RENT_ATTEMPTS machines; the next is leased only once the provider confirmed the
+    last one gone. A held machine that is gone is replaced only while `replaceable`."""
+    provision, machine, directory = configuration.get('provisioning'), configuration['machine'], Path(directory)
     try:
         if provision is None:
             remote, supervisor = remote_type(machine['host'], machine), Unsupervised()
-            reachable(remote, supervisor, sleep)
+            reachable(remote, supervisor, sleep, EXISTING_SECONDS // POLL_SECONDS)
             yield remote, supervisor
             return
-        resources = Resources(provision['registry'], provider(provision))
-        path = directory / 'resource.json'
-        if not resume:
-            # The token is on disk here before the provider is asked for anything.
-            write(path, resources.intent(provision['specification'], LEASE_SECONDS, provision['lifetime_hours'] * 3600))
-        token = json.loads(path.read_text())['token']
-        with supervisor_type(resources, token) as supervisor:
-            def lease():
-                return resources.recover(token, LEASE_SECONDS) if resume else resources.allocate(token, startup(provision))
-            try:
-                allocation = lease()
-            except (ConnectionError, subprocess.TimeoutExpired):
-                allocation = lease()
-            write(path, allocation)
-            try:
-                address = endpoint(resources, token, supervisor, sleep)
-                remote = remote_type(address['address'], {**machine, 'port': address['port']})
-                reachable(remote, supervisor, sleep)
-            except Unreachable:
-                resources.avoid(token)
-                raise
-            supervisor.attach(remote, sleep)
-            yield remote, supervisor
+        resources, rental, path = Resources(provision['registry'], provider(provision)), Rental(directory, clock), directory / 'resource.json'
+        while True:
+            stage('rent')
+            held = rental.open() is not None
+            if not held:
+                if not replaceable:
+                    raise JobError('the machine this job ran on is gone, and a run does not move to another machine')
+                refuse_unsettled(resources)
+                # A confirmed release of the machine before this one says nothing about this one.
+                (directory / 'cleanup.json').unlink(missing_ok=True)
+                # The token is on disk here before the provider is asked for anything.
+                write(path, resources.intent(provision['specification'], LEASE_SECONDS, provision['lifetime_hours'] * 3600))
+                rental.begin(json.loads(path.read_text())['token'])
+            token = json.loads(path.read_text())['token']
+            with supervisor_type(resources, token) as supervisor:
+                try:
+                    allocation, remote = lease_machine(resources, provision, machine, token, held, supervisor, remote_type, sleep, stage)
+                except NoOffer as exc:
+                    failure, outcome = exc, 'no_offer'
+                except Unusable as exc:
+                    resources.avoid(token)
+                    failure, outcome = exc, 'unusable'
+                except ResourceError as exc:
+                    # A held lease the reaper took, or whose instance the provider no longer lists.
+                    if not held or not replaceable:
+                        raise
+                    failure, outcome = exc, 'lost'
+                else:
+                    write(path, allocation)
+                    rental.leased(allocation)
+                    yield remote, supervisor
+                    return
+                finally:
+                    record = json.loads(resources.path(token).read_text())
+                    if record.get('instance'):
+                        rental.leased(record)
+            rental.update(token, outcome=outcome, reason=str(failure))
+            if release(configuration, directory, sleep, clock) != 'confirmed':
+                raise JobError('a %s rental was not confirmed released, so no other machine is rented: %s' % (outcome, failure)) from failure
+            if outcome == 'no_offer':
+                if rental.count('no_offer') > OFFER_WAITS:
+                    raise NoOffer('no matching offer in %d searches over %d minutes'
+                                  % (OFFER_WAITS + 1, OFFER_WAITS * OFFER_WAIT_SECONDS // 60)) from failure
+                sleep(OFFER_WAIT_SECONDS)
+            elif rental.count('unusable', 'lost') >= RENT_ATTEMPTS:
+                raise failure
     finally:
-        release(configuration, directory, sleep)
+        release(configuration, directory, sleep, clock)

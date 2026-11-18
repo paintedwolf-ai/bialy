@@ -174,8 +174,7 @@ def compose(journal, directory, body, adopted=None):
               'llama_revision': cfg['llama_revision'], **run.factory.network}
     for student in students:
         handlers['baseline_' + student] = Baseline(journal, training, specification, student)
-        handlers['train_' + student] = Training(journal, training, student, pilot=profile['recipe'] != 'full',
-                                                dry_run=profile['recipe'] == 'dry_run')
+        handlers['train_' + student] = Training(journal, training, student, profile['schedule'])
         handlers['export_' + student] = Export(training, student)
         handlers['compare_' + student] = Comparison(journal)
         for arm in ('base', 'trained'):
