@@ -19,8 +19,9 @@ permissions:
   actions: read
   checks: write
   statuses: write
+# One queue per pull request or merge group: a burst across many pull requests cannot fill a shared queue.
 concurrency:
-  group: dco-certification
+  group: dco-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || github.event.merge_group.head_ref || inputs.pull_request || github.event.workflow_run.head_branch || github.run_id }}
   queue: max
   cancel-in-progress: false
 jobs:
